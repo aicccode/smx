@@ -199,13 +199,13 @@ public class SM2Cipher {
 
     // 密钥派生函数KDF
     private byte[] KDF(int keylen) {
-        byte[] result = new byte[keylen/8];
+        byte[] result = new byte[keylen];
         int ct = 0x00000001;
         for (int i = 0; i < (keylen + 31) / 32; i++) {
             SM3 sm3 = new SM3();
-            byte p2x[] = this.p2.getXCoord().getEncoded();
+            byte[] p2x = this.p2.getXCoord().getEncoded();
             sm3.update(p2x, 0, p2x.length);
-            byte p2y[] = this.p2.getYCoord().getEncoded();
+            byte[] p2y = this.p2.getYCoord().getEncoded();
             sm3.update(p2y, 0, p2y.length);
             byte[] ctBytes = new byte[4];
             ConvertUtil.intToBigEndian(ct, ctBytes, 0);
@@ -213,9 +213,9 @@ public class SM2Cipher {
             sm3.finish();
             // 最后一段
             if (i == ((keylen + 31) / 32 - 1) && (keylen % 32) != 0) {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 4 * ct - 4, (keylen % 32) / 8);
+                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * (ct - 1), keylen % 32);
             } else {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 4 * ct - 4, 4);
+                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * (ct - 1), 32);
             }
             ct++;
         }
@@ -256,7 +256,7 @@ public class SM2Cipher {
      private void Encrypt(byte data[]) {
         // C3 M
         this.sm3c3.update(data, 0, data.length);
-        byte[] key = KDF(data.length * 8);
+        byte[] key = KDF(data.length);
         for (int i = 0; i < data.length; i++) {
             data[i] ^= key[i];
         }
@@ -280,7 +280,7 @@ public class SM2Cipher {
 
     private void Decrypt(byte data[]) {
         // 解密过程与加密一样
-        byte[] key = KDF(data.length * 8);
+        byte[] key = KDF(data.length);
         for (int i = 0; i < data.length; i++) {
             data[i] ^= key[i];
         }
