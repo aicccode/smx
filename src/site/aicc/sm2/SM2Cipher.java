@@ -199,7 +199,7 @@ public class SM2Cipher {
 
     // 密钥派生函数KDF
     private byte[] KDF(int keylen) {
-        byte[] result = new byte[keylen];
+        byte[] result = new byte[keylen/8];
         int ct = 0x00000001;
         for (int i = 0; i < (keylen + 31) / 32; i++) {
             SM3 sm3 = new SM3();
@@ -213,15 +213,16 @@ public class SM2Cipher {
             sm3.finish();
             // 最后一段
             if (i == ((keylen + 31) / 32 - 1) && (keylen % 32) != 0) {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * ct - 32, keylen % 32);
+                System.arraycopy(sm3.getHashBytes(), 0, result, 4 * ct - 4, (keylen % 32) / 8);
             } else {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * ct - 32, 32);
+                System.arraycopy(sm3.getHashBytes(), 0, result, 4 * ct - 4, 4);
             }
             ct++;
         }
         return result;
     }
-    /**
+    
+        /**
      * 初始化加密器
      * @param init
      * @param userPublicKey
@@ -252,12 +253,12 @@ public class SM2Cipher {
         return c1;
     }
 
-    private void Encrypt(byte data[]) {
+     private void Encrypt(byte data[]) {
         // C3 M
         this.sm3c3.update(data, 0, data.length);
-        byte[] key = KDF(data.length);
+        byte[] key = KDF(data.length * 8);
         for (int i = 0; i < data.length; i++) {
-            data[i] ^= key[i % 32];
+            data[i] ^= key[i];
         }
     }
     /**
@@ -279,9 +280,9 @@ public class SM2Cipher {
 
     private void Decrypt(byte data[]) {
         // 解密过程与加密一样
-        byte[] key = KDF(data.length);
+        byte[] key = KDF(data.length * 8);
         for (int i = 0; i < data.length; i++) {
-            data[i] ^= key[i % 32];
+            data[i] ^= key[i];
         }
         // C3 M
         this.sm3c3.update(data, 0, data.length);
