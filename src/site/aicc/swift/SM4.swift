@@ -190,7 +190,7 @@ class Sm4Impl {
     
     func fixInput(input: [UInt8]) -> [UInt8] {
         let t = 16 - input.count % 16
-        var out = Array(repeating: UInt8(t), count: t)
+        let out = Array(repeating: UInt8(t), count: t)
         return input + out
     }
     
