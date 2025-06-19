@@ -224,7 +224,7 @@ public class SM4 {
         } else {
             byte[] bs = out.toByteArray();
             // 分组补全逆修复
-            return new String(Arrays.copyOfRange(bs, 1, bs.length - bs[0]), StandardCharsets.UTF_8);
+            return new String(Arrays.copyOfRange(bs, 0, bs.length - bs[bs.length - 1]), StandardCharsets.UTF_8);
         }
 
     }
@@ -269,14 +269,15 @@ public class SM4 {
         return A;
     }
 
-    // 分组输入补全
+    // 分组输入补全pkcs7
     private byte[] fixInput(byte[] input) {
-        // 补全输入，确保输入分组完整，用0补全， 用第一个字节存储补全的长度
-        byte t = (byte) (16 - input.length % 16 - 1);
-        byte[] out = new byte[input.length + t + 1];
-        // 前8位存放补0数量
-        out[0] = t;
-        System.arraycopy(input, 0, out, 1, input.length);
+        // 补全输入，确保输入分组完整
+        byte t = (byte) (16 - input.length % 16);
+        byte[] out = new byte[input.length + t];
+        System.arraycopy(input, 0, out, 0, input.length);
+        for (int i = 0; i < t; i++){
+            out[input.length + i] = t;
+        }
         return out;
     }
     

@@ -168,7 +168,7 @@ class Sm4Impl {
       return bytes2Hex(out, false)
     } else {
       const bs = out
-      return bytesToUTF8String(bs.slice(1, bs.length - bs[0]))
+      return bytesToUTF8String(bs.slice(0, bs.length - bs[bs.length - 1]))
     }
   }
 
@@ -205,13 +205,12 @@ class Sm4Impl {
   }
 
   fixInput(input) {
-    const t = 16 - input.length % 16 - 1
-    const out = new Array(input.length + t + 1)
-    out[0] = t
-    for (let i = 0; i < input.length; i++) {
-      out[i + 1] = input[i]
+    const t = 16 - input.length % 16
+    const out = new Array(t)
+    for (let i = 0; i < t; i++) {
+      out[i] = t
     }
-    return out
+    return input.concat(out)
   }
 }
 

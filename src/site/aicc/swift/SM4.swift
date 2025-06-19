@@ -151,7 +151,7 @@ class Sm4Impl {
             return bytes2Hex(bytes: out, upperCase: false)
         } else {
             let bs = out
-            return bytesToUTF8String(bytes: Array(bs[1..<(bs.count - Int(bs[0]))]))
+            return bytesToUTF8String(bytes: Array(bs[0..<(bs.count - Int(bs[bs.count - 1]))]))
         }
     }
     
@@ -189,13 +189,9 @@ class Sm4Impl {
     }
     
     func fixInput(input: [UInt8]) -> [UInt8] {
-        let t = 16 - input.count % 16 - 1
-        var out = Array(repeating: UInt8(0), count: input.count + t + 1)
-        out[0] = UInt8(t)
-        for i in 0..<input.count {
-            out[i + 1] = input[i]
-        }
-        return out
+        let t = 16 - input.count % 16
+        var out = Array(repeating: UInt8(t), count: t)
+        return input + out
     }
     
     func bytesToUTF8String(bytes: [UInt8]) -> String {
