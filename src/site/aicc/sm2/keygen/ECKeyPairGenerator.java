@@ -24,12 +24,12 @@ import site.aicc.sm2.ec.AbstractECPoint;
 *       <ul>
 *           <li>Version : 1.00</li>
 *           <li>Date : 2020-09-28 | 下午10:28:00</li>
-*           <li>Author : yaojunWang.</li>
+*          
 *           <li>History : 新建类.</li>
 *       </ul>
 *     </li>
-*     <li>@Copyright Copyright © 2020, yaojunWang, All rights reserved. </li>
-*     <li>@Author yaojunWang.</li>
+*     
+*     
 * </ul>
 */
 //@formatter:on

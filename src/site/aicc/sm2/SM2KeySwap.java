@@ -24,12 +24,12 @@ import site.aicc.sm3.SM3;
 *       <ul>
 *           <li>Version : 1.00</li>
 *           <li>Date : 2020-10-04 | 下午11:27:16</li>
-*           <li>Author : yaojunWang.</li>
+*          
 *           <li>History : 新建类.</li>
 *       </ul>
 *     </li>
-*     <li>@Copyright Copyright © 2020, yaojunWang, All rights reserved. </li>
-*     <li>@Author yaojunWang.</li>
+*     
+*     
 * </ul>
 */
 //@formatter:on

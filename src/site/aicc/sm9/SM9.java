@@ -16,12 +16,12 @@ package site.aicc.sm9;
 *       <ul>
 *           <li>Version : 1.00</li>
 *           <li>Date : 2020-10-06 | 下午11:02:02</li>
-*           <li>Author : yaojunWang.</li>
+*          
 *           <li>History : 新建类.</li>
 *       </ul>
 *     </li>
-*     <li>@Copyright Copyright © 2020, yaojunWang, All rights reserved. </li>
-*     <li>@Author yaojunWang.</li>
+*     
+*     
 * </ul>
 */
 //@formatter:on

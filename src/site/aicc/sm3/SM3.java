@@ -24,12 +24,12 @@ import java.util.Arrays;
 *       <ul>
 *           <li>Version : 1.00</li>
 *           <li>Date : 2020-09-24 | 上午01:24:10</li>
-*           <li>Author : yaojunWang.</li>
+*          
 *           <li>History : 新建类.</li>
 *       </ul>
 *     </li>
-*     <li>@Copyright Copyright © 2020, yaojunWang, All rights reserved. </li>
-*     <li>@Author yaojunWang.</li>
+*     
+*     
 * </ul>
 */
 //@formatter:on

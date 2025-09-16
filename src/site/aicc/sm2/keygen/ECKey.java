@@ -17,12 +17,12 @@ package site.aicc.sm2.keygen;
 *       <ul>
 *           <li>Version : 1.00</li>
 *           <li>Date : 2020-09-26 | 下午07:55:18</li>
-*           <li>Author : yaojunWang.</li>
+*          
 *           <li>History : 新建类.</li>
 *       </ul>
 *     </li>
-*     <li>@Copyright Copyright © 2020, yaojunWang, All rights reserved. </li>
-*     <li>@Author yaojunWang.</li>
+*     
+*     
 * </ul>
 */
 //@formatter:on

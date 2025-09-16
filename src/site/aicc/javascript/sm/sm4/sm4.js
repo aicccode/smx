@@ -1,4 +1,3 @@
-import { getEncryptKey, getSM4IV } from '@/utils/auth'
 import { getSM3 } from '../sm3/sm3'
 
 class Sm4Impl {
@@ -287,10 +286,5 @@ function int2Bytes(n) {
   return b
 }
 export const getSM4 = () => {
-  const sm4 = new Sm4Impl()
-  if (getEncryptKey()) {
-    sm4.setKey(getEncryptKey(), getSM4IV(), true)
-  }
-
-  return sm4
+  return new Sm4Impl()
 }
