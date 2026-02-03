@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/master.swiftdeps"
+  },
+  "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.derived/runner.swift": {
+    "dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner.d",
+    "object": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner.swift.o",
+    "swiftmodule": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner.dia"
+  }
+}

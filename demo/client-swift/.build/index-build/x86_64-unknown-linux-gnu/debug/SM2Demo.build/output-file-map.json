@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/master.swiftdeps"
+  },
+  "/home/cc/extend/workspace/private/jworkspace/smx/demo/client-swift/Sources/SM2Demo/main.swift": {
+    "dependencies": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/main.d",
+    "object": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/main.swift.o",
+    "swiftmodule": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/main~partial.swiftmodule",
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/main.swiftdeps",
+    "diagnostics": "/home/cc/workspace/private/jworkspace/smx/demo/client-swift/.build/index-build/x86_64-unknown-linux-gnu/debug/SM2Demo.build/main.dia"
+  }
+}

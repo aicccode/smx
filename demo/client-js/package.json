@@ -1,0 +1,10 @@
+{
+  "name": "sm2-demo-client-js",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SM2 key exchange demo client in JavaScript",
+  "main": "test-demo.mjs",
+  "scripts": {
+    "test": "node test-demo.mjs"
+  }
+}

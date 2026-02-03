@@ -1,0 +1,683 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.xctest",
+      "packagePath" : "/home/cc/extend/workspace/private/jworkspace/smx/swift",
+      "productName" : "GMSwiftPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+    "GMSwiftPackageDiscoveredTests"
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.GMSwift-x86_64-unknown-linux-gnu-debug.module" : {
+      "executable" : "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "fileList" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/sources",
+      "importPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2BigInt.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM3.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM4.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GMSwift",
+      "moduleOutputPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwift.swiftmodule",
+      "objects" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/SM2.swift.o",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/SM2BigInt.swift.o",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/SM3.swift.o",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/SM4.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-unknown-linux-gnu",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-Onone",
+        "-enable-testing",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/include/GMSwift-Swift.h",
+        "-swift-version",
+        "5",
+        "-Xfrontend",
+        "-experimental-lazy-typecheck",
+        "-Xfrontend",
+        "-experimental-skip-all-function-bodies",
+        "-Xfrontend",
+        "-experimental-allow-module-with-compiler-errors",
+        "-Xfrontend",
+        "-empty-abi-descriptor",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-Xcc",
+        "-fno-omit-frame-pointer"
+      ],
+      "outputFileMapPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwift.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : true,
+      "sources" : [
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2.swift",
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2BigInt.swift",
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM3.swift",
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM4.swift"
+      ],
+      "tempsPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.GMSwiftPackageDiscoveredTests-x86_64-unknown-linux-gnu-debug.module" : {
+      "executable" : "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "fileList" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/sources",
+      "importPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/GMSwiftTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/all-discovered-tests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GMSwiftPackageDiscoveredTests",
+      "moduleOutputPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftPackageDiscoveredTests.swiftmodule",
+      "objects" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/GMSwiftTests.swift.o",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/all-discovered-tests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-unknown-linux-gnu",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/include/GMSwiftPackageDiscoveredTests-Swift.h",
+        "-Xfrontend",
+        "-experimental-lazy-typecheck",
+        "-Xfrontend",
+        "-experimental-skip-all-function-bodies",
+        "-Xfrontend",
+        "-experimental-allow-module-with-compiler-errors",
+        "-Xfrontend",
+        "-empty-abi-descriptor",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-Xcc",
+        "-fno-omit-frame-pointer"
+      ],
+      "outputFileMapPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftPackageDiscoveredTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : true,
+      "sources" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/GMSwiftTests.swift",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/all-discovered-tests.swift"
+      ],
+      "tempsPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.GMSwiftPackageTests-x86_64-unknown-linux-gnu-debug.module" : {
+      "executable" : "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "fileList" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/sources",
+      "importPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftPackageDiscoveredTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GMSwiftPackageTests",
+      "moduleOutputPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftPackageTests.swiftmodule",
+      "objects" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-unknown-linux-gnu",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/include/GMSwiftPackageTests-Swift.h",
+        "-Xfrontend",
+        "-experimental-lazy-typecheck",
+        "-Xfrontend",
+        "-experimental-skip-all-function-bodies",
+        "-Xfrontend",
+        "-experimental-allow-module-with-compiler-errors",
+        "-Xfrontend",
+        "-empty-abi-descriptor",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-Xcc",
+        "-fno-omit-frame-pointer"
+      ],
+      "outputFileMapPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : true,
+      "sources" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.GMSwiftTests-x86_64-unknown-linux-gnu-debug.module" : {
+      "executable" : "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "fileList" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/sources",
+      "importPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM2Tests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM3SM4Tests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwift.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "GMSwiftTests",
+      "moduleOutputPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftTests.swiftmodule",
+      "objects" : [
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests.swift.o",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-unknown-linux-gnu",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j16",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-Xfrontend",
+        "-experimental-lazy-typecheck",
+        "-Xfrontend",
+        "-experimental-skip-all-function-bodies",
+        "-Xfrontend",
+        "-experimental-allow-module-with-compiler-errors",
+        "-Xfrontend",
+        "-empty-abi-descriptor",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-Xcc",
+        "-fno-omit-frame-pointer"
+      ],
+      "outputFileMapPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules/GMSwiftTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : true,
+      "sources" : [
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM2Tests.swift",
+        "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM3SM4Tests.swift"
+      ],
+      "tempsPath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "GMSwift" : [
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "-module-name",
+      "GMSwift",
+      "-c",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2.swift",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2BigInt.swift",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM3.swift",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM4.swift",
+      "-I",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "-target",
+      "x86_64-unknown-linux-gnu",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-Onone",
+      "-enable-testing",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/include/GMSwift-Swift.h",
+      "-swift-version",
+      "5",
+      "-Xfrontend",
+      "-experimental-lazy-typecheck",
+      "-Xfrontend",
+      "-experimental-skip-all-function-bodies",
+      "-Xfrontend",
+      "-experimental-allow-module-with-compiler-errors",
+      "-Xfrontend",
+      "-empty-abi-descriptor",
+      "-g",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-Xcc",
+      "-fno-omit-frame-pointer",
+      "-driver-use-frontend-path",
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc"
+    ],
+    "GMSwiftPackageDiscoveredTests" : [
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "-module-name",
+      "GMSwiftPackageDiscoveredTests",
+      "-c",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/GMSwiftTests.swift",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/all-discovered-tests.swift",
+      "-I",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "-target",
+      "x86_64-unknown-linux-gnu",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/include/GMSwiftPackageDiscoveredTests-Swift.h",
+      "-Xfrontend",
+      "-experimental-lazy-typecheck",
+      "-Xfrontend",
+      "-experimental-skip-all-function-bodies",
+      "-Xfrontend",
+      "-experimental-allow-module-with-compiler-errors",
+      "-Xfrontend",
+      "-empty-abi-descriptor",
+      "-g",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-Xcc",
+      "-fno-omit-frame-pointer",
+      "-driver-use-frontend-path",
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc"
+    ],
+    "GMSwiftPackageTests" : [
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "-module-name",
+      "GMSwiftPackageTests",
+      "-c",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.derived/runner.swift",
+      "-I",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "-target",
+      "x86_64-unknown-linux-gnu",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/include/GMSwiftPackageTests-Swift.h",
+      "-Xfrontend",
+      "-experimental-lazy-typecheck",
+      "-Xfrontend",
+      "-experimental-skip-all-function-bodies",
+      "-Xfrontend",
+      "-experimental-allow-module-with-compiler-errors",
+      "-Xfrontend",
+      "-empty-abi-descriptor",
+      "-g",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-Xcc",
+      "-fno-omit-frame-pointer",
+      "-driver-use-frontend-path",
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc"
+    ],
+    "GMSwiftTests" : [
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc",
+      "-module-name",
+      "GMSwiftTests",
+      "-c",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM2Tests.swift",
+      "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM3SM4Tests.swift",
+      "-I",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/Modules",
+      "-target",
+      "x86_64-unknown-linux-gnu",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j16",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-Xfrontend",
+      "-experimental-lazy-typecheck",
+      "-Xfrontend",
+      "-experimental-skip-all-function-bodies",
+      "-Xfrontend",
+      "-experimental-allow-module-with-compiler-errors",
+      "-Xfrontend",
+      "-empty-abi-descriptor",
+      "-g",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-Xcc",
+      "-fno-omit-frame-pointer",
+      "-driver-use-frontend-path",
+      "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "GMSwift" : [
+
+    ],
+    "GMSwiftPackageDiscoveredTests" : [
+      "GMSwiftTests",
+      "GMSwift"
+    ],
+    "GMSwiftPackageTests" : [
+      "GMSwiftPackageDiscoveredTests",
+      "GMSwiftTests",
+      "GMSwift"
+    ],
+    "GMSwiftTests" : [
+      "GMSwift"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM2BigInt.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM3.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Sources/GMSwift/SM4.swift"
+        }
+      ],
+      "outputFilePath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwift.build/sources"
+    },
+    "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/GMSwiftTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.derived/all-discovered-tests.swift"
+        }
+      ],
+      "outputFilePath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageDiscoveredTests.build/sources"
+    },
+    "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftPackageTests.build/sources"
+    },
+    "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM2Tests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/extend/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM3SM4Tests.swift"
+        }
+      ],
+      "outputFilePath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/sources"
+    },
+    "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/home/cc/.local/share/swiftly/toolchains/6.2.3/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/swift-version-1F3EA1C31D65A32E.txt"
+    }
+  }
+}

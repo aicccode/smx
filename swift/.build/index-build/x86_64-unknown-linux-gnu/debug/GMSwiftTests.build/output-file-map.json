@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/master.swiftdeps"
+  },
+  "/home/cc/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM2Tests.swift": {
+    "dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests.d",
+    "object": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests.swift.o",
+    "swiftmodule": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests~partial.swiftmodule",
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests.swiftdeps",
+    "diagnostics": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM2Tests.dia"
+  },
+  "/home/cc/workspace/private/jworkspace/smx/swift/Tests/GMSwiftTests/SM3SM4Tests.swift": {
+    "dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests.d",
+    "object": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests.swift.o",
+    "swiftmodule": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests~partial.swiftmodule",
+    "swift-dependencies": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests.swiftdeps",
+    "diagnostics": "/home/cc/workspace/private/jworkspace/smx/swift/.build/index-build/x86_64-unknown-linux-gnu/debug/GMSwiftTests.build/SM3SM4Tests.dia"
+  }
+}

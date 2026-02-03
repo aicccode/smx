@@ -1,0 +1,13 @@
+{
+  "name": "gm-js",
+  "version": "1.0.0",
+  "description": "Pure JavaScript implementation of SM2/SM3/SM4 (no external crypto deps)",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node test/run-all.js"
+  },
+  "keywords": ["sm2", "sm3", "sm4", "gm"],
+  "author": "",
+  "license": "MIT"
+}
