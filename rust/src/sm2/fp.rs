@@ -69,14 +69,14 @@ impl FpElement {
     /// 乘法
     pub fn multiply(&self, other: &FpElement) -> FpElement {
         FpElement {
-            value: self.value.mod_mul(&other.value, &SM2_P),
+            value: self.value.sm2_mod_mul_p(&other.value),
         }
     }
 
     /// 平方
     pub fn square(&self) -> FpElement {
         FpElement {
-            value: self.value.mod_square(&SM2_P),
+            value: self.value.sm2_mod_square_p(),
         }
     }
 
@@ -91,14 +91,23 @@ impl FpElement {
         }
     }
 
-    /// 求逆
+    /// 求逆（使用SM2快速约减的费马小定理）
     pub fn invert(&self) -> FpElement {
         if self.is_zero() {
             panic!("Cannot invert zero");
         }
-        FpElement {
-            value: self.value.mod_inverse(&SM2_P),
+        // a^(-1) = a^(p-2) mod p
+        let (p_minus_2, _) = SM2_P.sub(&BigInt256::new([2, 0, 0, 0]));
+        let mut result = BigInt256::ONE;
+        let mut base = self.value;
+        let bit_len = p_minus_2.bit_length();
+        for i in 0..bit_len {
+            if p_minus_2.get_bit(i) {
+                result = result.sm2_mod_mul_p(&base);
+            }
+            base = base.sm2_mod_square_p();
         }
+        FpElement { value: result }
     }
 
     /// 除法

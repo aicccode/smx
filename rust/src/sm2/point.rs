@@ -1,4 +1,4 @@
-// 椭圆曲线点实现
+// 椭圆曲线点实现（仿射坐标 + 内部使用Jacobian坐标加速标量乘法）
 
 use super::bigint256::BigInt256;
 use super::fp::FpElement;
@@ -60,6 +60,158 @@ pub const SM2_N: BigInt256 = BigInt256 {
         0xFFFFFFFEFFFFFFFF,
     ],
 };
+
+// ============ Jacobian坐标内部点 ============
+// (X, Y, Z) 对应仿射 (X/Z², Y/Z³)
+// 无穷远点: Z = 0
+
+struct JacobianPoint {
+    x: FpElement,
+    y: FpElement,
+    z: FpElement,
+}
+
+impl JacobianPoint {
+    fn infinity() -> Self {
+        JacobianPoint {
+            x: FpElement::one(),
+            y: FpElement::one(),
+            z: FpElement::zero(),
+        }
+    }
+
+    fn from_affine(p: &ECPoint) -> Self {
+        if p.infinity {
+            return Self::infinity();
+        }
+        JacobianPoint {
+            x: p.x,
+            y: p.y,
+            z: FpElement::one(),
+        }
+    }
+
+    fn is_infinity(&self) -> bool {
+        self.z.is_zero()
+    }
+
+    fn to_affine(&self) -> ECPoint {
+        if self.z.is_zero() {
+            return ECPoint::infinity();
+        }
+        // x_affine = X / Z²
+        // y_affine = Y / Z³
+        let z_inv = self.z.invert();
+        let z_inv2 = z_inv.square();
+        let z_inv3 = z_inv2.multiply(&z_inv);
+        let x = self.x.multiply(&z_inv2);
+        let y = self.y.multiply(&z_inv3);
+        ECPoint::new(x, y)
+    }
+
+    /// Jacobian点倍乘（a = p - 3 优化）
+    /// 参考: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#doubling-dbl-2001-b
+    fn double(&self) -> JacobianPoint {
+        if self.z.is_zero() || self.y.is_zero() {
+            return Self::infinity();
+        }
+
+        // SM2曲线 a = p - 3, 使用 a=-3 优化
+        // delta = Z1²
+        let delta = self.z.square();
+        // gamma = Y1²
+        let gamma = self.y.square();
+        // beta = X1 * gamma
+        let beta = self.x.multiply(&gamma);
+        // alpha = 3*(X1-delta)*(X1+delta)  (利用 a=-3: 3*X1²+a*Z1⁴ = 3*(X1²-Z1⁴) = 3*(X1-Z1²)*(X1+Z1²))
+        let alpha = self.x.subtract(&delta).multiply(&self.x.add(&delta)).triple();
+        // X3 = alpha² - 8*beta
+        let beta8 = beta.double().double().double();
+        let x3 = alpha.square().subtract(&beta8);
+        // Z3 = (Y1+Z1)² - gamma - delta
+        let z3 = self.y.add(&self.z).square().subtract(&gamma).subtract(&delta);
+        // Y3 = alpha*(4*beta - X3) - 8*gamma²
+        let gamma_sq = gamma.square();
+        let y3 = alpha.multiply(&beta.double().double().subtract(&x3))
+            .subtract(&gamma_sq.double().double().double());
+
+        JacobianPoint { x: x3, y: y3, z: z3 }
+    }
+
+    /// Jacobian点加法 (mixed addition: other.Z = 1)
+    /// 参考: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-madd-2007-bl
+    fn add_affine(&self, other: &ECPoint) -> JacobianPoint {
+        if other.infinity {
+            return JacobianPoint { x: self.x, y: self.y, z: self.z };
+        }
+        if self.z.is_zero() {
+            return JacobianPoint::from_affine(other);
+        }
+
+        // Z1Z1 = Z1²
+        let z1z1 = self.z.square();
+        // U2 = X2*Z1Z1
+        let u2 = other.x.multiply(&z1z1);
+        // S2 = Y2*Z1*Z1Z1
+        let s2 = other.y.multiply(&self.z).multiply(&z1z1);
+        // H = U2 - X1
+        let h = u2.subtract(&self.x);
+        // r = S2 - Y1
+        let r = s2.subtract(&self.y);
+
+        if h.is_zero() {
+            if r.is_zero() {
+                return self.double();
+            }
+            return Self::infinity();
+        }
+
+        let hh = h.square();
+        let hhh = hh.multiply(&h);
+        // X3 = r² - H³ - 2*X1*H²
+        let x3 = r.square().subtract(&hhh).subtract(&self.x.multiply(&hh).double());
+        // Y3 = r*(X1*H² - X3) - Y1*H³
+        let y3 = r.multiply(&self.x.multiply(&hh).subtract(&x3)).subtract(&self.y.multiply(&hhh));
+        // Z3 = Z1*H
+        let z3 = self.z.multiply(&h);
+
+        JacobianPoint { x: x3, y: y3, z: z3 }
+    }
+
+    /// Jacobian + Jacobian 通用点加法
+    fn add(&self, other: &JacobianPoint) -> JacobianPoint {
+        if self.z.is_zero() {
+            return JacobianPoint { x: other.x, y: other.y, z: other.z };
+        }
+        if other.z.is_zero() {
+            return JacobianPoint { x: self.x, y: self.y, z: self.z };
+        }
+
+        let z1sq = self.z.square();
+        let z2sq = other.z.square();
+        let u1 = self.x.multiply(&z2sq);
+        let u2 = other.x.multiply(&z1sq);
+        let s1 = self.y.multiply(&other.z).multiply(&z2sq);
+        let s2 = other.y.multiply(&self.z).multiply(&z1sq);
+        let h = u2.subtract(&u1);
+        let r = s2.subtract(&s1);
+
+        if h.is_zero() {
+            if r.is_zero() {
+                return self.double();
+            }
+            return Self::infinity();
+        }
+
+        let hh = h.square();
+        let hhh = hh.multiply(&h);
+        let x3 = r.square().subtract(&hhh).subtract(&u1.multiply(&hh).double());
+        let y3 = r.multiply(&u1.multiply(&hh).subtract(&x3)).subtract(&s1.multiply(&hhh));
+        let z3 = self.z.multiply(&other.z).multiply(&h);
+
+        JacobianPoint { x: x3, y: y3, z: z3 }
+    }
+}
 
 /// 椭圆曲线点（仿射坐标）
 #[derive(Clone, Debug)]
@@ -173,31 +325,10 @@ impl ECPoint {
             return self.clone();
         }
 
-        let x1 = &self.x;
-        let y1 = &self.y;
-        let x2 = &other.x;
-        let y2 = &other.y;
-
-        let dx = x2.subtract(x1);
-        let dy = y2.subtract(y1);
-
-        if dx.is_zero() {
-            if dy.is_zero() {
-                return self.twice();
-            }
-            return ECPoint::infinity();
-        }
-
-        // lambda = (y2 - y1) / (x2 - x1)
-        let lambda = dy.divide(&dx);
-
-        // x3 = lambda^2 - x1 - x2
-        let x3 = lambda.square().subtract(x1).subtract(x2);
-
-        // y3 = lambda * (x1 - x3) - y1
-        let y3 = lambda.multiply(&x1.subtract(&x3)).subtract(y1);
-
-        ECPoint::new(x3, y3)
+        // 使用Jacobian坐标计算后转回仿射
+        let jp = JacobianPoint::from_affine(self);
+        let result = jp.add_affine(other);
+        result.to_affine()
     }
 
     /// 点倍乘（P + P）
@@ -205,27 +336,11 @@ impl ECPoint {
         if self.infinity {
             return ECPoint::infinity();
         }
-
-        let y1 = &self.y;
-        if y1.is_zero() {
+        if self.y.is_zero() {
             return ECPoint::infinity();
         }
-
-        let x1 = &self.x;
-        let x1_sq = x1.square();
-
-        // lambda = (3 * x1^2 + a) / (2 * y1)
-        let numerator = x1_sq.triple().add(&SM2_A);
-        let denominator = y1.double();
-        let lambda = numerator.divide(&denominator);
-
-        // x3 = lambda^2 - 2*x1
-        let x3 = lambda.square().subtract(&x1.double());
-
-        // y3 = lambda * (x1 - x3) - y1
-        let y3 = lambda.multiply(&x1.subtract(&x3)).subtract(y1);
-
-        ECPoint::new(x3, y3)
+        let jp = JacobianPoint::from_affine(self);
+        jp.double().to_affine()
     }
 
     /// 减法
@@ -233,7 +348,7 @@ impl ECPoint {
         self.add(&other.negate())
     }
 
-    /// 标量乘法（Double-and-Add算法）
+    /// 标量乘法（使用Jacobian坐标的Double-and-Add算法，仅在最后转回仿射）
     pub fn multiply(&self, k: &BigInt256) -> ECPoint {
         if k.is_zero() || self.infinity {
             return ECPoint::infinity();
@@ -243,18 +358,18 @@ impl ECPoint {
             return self.clone();
         }
 
-        let mut result = ECPoint::infinity();
-        let mut addend = self.clone();
+        let mut result = JacobianPoint::infinity();
         let bit_len = k.bit_length();
 
-        for i in 0..bit_len {
+        // 从高位到低位扫描（更适合Jacobian坐标）
+        for i in (0..bit_len).rev() {
+            result = result.double();
             if k.get_bit(i) {
-                result = result.add(&addend);
+                result = result.add_affine(self);
             }
-            addend = addend.twice();
         }
 
-        result
+        result.to_affine()
     }
 
     /// 验证点在曲线上

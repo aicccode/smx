@@ -202,6 +202,140 @@ impl BigInt256 {
         self.mod_mul(self, modulus)
     }
 
+    /// SM2专用：模乘法（使用快速约减）
+    pub fn sm2_mod_mul_p(&self, other: &BigInt256) -> BigInt256 {
+        let product = self.mul(other);
+        Self::sm2_mod_reduce_p(&product)
+    }
+
+    /// SM2专用：模平方（使用快速约减）
+    pub fn sm2_mod_square_p(&self) -> BigInt256 {
+        let product = self.mul(self);
+        Self::sm2_mod_reduce_p(&product)
+    }
+
+    /// SM2专用快速模约减（使用32位字和预计算的约减系数）
+    /// p = 2^256 - 2^224 - 2^96 + 2^64 - 1
+    /// 对于每个高位字 w[i] (i=8..15), 2^(32i) mod p 的系数已预计算
+    fn sm2_mod_reduce_p(c: &[u64; 8]) -> BigInt256 {
+        // 拆分为32位字（小端序）
+        let w = |i: usize| -> i64 {
+            if i % 2 == 0 {
+                (c[i / 2] & 0xFFFFFFFF) as i64
+            } else {
+                (c[i / 2] >> 32) as i64
+            }
+        };
+
+        // 预计算的有符号约减系数 R_k[j] 表示 2^(32k) mod p 在位置j的系数
+        // R_8:  [1, 0, -1, 1, 0, 0, 0, 1]
+        // R_9:  [1, 1, -1, 0, 1, 0, 0, 1]
+        // R_10: [1, 1,  0, 0, 0, 1, 0, 1]
+        // R_11: [1, 1,  0, 1, 0, 0, 1, 1]
+        // R_12: [1, 1,  0, 1, 1, 0, 0, 2]
+        // R_13: [2, 1, -1, 2, 1, 1, 0, 2]
+        // R_14: [2, 2, -1, 1, 2, 1, 1, 2]
+        // R_15: [2, 2,  0, 1, 1, 2, 1, 3]
+        static R: [[i64; 8]; 8] = [
+            [ 1, 0, -1,  1, 0, 0, 0, 1],  // R_8
+            [ 1, 1, -1,  0, 1, 0, 0, 1],  // R_9
+            [ 1, 1,  0,  0, 0, 1, 0, 1],  // R_10
+            [ 1, 1,  0,  1, 0, 0, 1, 1],  // R_11
+            [ 1, 1,  0,  1, 1, 0, 0, 2],  // R_12
+            [ 2, 1, -1,  2, 1, 1, 0, 2],  // R_13
+            [ 2, 2, -1,  1, 2, 1, 1, 2],  // R_14
+            [ 2, 2,  0,  1, 1, 2, 1, 3],  // R_15
+        ];
+
+        // 累加: result[j] = w[j] + Σ(w[i+8] * R[i][j], i=0..7)
+        let mut acc = [0i64; 9]; // 8个输出位 + 1个溢出
+        for j in 0..8 {
+            acc[j] = w(j);
+            for i in 0..8 {
+                acc[j] += w(i + 8) * R[i][j];
+            }
+        }
+
+        // 传播进位（32位字）
+        for i in 0..8 {
+            let carry = acc[i] >> 32;
+            acc[i] &= 0xFFFFFFFF;
+            if i < 8 {
+                acc[i + 1] += carry;
+            }
+        }
+
+        // 处理溢出：acc[8] 中的值需要再约减
+        // acc[8] * 2^256 ≡ acc[8] * r (mod p)
+        // r 在32位字中的系数: [1, 0, -1, 1, 0, 0, 0, 1]
+        let overflow = acc[8];
+        if overflow != 0 {
+            acc[0] += overflow;
+            acc[2] -= overflow;
+            acc[3] += overflow;
+            acc[7] += overflow;
+            acc[8] = 0;
+
+            // 传播进位
+            for i in 0..8 {
+                let carry = acc[i] >> 32;
+                acc[i] &= 0xFFFFFFFF;
+                if i < 8 {
+                    acc[i + 1] += carry;
+                }
+            }
+
+            // 第二次溢出（极少发生）
+            let overflow2 = acc[8];
+            if overflow2 != 0 {
+                acc[0] += overflow2;
+                acc[2] -= overflow2;
+                acc[3] += overflow2;
+                acc[7] += overflow2;
+                acc[8] = 0;
+                for i in 0..8 {
+                    let carry = acc[i] >> 32;
+                    acc[i] &= 0xFFFFFFFF;
+                    if i < 8 {
+                        acc[i + 1] += carry;
+                    }
+                }
+            }
+        }
+
+        // 处理可能的负值（如果减法导致借位）
+        for i in 0..8 {
+            while acc[i] < 0 {
+                acc[i] += 0x100000000;
+                acc[i + 1] -= 1;
+            }
+        }
+
+        // 组合32位字为64位limb
+        let mut result = BigInt256 {
+            limbs: [
+                (acc[0] as u64) | ((acc[1] as u64) << 32),
+                (acc[2] as u64) | ((acc[3] as u64) << 32),
+                (acc[4] as u64) | ((acc[5] as u64) << 32),
+                (acc[6] as u64) | ((acc[7] as u64) << 32),
+            ],
+        };
+
+        // 最终约减
+        let sm2_p = BigInt256 {
+            limbs: [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF00000000, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFEFFFFFFFF],
+        };
+        loop {
+            if result.compare(&sm2_p) != Ordering::Less {
+                let (r, _) = result.sub(&sm2_p);
+                result = r;
+            } else {
+                break;
+            }
+        }
+        result
+    }
+
     /// 512位数模约减到256位
     fn mod_reduce_512(value: &[u64; 8], modulus: &BigInt256) -> BigInt256 {
         // 使用简单的长除法进行模约减
@@ -474,3 +608,4 @@ mod tests {
         assert!(product.is_one());
     }
 }
+
