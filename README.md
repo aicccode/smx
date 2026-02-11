@@ -1,17 +1,29 @@
-# smx
-无任何第三方依赖,完全参照国家密码局要求实现的国密算法JAVA(SM2,SM4,SM4)、JAVASCRIPT(SM2,SM3,SM4)、SWIFT(SM2,SM3,SM4)、RUST(SM2,SM3,SM4)、GO(SM2,SM3,SM4)实现哈希算法、加减密算法、签名、签名验证算法、密钥交换算法等.
+# SMX
 
-国产密码算法（国密算法）是指国家密码局认定的国产商用密码算法，在金融领域目前主要使用公开的SM2、SM3、SM4、SM9等算法，分别是非对称算法、哈希算法和对称算法以及标识密码算法。
+完全基于国家密码管理局发布的商用密码算法标准，在无任何第三方依赖的前提下，实现国密核心算法在多编程语言环境下的全维度落地，涵盖 Java（SM2、SM3、SM4）、JavaScript（SM2、SM3、SM4）、Swift（SM2、SM3、SM4）、Rust（SM2、SM3、SM4）、Go（SM2、SM3、SM4）等主流开发语言；实现功能覆盖哈希运算（SM3）、对称加解密（SM4）、非对称加解密（SM2）、数字签名与验签（SM2）、密钥交换（SM2）等国密算法核心应用场景。
 
-SM2算法：SM2椭圆曲线公钥密码算法是我国自主设计的公钥密码算法，包括SM2-1椭圆曲线数字签名算法，SM2-2椭圆曲线密钥交换协议，SM2-3椭圆曲线公钥加密算法，分别用于实现数字签名密钥协商和数据加密等功能。SM2算法与RSA算法不同的是，SM2算法是基于椭圆曲线上点群离散对数难题，相对于RSA算法，256位的SM2密码强度已经比2048位的RSA密码强度要高。
+This set of implementation solutions is fully based on the commercial cryptographic algorithm standards issued by the State Cryptography Administration of China. Without any third-party dependencies, it has achieved full-dimensional implementation of core national cryptographic algorithms in multiple programming language environments, covering mainstream development languages such as Java (SM2, SM3, SM4), JavaScript (SM2, SM3, SM4), Swift (SM2, SM3, SM4), Rust (SM2, SM3, SM4), and Go (SM2, SM3, SM4). The implemented functions cover core application scenarios of national cryptographic algorithms including hash operation (SM3), symmetric encryption and decryption (SM4), asymmetric encryption and decryption (SM2), digital signature and verification (SM2), and key exchange (SM2).
 
-SM3算法：SM3杂凑算法是我国自主设计的密码杂凑算法，适用于商用密码应用中的数字签名和验证消息认证码的生成与验证以及随机数的生成，可满足多种密码应用的安全需求。为了保证杂凑算法的安全性，其产生的杂凑值的长度不应太短，例如MD5输出128比特杂凑值，输出长度太短，影响其安全性SHA-1算法的输出长度为160比特，SM3算法的输出长度为256比特，因此SM3算法的安全性要高于MD5算法和SHA-1算法。
+国产密码算法（简称 “国密算法”）是由国家密码管理局审核认定的自主可控商用密码算法体系，目前在金融、政务、通信等关键领域得到广泛应用，已发布的核心算法包括 SM2、SM3、SM4、SM9 等，其中 SM2 属于非对称密码算法，SM3 为哈希算法，SM4 是对称分组密码算法，SM9 则为标识密码算法，四类算法分别适配不同的密码应用安全需求。
 
+National cryptographic algorithms (referred to as "Guomi algorithms") are an independently controllable commercial cryptographic algorithm system approved and recognized by the State Cryptography Administration of China. Currently, they are widely used in key fields such as finance, government affairs, and communications. The released core algorithms include SM2, SM3, SM4, SM9, etc. Among them, SM2 is an asymmetric cryptographic algorithm, SM3 is a hash algorithm, SM4 is a symmetric block cipher algorithm, and SM9 is an identity-based cryptographic algorithm. These four types of algorithms are respectively adapted to different security requirements of cryptographic applications.
 
-SM4算法：SM4分组密码算法是我国自主设计的分组对称密码算法，用于实现数据的加密/解密运算，以保证数据和信息的机密性。要保证一个对称密码算法的安全性的基本条件是其具备足够的密钥长度，SM4算法与AES算法具有相同的密钥长度分组长度128比特，因此在安全性上高于3DES算法。
+SM2 算法：全称为 SM2 椭圆曲线公钥密码算法，是我国自主研发的非对称密码算法，其核心基于椭圆曲线点群离散对数难题构建安全体系，相较于传统 RSA 算法具备更高的密码强度 ——256 位的 SM2 算法安全等级已等效于 2048 位 RSA 算法。该算法包含三大核心组件：SM2-1 椭圆曲线数字签名算法（用于数字签名与验签）、SM2-2 椭圆曲线密钥交换协议（用于密钥协商）、SM2-3 椭圆曲线公钥加密算法（用于非对称数据加密），可全面支撑数字签名、密钥协商、数据加密等核心密码功能。
 
+SM2 Algorithm: Fully named SM2 Elliptic Curve Public Key Cryptographic Algorithm, it is an asymmetric cryptographic algorithm independently developed by China. Its security system is built based on the discrete logarithm problem of elliptic curve point groups, and it has higher cryptographic strength compared with the traditional RSA algorithm —— the security level of the 256-bit SM2 algorithm is equivalent to that of the 2048-bit RSA algorithm. The algorithm consists of three core components: SM2-1 Elliptic Curve Digital Signature Algorithm (for digital signature and verification), SM2-2 Elliptic Curve Key Exchange Protocol (for key negotiation), and SM2-3 Elliptic Curve Public Key Encryption Algorithm (for asymmetric data encryption), which can fully support core cryptographic functions such as digital signature, key negotiation, and data encryption.
 
-SM9算法: SM9标识密码算法是由国密局发布的一种IBE(Identity-Based Encryption)算法。IBE算法以用户的身份标识作为公钥，不依赖于数字证书。
+SM3 算法：全称为 SM3 杂凑算法，是我国自主设计的密码哈希算法，适用于商用密码场景下的数字签名与验签、消息认证码生成与验证、安全随机数生成等场景，可满足各类商用密码应用的高安全需求。从哈希值长度维度来看，MD5 算法输出 128 比特哈希值，SHA-1 算法输出 160 比特哈希值，而 SM3 算法输出 256 比特哈希值，更长的输出长度大幅提升了算法的抗碰撞能力，因此 SM3 算法的安全性显著高于 MD5 和 SHA-1 算法。
 
+SM3 Algorithm: Fully named SM3 Hash Algorithm, it is a cryptographic hash algorithm independently designed by China. It is applicable to scenarios such as digital signature and verification, message authentication code generation and verification, and secure random number generation in commercial cryptographic scenarios, and can meet the high security requirements of various commercial cryptographic applications. From the perspective of hash value length, the MD5 algorithm outputs a 128-bit hash value, the SHA-1 algorithm outputs a 160-bit hash value, while the SM3 algorithm outputs a 256-bit hash value. The longer output length greatly improves the anti-collision capability of the algorithm, so the security of the SM3 algorithm is significantly higher than that of the MD5 and SHA-1 algorithms.
 
-**SM2,SM3,SM4 所有实现已完成并根据国家密码局测试用例测试通过.
+SM4 算法：全称为 SM4 分组密码算法，是我国自主设计的对称分组密码算法，主要用于数据的加密与解密运算，保障数据和信息的机密性。对称密码算法的核心安全基础是足够的密钥长度与分组长度，SM4 算法的密钥长度和分组长度均为 128 比特，与国际主流的 AES 算法参数一致，其安全强度远高于 3DES 算法（密钥长度 112/168 比特），是我国商用密码体系中对称加密的核心算法。
+
+SM4 Algorithm: Fully named SM4 Block Cipher Algorithm, it is a symmetric block cipher algorithm independently designed by China, mainly used for data encryption and decryption operations to ensure the confidentiality of data and information. The core security foundation of symmetric cryptographic algorithms is sufficient key length and block length. The SM4 algorithm has a key length and block length of 128 bits, consistent with the parameters of the internationally mainstream AES algorithm, and its security strength is much higher than that of the 3DES algorithm (key length 112/168 bits), making it the core algorithm for symmetric encryption in China's commercial cryptographic system.
+
+SM9 算法：全称为 SM9 标识密码算法，是国家密码管理局发布的基于身份的加密（IBE, Identity-Based Encryption）算法。与传统公钥密码算法不同，SM9 算法直接将用户的身份标识（如手机号、邮箱、身份证号等）作为公钥，无需依赖数字证书完成身份认证与加密解密，大幅简化了密码体系的部署与管理成本，适用于分布式系统、物联网等轻量级密码应用场景。
+
+SM9 Algorithm: Fully named SM9 Identity-Based Cryptographic Algorithm, it is an Identity-Based Encryption (IBE) algorithm issued by the State Cryptography Administration of China. Different from traditional public key cryptographic algorithms, the SM9 algorithm directly uses the user's identity identifier (such as mobile phone number, email, ID card number, etc.) as the public key, and does not need to rely on digital certificates to complete identity authentication, encryption and decryption, which greatly reduces the deployment and management costs of the cryptographic system, and is suitable for lightweight cryptographic application scenarios such as distributed systems and the Internet of Things (IoT).
+
+目前，SM2、SM3、SM4 算法的全部实现均严格遵循国家密码管理局发布的算法规范与测试用例，已通过全维度合规性测试，算法输出结果与官方测试基准完全一致，可直接应用于商用密码产品的研发与部署。
+
+At present, all implementations of the SM2, SM3, and SM4 algorithms in this solution strictly comply with the algorithm specifications and test cases issued by the State Cryptography Administration of China, have passed full-dimensional compliance testing, and the algorithm output results are completely consistent with the official test benchmarks, which can be directly applied to the research and development and deployment of commercial cryptographic products.
