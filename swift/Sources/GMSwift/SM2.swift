@@ -55,7 +55,113 @@ let SM2_GY = BigInt256(
     0xBC3736A2F4F6779C
 )
 
-// MARK: - 素数域元素
+// MARK: - SM2素数域快速模约减
+// SM2 素数 p = 2^256 - 2^224 - 2^96 + 2^64 - 1
+// 利用 p 的特殊结构实现快速约减，避免通用的逐位试商
+
+/// SM2素数域快速模约减
+/// 输入：512位乘积（8个UInt64，小端序）
+/// 输出：result mod p
+///
+/// SM2 p = FFFFFFFE_FFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFF_00000000_FFFFFFFF_FFFFFFFF
+/// 用32位字表示输入为 c15..c0（大端），利用 2^256 ≡ 2^224 + 2^96 - 2^64 + 1 (mod p)
+/// 参考《GMT 0003.1-2012》标准的快速约减公式
+@inline(__always)
+func sm2ModReduceP(_ v: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64)) -> BigInt256 {
+    // 将8个UInt64分解为16个UInt32（小端序）
+    let c0  = Int64(UInt32(truncatingIfNeeded: v.0))
+    let c1  = Int64(v.0 >> 32)
+    let c2  = Int64(UInt32(truncatingIfNeeded: v.1))
+    let c3  = Int64(v.1 >> 32)
+    let c4  = Int64(UInt32(truncatingIfNeeded: v.2))
+    let c5  = Int64(v.2 >> 32)
+    let c6  = Int64(UInt32(truncatingIfNeeded: v.3))
+    let c7  = Int64(v.3 >> 32)
+    let c8  = Int64(UInt32(truncatingIfNeeded: v.4))
+    let c9  = Int64(v.4 >> 32)
+    let c10 = Int64(UInt32(truncatingIfNeeded: v.5))
+    let c11 = Int64(v.5 >> 32)
+    let c12 = Int64(UInt32(truncatingIfNeeded: v.6))
+    let c13 = Int64(v.6 >> 32)
+    let c14 = Int64(UInt32(truncatingIfNeeded: v.7))
+    let c15 = Int64(v.7 >> 32)
+
+    // SM2快速约减公式
+    // p = 2^256 - 2^224 - 2^96 + 2^64 - 1
+    // 即 2^256 ≡ 2^224 + 2^96 - 2^64 + 1 (mod p)
+    //
+    // 通过递归替换 2^(32*k) (k>=8) 为低阶项，得到完整的系数表：
+    // c8:  w0(+1) w2(-1) w3(+1) w7(+1)
+    // c9:  w0(+1) w1(+1) w2(-1) w4(+1) w7(+1)
+    // c10: w0(+1) w1(+1) w5(+1) w7(+1)
+    // c11: w0(+1) w1(+1) w3(+1) w6(+1) w7(+1)
+    // c12: w0(+1) w1(+1) w3(+1) w4(+1) w7(+2)
+    // c13: w0(+2) w1(+1) w2(-1) w3(+2) w4(+1) w5(+1) w7(+2)
+    // c14: w0(+2) w1(+2) w2(-1) w3(+1) w4(+2) w5(+1) w6(+1) w7(+2)
+    // c15: w0(+2) w1(+2) w3(+1) w4(+1) w5(+2) w6(+1) w7(+3)
+    // t7 = c7 + c8 + c9 + c10 + c11 + 2*c12 + 2*c13 + 2*c14 + 3*c15
+
+    var t0 = c0 + c8 + c9 + c10 + c11 + c12 + 2*c13 + 2*c14 + 2*c15
+    var t1 = c1 + c9 + c10 + c11 + c12 + c13 + 2*c14 + 2*c15
+    var t2 = c2 - c8 - c9 - c13 - c14
+    var t3 = c3 + c8 + c11 + c12 + 2*c13 + c14 + c15
+    var t4 = c4 + c9 + c12 + c13 + 2*c14 + c15
+    var t5 = c5 + c10 + c13 + c14 + 2*c15
+    var t6 = c6 + c11 + c14 + c15
+    var t7 = c7 + c8 + c9 + c10 + c11 + 2*c12 + 2*c13 + 2*c14 + 3*c15
+
+    // 进位传播（从低到高），确保每个 t[i] 在 [0, 2^32) 范围内
+    @inline(__always)
+    func propagate(_ lo: inout Int64, _ hi: inout Int64) {
+        // 算术右移32位实现有符号的进位/借位传播
+        hi += lo >> 32
+        lo &= 0xFFFFFFFF
+        // 确保 lo >= 0（处理负数取模）
+        if lo < 0 {
+            lo += 0x100000000
+            hi -= 1
+        }
+    }
+
+    propagate(&t0, &t1)
+    propagate(&t1, &t2)
+    propagate(&t2, &t3)
+    propagate(&t3, &t4)
+    propagate(&t4, &t5)
+    propagate(&t5, &t6)
+    propagate(&t6, &t7)
+
+    var result = BigInt256(
+        UInt64(t0) | (UInt64(t1) << 32),
+        UInt64(t2) | (UInt64(t3) << 32),
+        UInt64(t4) | (UInt64(t5) << 32),
+        UInt64(t6) | (UInt64(t7 & 0xFFFFFFFF) << 32)
+    )
+    var extra = t7 >> 32
+
+    // 处理最终的约减：真实值 V = result + extra * 2^256
+    // 每次减去p：V' = V - p，若result < p则borrow使extra减1
+    while extra > 0 || (extra == 0 && result >= SM2_P) {
+        let (r, borrow) = result.sub(SM2_P)
+        result = r
+        if borrow { extra -= 1 }
+    }
+    while extra < 0 {
+        let (r, carry) = result.add(SM2_P)
+        result = r
+        if carry { extra += 1 }
+    }
+
+    return result
+}
+
+/// SM2阶n的快速模约减不适用特殊结构，使用通用方法
+@inline(__always)
+func sm2ModReduceN(_ v: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64)) -> BigInt256 {
+    return BigInt256.modReduce512(v, SM2_N)
+}
+
+// MARK: - 素数域元素（使用SM2快速约减）
 
 public struct FpElement: Equatable {
     public var value: BigInt256
@@ -68,50 +174,64 @@ public struct FpElement: Equatable {
         }
     }
 
+    // 内部构造，不检查范围（已知在域内）
+    @inline(__always)
+    init(unchecked value: BigInt256) {
+        self.value = value
+    }
+
     static func fromHex(_ hex: String) -> FpElement {
         return FpElement(BigInt256.fromHex(hex))
     }
 
-    static let zero = FpElement(BigInt256.zero)
-    static let one = FpElement(BigInt256.one)
+    static let zero = FpElement(unchecked: BigInt256.zero)
+    static let one = FpElement(unchecked: BigInt256.one)
 
     var isZero: Bool { return value.isZero }
     var isOne: Bool { return value.isOne }
 
+    @inline(__always)
     func add(_ other: FpElement) -> FpElement {
-        return FpElement(value.modAdd(other.value, SM2_P))
+        return FpElement(unchecked: value.modAdd(other.value, SM2_P))
     }
 
+    @inline(__always)
     func subtract(_ other: FpElement) -> FpElement {
-        return FpElement(value.modSub(other.value, SM2_P))
+        return FpElement(unchecked: value.modSub(other.value, SM2_P))
     }
 
+    @inline(__always)
     func multiply(_ other: FpElement) -> FpElement {
-        return FpElement(value.modMul(other.value, SM2_P))
+        let product = value.mul(other.value)
+        return FpElement(unchecked: sm2ModReduceP(product))
     }
 
+    @inline(__always)
     func square() -> FpElement {
-        return FpElement(value.modSquare(SM2_P))
+        let product = value.square()
+        return FpElement(unchecked: sm2ModReduceP(product))
     }
 
     func negate() -> FpElement {
         if isZero { return self }
-        return FpElement(SM2_P.modSub(value, SM2_P))
+        return FpElement(unchecked: SM2_P.modSub(value, SM2_P))
     }
 
     func invert() -> FpElement {
         if isZero { fatalError("Cannot invert zero") }
-        return FpElement(value.modInverse(SM2_P))
+        return FpElement(unchecked: value.modInverse(SM2_P))
     }
 
     func divide(_ other: FpElement) -> FpElement {
         return multiply(other.invert())
     }
 
+    @inline(__always)
     func double() -> FpElement {
         return add(self)
     }
 
+    @inline(__always)
     func triple() -> FpElement {
         return double().add(self)
     }
@@ -129,7 +249,154 @@ public struct FpElement: Equatable {
     }
 }
 
-// MARK: - 椭圆曲线点
+// MARK: - Jacobian坐标椭圆曲线点
+// 使用Jacobian坐标 (X, Y, Z)，对应仿射坐标 (X/Z^2, Y/Z^3)
+// 优势：点加和倍点不需要昂贵的模逆运算
+
+struct JacobianPoint {
+    var x: FpElement
+    var y: FpElement
+    var z: FpElement
+
+    static let infinity = JacobianPoint(x: .one, y: .one, z: .zero)
+
+    var isInfinity: Bool { return z.isZero }
+
+    /// Jacobian坐标点倍点
+    /// 参考: "Guide to Elliptic Curve Cryptography" Algorithm 3.21
+    /// Cost: 4M + 4S (使用a = p - 3优化)
+    @inline(__always)
+    func twice() -> JacobianPoint {
+        if isInfinity || y.isZero {
+            return JacobianPoint.infinity
+        }
+
+        let x1 = self.x, y1 = self.y, z1 = self.z
+
+        // SM2 的 a = p - 3，可以利用 3*x1^2 + a*z1^4 = 3*(x1 - z1^2)*(x1 + z1^2)
+        let z1sq = z1.square()
+        let m = x1.subtract(z1sq).triple().multiply(x1.add(z1sq))
+
+        let y1sq = y1.square()
+        let s = x1.multiply(y1sq).double().double()  // 4*x1*y1^2
+
+        let x3 = m.square().subtract(s.double())
+        let y1sq_sq = y1sq.square()
+        let y3 = m.multiply(s.subtract(x3)).subtract(y1sq_sq.double().double().double())  // m*(s-x3) - 8*y1^4
+        let z3 = y1.double().multiply(z1)
+
+        return JacobianPoint(x: x3, y: y3, z: z3)
+    }
+
+    /// Jacobian坐标点加法（混合加法，Q是仿射坐标）
+    /// Cost: 8M + 3S（比完整Jacobian加法更快）
+    @inline(__always)
+    func addAffine(_ qx: FpElement, _ qy: FpElement) -> JacobianPoint {
+        if isInfinity {
+            return JacobianPoint(x: qx, y: qy, z: .one)
+        }
+
+        let z1sq = z.square()
+        let u2 = qx.multiply(z1sq)
+        let s2 = qy.multiply(z1sq).multiply(z)
+
+        let h = u2.subtract(x)
+        let r = s2.subtract(y)
+
+        if h.isZero {
+            if r.isZero {
+                return self.twice()
+            }
+            return JacobianPoint.infinity
+        }
+
+        let h2 = h.square()
+        let h3 = h.multiply(h2)
+        let u1h2 = x.multiply(h2)
+
+        let x3 = r.square().subtract(h3).subtract(u1h2.double())
+        let y3 = r.multiply(u1h2.subtract(x3)).subtract(y.multiply(h3))
+        let z3 = z.multiply(h)
+
+        return JacobianPoint(x: x3, y: y3, z: z3)
+    }
+
+    /// Jacobian坐标完整点加法
+    /// Cost: 12M + 4S
+    func addJacobian(_ other: JacobianPoint) -> JacobianPoint {
+        if self.isInfinity { return other }
+        if other.isInfinity { return self }
+
+        let z1sq = z.square()
+        let z2sq = other.z.square()
+
+        let u1 = x.multiply(z2sq)
+        let u2 = other.x.multiply(z1sq)
+        let s1 = y.multiply(z2sq).multiply(other.z)
+        let s2 = other.y.multiply(z1sq).multiply(z)
+
+        let h = u2.subtract(u1)
+        let r = s2.subtract(s1)
+
+        if h.isZero {
+            if r.isZero {
+                return self.twice()
+            }
+            return JacobianPoint.infinity
+        }
+
+        let h2 = h.square()
+        let h3 = h.multiply(h2)
+        let u1h2 = u1.multiply(h2)
+
+        let x3 = r.square().subtract(h3).subtract(u1h2.double())
+        let y3 = r.multiply(u1h2.subtract(x3)).subtract(s1.multiply(h3))
+        let z3 = z.multiply(other.z).multiply(h)
+
+        return JacobianPoint(x: x3, y: y3, z: z3)
+    }
+
+    /// 转换到仿射坐标（需要一次模逆）
+    func toAffine() -> (FpElement, FpElement)? {
+        if isInfinity { return nil }
+        let zInv = z.invert()
+        let zInv2 = zInv.square()
+        let zInv3 = zInv2.multiply(zInv)
+        let ax = x.multiply(zInv2)
+        let ay = y.multiply(zInv3)
+        return (ax, ay)
+    }
+
+    /// 标量乘法（使用wNAF或简单的double-and-add）
+    func multiply(_ k: BigInt256) -> JacobianPoint {
+        if k.isZero || isInfinity {
+            return JacobianPoint.infinity
+        }
+        if k.isOne {
+            return self
+        }
+
+        // 转为仿射坐标用于混合加法（如果已经是仿射的话更快）
+        guard let (ax, ay) = self.toAffine() else {
+            return JacobianPoint.infinity
+        }
+
+        var result = JacobianPoint.infinity
+        let bitLen = k.bitLength
+
+        // 从最高位到最低位的double-and-add（比从低到高更适合混合加法）
+        for i in stride(from: bitLen - 1, through: 0, by: -1) {
+            result = result.twice()
+            if k.getBit(i) {
+                result = result.addAffine(ax, ay)
+            }
+        }
+
+        return result
+    }
+}
+
+// MARK: - 椭圆曲线点（仿射坐标，公开接口）
 
 public class ECPoint: Equatable {
     public var x: FpElement
@@ -217,66 +484,36 @@ public class ECPoint: Equatable {
         return ECPoint(x: x, y: y.negate())
     }
 
-    func add(_ other: ECPoint) -> ECPoint {
-        if self.infinity {
-            return other
-        }
-        if other.infinity {
-            return self
-        }
+    // 转换为Jacobian坐标
+    func toJacobian() -> JacobianPoint {
+        if infinity { return JacobianPoint.infinity }
+        return JacobianPoint(x: x, y: y, z: .one)
+    }
 
-        let x1 = self.x
-        let y1 = self.y
-        let x2 = other.x
-        let y2 = other.y
-
-        let dx = x2.subtract(x1)
-        let dy = y2.subtract(y1)
-
-        if dx.isZero {
-            if dy.isZero {
-                return self.twice()
-            }
+    // 从Jacobian坐标转换回仿射坐标
+    static func fromJacobian(_ jp: JacobianPoint) -> ECPoint {
+        guard let (ax, ay) = jp.toAffine() else {
             return ECPoint.infinityPoint()
         }
+        return ECPoint(x: ax, y: ay)
+    }
 
-        // lambda = (y2 - y1) / (x2 - x1)
-        let lambda = dy.divide(dx)
+    func add(_ other: ECPoint) -> ECPoint {
+        if self.infinity { return other }
+        if other.infinity { return self }
 
-        // x3 = lambda^2 - x1 - x2
-        let x3 = lambda.square().subtract(x1).subtract(x2)
-
-        // y3 = lambda * (x1 - x3) - y1
-        let y3 = lambda.multiply(x1.subtract(x3)).subtract(y1)
-
-        return ECPoint(x: x3, y: y3)
+        // 使用Jacobian加法
+        let jp1 = self.toJacobian()
+        let jp2 = other.toJacobian()
+        let result = jp1.addJacobian(jp2)
+        return ECPoint.fromJacobian(result)
     }
 
     func twice() -> ECPoint {
-        if infinity {
-            return self
-        }
-
-        let y1 = self.y
-        if y1.isZero {
-            return ECPoint.infinityPoint()
-        }
-
-        let x1 = self.x
-        let x1Sq = x1.square()
-
-        // lambda = (3 * x1^2 + a) / (2 * y1)
-        let numerator = x1Sq.triple().add(FpElement(SM2_A))
-        let denominator = y1.double()
-        let lambda = numerator.divide(denominator)
-
-        // x3 = lambda^2 - 2*x1
-        let x3 = lambda.square().subtract(x1.double())
-
-        // y3 = lambda * (x1 - x3) - y1
-        let y3 = lambda.multiply(x1.subtract(x3)).subtract(y1)
-
-        return ECPoint(x: x3, y: y3)
+        if infinity { return self }
+        let jp = self.toJacobian()
+        let result = jp.twice()
+        return ECPoint.fromJacobian(result)
     }
 
     func subtract(_ other: ECPoint) -> ECPoint {
@@ -287,23 +524,14 @@ public class ECPoint: Equatable {
         if k.isZero || infinity {
             return ECPoint.infinityPoint()
         }
-
         if k.isOne {
             return self
         }
 
-        var result = ECPoint.infinityPoint()
-        var addend = self
-        let bitLen = k.bitLength
-
-        for i in 0..<bitLen {
-            if k.getBit(i) {
-                result = result.add(addend)
-            }
-            addend = addend.twice()
-        }
-
-        return result
+        // 使用Jacobian坐标进行标量乘法，仅最后转换回仿射坐标
+        let jp = self.toJacobian()
+        let result = jp.multiply(k)
+        return ECPoint.fromJacobian(result)
     }
 
     func isOnCurve() -> Bool {
@@ -578,16 +806,19 @@ public class SM2 {
         }
 
         // (x1, y1) = [s]G + [t]PA
-        let sg = ECPoint.generator().multiply(s)
-        let tpa = pubPoint.multiply(t)
-        let point = sg.add(tpa)
+        // 使用Jacobian坐标做双标量乘法
+        let gJac = ECPoint.generator().toJacobian()
+        let sg = gJac.multiply(s)
+        let pubJac = pubPoint.toJacobian()
+        let tpa = pubJac.multiply(t)
+        let pointJac = sg.addJacobian(tpa)
 
-        if point.isInfinity {
+        guard let (px, _) = pointJac.toAffine() else {
             return false
         }
 
         // R = (e + x1) mod n
-        let computedR = e.modAdd(point.x.toBigInt(), SM2_N)
+        let computedR = e.modAdd(px.toBigInt(), SM2_N)
 
         return r == computedR
     }
