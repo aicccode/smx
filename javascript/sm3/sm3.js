@@ -1,9 +1,14 @@
-import { stringToBytes, bytesToHex, bytesToIntBE, intToBytesBE } from '../common/utils.js'
+import {
+  stringToBytes,
+  bytesToHex,
+  bytesToIntBE,
+  intToBytesBE,
+} from '../common/utils.js'
 
 /** SM3 初始向量 */
 const IV = new Uint32Array([
-  0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600,
-  0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E
+  0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa,
+  0xe38dee4d, 0xb0fb0e4e,
 ])
 
 /** 32 位循环左移 */
@@ -12,16 +17,24 @@ function rotl(x, n) {
 }
 
 /** 置换函数 P0 */
-function P0(x) { return x ^ rotl(x, 9) ^ rotl(x, 17) }
+function P0(x) {
+  return x ^ rotl(x, 9) ^ rotl(x, 17)
+}
 
 /** 置换函数 P1 */
-function P1(x) { return x ^ rotl(x, 15) ^ rotl(x, 23) }
+function P1(x) {
+  return x ^ rotl(x, 15) ^ rotl(x, 23)
+}
 
 /** 布尔函数 FF (j >= 16) */
-function FF1(x, y, z) { return (x & y) | (x & z) | (y & z) }
+function FF1(x, y, z) {
+  return (x & y) | (x & z) | (y & z)
+}
 
 /** 布尔函数 GG (j >= 16) */
-function GG1(x, y, z) { return (x & y) | (~x & z) }
+function GG1(x, y, z) {
+  return (x & y) | (~x & z)
+}
 
 /**
  * SM3 哈希算法
@@ -39,9 +52,9 @@ function GG1(x, y, z) { return (x & y) | (~x & z) }
 export class SM3 {
   constructor() {
     this._buf = new Uint8Array(64) // 512-bit 块缓冲
-    this._pos = 0                  // 缓冲区写入位置
-    this._len = 0                  // 已处理字节总长度
-    this._V = new Uint32Array(IV)  // 当前哈希状态
+    this._pos = 0 // 缓冲区写入位置
+    this._len = 0 // 已处理字节总长度
+    this._V = new Uint32Array(IV) // 当前哈希状态
     this._finished = false
   }
 
@@ -138,10 +151,14 @@ export class SM3 {
   }
 
   /** @deprecated 使用 hexDigest() */
-  getHashCode() { return this._hashValue }
+  getHashCode() {
+    return this._hashValue
+  }
 
   /** @deprecated 使用 digest() */
-  getHashBytes() { return this._hashBytes }
+  getHashBytes() {
+    return this._hashBytes
+  }
 
   // ---- 内部方法 ----
 
@@ -173,7 +190,10 @@ export class SM3 {
       w[j] = bytesToIntBE(block, j * 4)
     }
     for (let j = 16; j < 68; j++) {
-      w[j] = P1(w[j - 16] ^ w[j - 9] ^ rotl(w[j - 3], 15)) ^ rotl(w[j - 13], 7) ^ w[j - 6]
+      w[j] =
+        P1(w[j - 16] ^ w[j - 9] ^ rotl(w[j - 3], 15)) ^
+        rotl(w[j - 13], 7) ^
+        w[j - 6]
     }
 
     const w2 = new Int32Array(64)
@@ -182,23 +202,29 @@ export class SM3 {
     }
 
     // 压缩
-    let A = this._V[0], B = this._V[1], C = this._V[2], D = this._V[3]
-    let E = this._V[4], F = this._V[5], G = this._V[6], H = this._V[7]
+    let A = this._V[0],
+      B = this._V[1],
+      C = this._V[2],
+      D = this._V[3]
+    let E = this._V[4],
+      F = this._V[5],
+      G = this._V[6],
+      H = this._V[7]
 
     for (let j = 0; j < 64; j++) {
       const A12 = rotl(A, 12)
-      const Tj = j < 16
-        ? rotl(0x79CC4519, j)
-        : rotl(0x7A879D8A, j % 32)
+      const Tj = j < 16 ? rotl(0x79cc4519, j) : rotl(0x7a879d8a, j % 32)
       const SS1 = rotl((A12 + E + Tj) | 0, 7)
       const SS2 = SS1 ^ A12
 
-      const TT1 = j < 16
-        ? ((A ^ B ^ C) + D + SS2 + w2[j]) | 0
-        : (FF1(A, B, C) + D + SS2 + w2[j]) | 0
-      const TT2 = j < 16
-        ? ((E ^ F ^ G) + H + SS1 + w[j]) | 0
-        : (GG1(E, F, G) + H + SS1 + w[j]) | 0
+      const TT1 =
+        j < 16
+          ? ((A ^ B ^ C) + D + SS2 + w2[j]) | 0
+          : (FF1(A, B, C) + D + SS2 + w2[j]) | 0
+      const TT2 =
+        j < 16
+          ? ((E ^ F ^ G) + H + SS1 + w[j]) | 0
+          : (GG1(E, F, G) + H + SS1 + w[j]) | 0
 
       D = C
       C = rotl(B, 9)

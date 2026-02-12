@@ -1,6 +1,12 @@
 import { BigInteger, SecureRandom } from './biginteger.js'
 import { ECCurveFp } from './ec.js'
-import { bytesToHex, hexToBytes, stringToBytes, bytesToString, leftPad } from '../common/utils.js'
+import {
+  bytesToHex,
+  hexToBytes,
+  stringToBytes,
+  bytesToString,
+  leftPad,
+} from '../common/utils.js'
 
 const rng = new SecureRandom()
 const { curve, G, n } = generateEcparam()
@@ -18,16 +24,30 @@ export function getGlobalCurve() {
  * 生成 SM2 推荐椭圆曲线参数
  */
 export function generateEcparam() {
-  const p = new BigInteger('FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF', 16)
-  const a = new BigInteger('FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFC', 16)
-  const b = new BigInteger('28E9FA9E9D9F5E344D5A9E4BCF6509A7F39789F515AB8F92DDBCBD414D940E93', 16)
+  const p = new BigInteger(
+    'FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF',
+    16,
+  )
+  const a = new BigInteger(
+    'FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFC',
+    16,
+  )
+  const b = new BigInteger(
+    '28E9FA9E9D9F5E344D5A9E4BCF6509A7F39789F515AB8F92DDBCBD414D940E93',
+    16,
+  )
   const curve = new ECCurveFp(p, a, b)
 
-  const gxHex = '32C4AE2C1F1981195F9904466A39C9948FE30BBFF2660BE1715A4589334C74C7'
-  const gyHex = 'BC3736A2F4F6779C59BDCEE36B692153D0A9877CC62A474002DF32E52139F0A0'
+  const gxHex =
+    '32C4AE2C1F1981195F9904466A39C9948FE30BBFF2660BE1715A4589334C74C7'
+  const gyHex =
+    'BC3736A2F4F6779C59BDCEE36B692153D0A9877CC62A474002DF32E52139F0A0'
   const G = curve.decodePointHex('04' + gxHex + gyHex)
 
-  const n = new BigInteger('FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54123', 16)
+  const n = new BigInteger(
+    'FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54123',
+    16,
+  )
   const w = Math.ceil(n.bitLength() / 2.0) - 1
 
   return { curve, G, n, w }
@@ -41,7 +61,11 @@ export function generateKeyPairHex() {
   let d
   do {
     d = new BigInteger(n.bitLength(), rng)
-  } while (d.compareTo(TWO) < 0 || d.compareTo(n) >= 0 || getWidth(d) < minWidth)
+  } while (
+    d.compareTo(TWO) < 0 ||
+    d.compareTo(n) >= 0 ||
+    getWidth(d) < minWidth
+  )
 
   const Q = G.multiply(d)
   const Px = bigIntegerToHex(Q.getX().toBigInteger())
@@ -49,7 +73,7 @@ export function generateKeyPairHex() {
 
   return {
     privateKey: d.toRadix(16),
-    publicKey: '04' + Px + Py
+    publicKey: '04' + Px + Py,
   }
 }
 
@@ -90,8 +114,11 @@ export function compressPublicKeyHex(s) {
 export function verifyPublicKey(publicKey) {
   const point = curve.decodePointHex(publicKey)
   if (!point) return false
-  const x = point.getX(), y = point.getY()
-  return y.square().equals(x.multiply(x.square()).add(x.multiply(curve.a)).add(curve.b))
+  const x = point.getX(),
+    y = point.getY()
+  return y
+    .square()
+    .equals(x.multiply(x.square()).add(x.multiply(curve.a)).add(curve.b))
 }
 
 /**
@@ -106,7 +133,13 @@ export function comparePublicKeyHex(publicKey1, publicKey2) {
 }
 
 // ---- 重导出公共工具函数 ----
-export { bytesToHex as bytes2hex, hexToBytes, stringToBytes, bytesToString as bytesToUTF8String, leftPad }
+export {
+  bytesToHex as bytes2hex,
+  hexToBytes,
+  stringToBytes,
+  bytesToString as bytesToUTF8String,
+  leftPad,
+}
 
 /**
  * 十六进制串 → 有符号字节数组（兼容旧 API）
@@ -125,8 +158,10 @@ export function hexToArray(hexStr) {
  * 字节数组 → 十六进制串（兼容旧 API）
  */
 export function arrayToHex(arr) {
-  return arr.map(item => {
-    const h = (item & 0xff).toString(16)
-    return h.length === 1 ? '0' + h : h
-  }).join('')
+  return arr
+    .map((item) => {
+      const h = (item & 0xff).toString(16)
+      return h.length === 1 ? '0' + h : h
+    })
+    .join('')
 }

@@ -2,7 +2,8 @@ import { getSM3, SM3 } from '../sm3/sm3.js'
 import { getSM4, SM4 } from '../sm4/sm4.js'
 import { getSM2 } from '../sm2/sm2.js'
 
-let passed = 0, failed = 0
+let passed = 0,
+  failed = 0
 
 function assertEqual(name, a, b) {
   if (a !== b) {
@@ -32,17 +33,33 @@ console.log('\n=== SM3 ===')
   // 旧 API
   const sm3 = getSM3()
   sm3.finish()
-  assertEqual('SM3("") via getSM3', sm3.getHashCode(), '1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B')
+  assertEqual(
+    'SM3("") via getSM3',
+    sm3.getHashCode(),
+    '1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B',
+  )
 }
 {
   const sm3 = getSM3()
   sm3.updateString('abc').finish()
-  assertEqual('SM3("abc") via getSM3', sm3.getHashCode(), '66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0')
+  assertEqual(
+    'SM3("abc") via getSM3',
+    sm3.getHashCode(),
+    '66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0',
+  )
 }
 {
   // 新 API
-  assertEqual('SM3.hashHex("")', SM3.hashHex(''), '1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B')
-  assertEqual('SM3.hashHex("abc")', SM3.hashHex('abc'), '66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0')
+  assertEqual(
+    'SM3.hashHex("")',
+    SM3.hashHex(''),
+    '1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B',
+  )
+  assertEqual(
+    'SM3.hashHex("abc")',
+    SM3.hashHex('abc'),
+    '66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0',
+  )
 }
 
 // ---- SM4 tests ----
@@ -53,7 +70,11 @@ console.log('\n=== SM4 ===')
   sm4.setKey('this is the key', 'this is the iv', false)
   const msg = '国密SM4对称加密算法'
   const c = sm4.encrypt(msg)
-  assertEqual('SM4 encrypt', c, '09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc')
+  assertEqual(
+    'SM4 encrypt',
+    c,
+    '09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc',
+  )
   const p = sm4.decrypt(c)
   assertEqual('SM4 round-trip', p, msg)
 }
@@ -63,7 +84,11 @@ console.log('\n=== SM4 ===')
   sm4.setKey('this is the key', 'this is the iv')
   const msg = '国密SM4对称加密算法'
   const c = sm4.encrypt(msg)
-  assertEqual('SM4 new API encrypt', c, '09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc')
+  assertEqual(
+    'SM4 new API encrypt',
+    c,
+    '09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc',
+  )
   assertEqual('SM4 new API decrypt', sm4.decrypt(c), msg)
 }
 
@@ -78,7 +103,10 @@ console.log('\n=== SM2 ===')
 
   // 从私钥推导公钥
   const pubKey = sm2.getPublicKeyFromPrivateKey(keypair.privateKey)
-  assertTrue('SM2 getPublicKeyFromPrivateKey starts with 04', pubKey.startsWith('04'))
+  assertTrue(
+    'SM2 getPublicKeyFromPrivateKey starts with 04',
+    pubKey.startsWith('04'),
+  )
   assertEqual('SM2 pubKey length', pubKey.length, 130)
 
   // 加密解密

@@ -50,7 +50,13 @@ function kdfStream(x2, y2) {
 
   function nextBlock() {
     const sm3 = new SM3()
-    const hvData = [...z, (ct >> 24) & 0xff, (ct >> 16) & 0xff, (ct >> 8) & 0xff, ct & 0xff]
+    const hvData = [
+      ...z,
+      (ct >> 24) & 0xff,
+      (ct >> 16) & 0xff,
+      (ct >> 8) & 0xff,
+      ct & 0xff,
+    ]
     sm3.updateBytes(hvData, 0, hvData.length)
     t = sm3.finish().getHashBytes()
     ct++
@@ -63,7 +69,7 @@ function kdfStream(x2, y2) {
     xorByte(b) {
       if (offset === t.length) nextBlock()
       return b ^ (t[offset++] & 0xff)
-    }
+    },
   }
 }
 
@@ -73,7 +79,6 @@ function kdfStream(x2, y2) {
  * 提供：加密、解密、签名、验签、密钥交换
  */
 class SM2 {
-
   // ---- 加密 / 解密 ----
 
   /**
@@ -83,7 +88,10 @@ class SM2 {
    * @returns {string} 密文 hex (C1 || C3 || C2)
    */
   sm2Encrypt(msg, publicKey) {
-    msg = typeof msg === 'string' ? Array.from(util.stringToBytes(msg)) : Array.prototype.slice.call(msg)
+    msg =
+      typeof msg === 'string'
+        ? Array.from(util.stringToBytes(msg))
+        : Array.prototype.slice.call(msg)
 
     const keypair = util.generateKeyPairHex()
     const k = new BigInteger(keypair.privateKey, 16)
@@ -96,7 +104,11 @@ class SM2 {
 
     // C3 = SM3(x2 || msg || y2)
     const sm3c3 = new SM3()
-    sm3c3.updateBytes([].concat(x2, msg, y2), 0, x2.length + msg.length + y2.length)
+    sm3c3.updateBytes(
+      [].concat(x2, msg, y2),
+      0,
+      x2.length + msg.length + y2.length,
+    )
     const c3 = sm3c3.finish().getHashCode().toLowerCase()
 
     // C2 = msg XOR KDF(x2 || y2)
@@ -136,7 +148,11 @@ class SM2 {
 
     // 验证 C3
     const sm3c3 = new SM3()
-    sm3c3.updateBytes([].concat(x2, msg, y2), 0, x2.length + msg.length + y2.length)
+    sm3c3.updateBytes(
+      [].concat(x2, msg, y2),
+      0,
+      x2.length + msg.length + y2.length,
+    )
     const checkC3 = sm3c3.finish().getHashCode().toLowerCase()
 
     return checkC3 === c3.toLowerCase() ? util.bytesToUTF8String(msg) : ''
@@ -154,8 +170,9 @@ class SM2 {
   sm2Sign(userId, privatekey, msg) {
     const intPrivateKey = new BigInteger(privatekey, 16)
     const pA = G.multiply(intPrivateKey)
-    const pAHex = util.leftPad(pA.getX().toBigInteger().toString(16), 64) +
-                  util.leftPad(pA.getY().toBigInteger().toString(16), 64)
+    const pAHex =
+      util.leftPad(pA.getX().toBigInteger().toString(16), 64) +
+      util.leftPad(pA.getY().toBigInteger().toString(16), 64)
 
     const zA = this.userSM3Z(pAHex, userId)
     const sm3 = getSM3()
@@ -173,7 +190,8 @@ class SM2 {
         kp = curve.decodePointHex(keypair.publicKey)
         r = e.add(kp.getX().toBigInteger()).mod(n)
       } while (
-        r.equals(ZERO) || r.add(k).equals(n) ||
+        r.equals(ZERO) ||
+        r.add(k).equals(n) ||
         r.toRadix(16).length !== 64 ||
         kp.getX().toBigInteger().toRadix(16).length !== 64 ||
         kp.getY().toBigInteger().toRadix(16).length !== 64
@@ -210,9 +228,10 @@ class SM2 {
     if (t.equals(ZERO)) return false
 
     let x1y1 = G.multiply(s)
-    const userKey = publicKey.length === 128
-      ? G.curve.decodePointHex('04' + publicKey)
-      : G.curve.decodePointHex(publicKey)
+    const userKey =
+      publicKey.length === 128
+        ? G.curve.decodePointHex('04' + publicKey)
+        : G.curve.decodePointHex(publicKey)
     x1y1 = x1y1.add(userKey.multiply(t))
     const R = e.add(x1y1.getX().toBigInteger()).mod(n)
 
@@ -235,7 +254,12 @@ class SM2 {
     if (!curve.decodePointHex(Ra).isValid()) throw new Error('Ra is not valid')
 
     const x1_ = this._calcX(w, curve.decodePointHex(Ra).getX().toBigInteger())
-    const V = this._calcPoint(tb, x1_, curve.decodePointHex(pA), curve.decodePointHex(Ra))
+    const V = this._calcPoint(
+      tb,
+      x1_,
+      curve.decodePointHex(pA),
+      curve.decodePointHex(Ra),
+    )
 
     if (V.isInfinity()) throw new Error('V is invalid point')
 
@@ -250,7 +274,7 @@ class SM2 {
       Kb: util.bytes2hex(Kb),
       V: V.x.toBigInteger().toRadix(16) + V.y.toBigInteger().toRadix(16),
       Za: util.bytes2hex(Za),
-      Zb: util.bytes2hex(Zb)
+      Zb: util.bytes2hex(Zb),
     }
   }
 
@@ -258,7 +282,14 @@ class SM2 {
    * B 侧检查 Sa
    */
   checkSa(V, Za, Zb, Ra, Rb, Sa) {
-    const S2 = this._createS(0x03, curve.decodePointHex('04' + V), util.hexToArray(Za), util.hexToArray(Zb), curve.decodePointHex(Ra), Rb)
+    const S2 = this._createS(
+      0x03,
+      curve.decodePointHex('04' + V),
+      util.hexToArray(Za),
+      util.hexToArray(Zb),
+      curve.decodePointHex(Ra),
+      Rb,
+    )
     return Sa === util.bytes2hex(S2)
   }
 
@@ -299,9 +330,10 @@ class SM2 {
     const gx = bigIntTo32Bytes(G.getX().toBigInteger())
     const gy = bigIntTo32Bytes(G.getY().toBigInteger())
 
-    const point = publicKey.length === 128
-      ? G.curve.decodePointHex('04' + publicKey)
-      : G.curve.decodePointHex(publicKey)
+    const point =
+      publicKey.length === 128
+        ? G.curve.decodePointHex('04' + publicKey)
+        : G.curve.decodePointHex(publicKey)
     const px = bigIntTo32Bytes(point.getX().toBigInteger())
     const py = bigIntTo32Bytes(point.getY().toBigInteger())
 
@@ -368,7 +400,8 @@ class SM2 {
       sm3.updateBytes(ctBytes, 0, 4)
       sm3.finish()
       const sm3Bytes = sm3.getHashBytes()
-      const copyLen = (i === iterations - 1 && keylen % 32 !== 0) ? keylen % 32 : 32
+      const copyLen =
+        i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
       for (let j = 0; j < copyLen; j++) {
         result[(ct - 1) * 32 + j] = sm3Bytes[j]
       }

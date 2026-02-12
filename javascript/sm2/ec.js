@@ -19,27 +19,43 @@ class ECFieldElementFp {
     return this.q.equals(other.q) && this.x.equals(other.x)
   }
 
-  toBigInteger() { return this.x }
-  isZero() { return this.x.signum() === 0 }
+  toBigInteger() {
+    return this.x
+  }
+  isZero() {
+    return this.x.signum() === 0
+  }
 
   negate() {
     return new ECFieldElementFp(this.q, this.x.negate().mod(this.q))
   }
 
   add(b) {
-    return new ECFieldElementFp(this.q, this.x.add(b.toBigInteger()).mod(this.q))
+    return new ECFieldElementFp(
+      this.q,
+      this.x.add(b.toBigInteger()).mod(this.q),
+    )
   }
 
   subtract(b) {
-    return new ECFieldElementFp(this.q, this.x.subtract(b.toBigInteger()).mod(this.q))
+    return new ECFieldElementFp(
+      this.q,
+      this.x.subtract(b.toBigInteger()).mod(this.q),
+    )
   }
 
   multiply(b) {
-    return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger()).mod(this.q))
+    return new ECFieldElementFp(
+      this.q,
+      this.x.multiply(b.toBigInteger()).mod(this.q),
+    )
   }
 
   divide(b) {
-    return new ECFieldElementFp(this.q, this.x.multiply(b.toBigInteger().modInverse(this.q)).mod(this.q))
+    return new ECFieldElementFp(
+      this.q,
+      this.x.multiply(b.toBigInteger().modInverse(this.q)).mod(this.q),
+    )
   }
 
   square() {
@@ -62,17 +78,26 @@ export class ECPointFp {
   isValid() {
     if (this.isInfinity()) return true
     // y² = x³ + ax + b
-    return this.x.square().add(this.curve.a).multiply(this.x).add(this.curve.b).equals(this.y.square())
+    return this.x
+      .square()
+      .add(this.curve.a)
+      .multiply(this.x)
+      .add(this.curve.b)
+      .equals(this.y.square())
   }
 
   getX() {
     if (this.zinv === null) this.zinv = this.z.modInverse(this.curve.q)
-    return this.curve.fromBigInteger(this.x.toBigInteger().multiply(this.zinv).mod(this.curve.q))
+    return this.curve.fromBigInteger(
+      this.x.toBigInteger().multiply(this.zinv).mod(this.curve.q),
+    )
   }
 
   getY() {
     if (this.zinv === null) this.zinv = this.z.modInverse(this.curve.q)
-    return this.curve.fromBigInteger(this.y.toBigInteger().multiply(this.zinv).mod(this.curve.q))
+    return this.curve.fromBigInteger(
+      this.y.toBigInteger().multiply(this.zinv).mod(this.curve.q),
+    )
   }
 
   equals(other) {
@@ -80,10 +105,18 @@ export class ECPointFp {
     if (this.isInfinity()) return other.isInfinity()
     if (other.isInfinity()) return this.isInfinity()
 
-    const u = other.y.toBigInteger().multiply(this.z).subtract(this.y.toBigInteger().multiply(other.z)).mod(this.curve.q)
+    const u = other.y
+      .toBigInteger()
+      .multiply(this.z)
+      .subtract(this.y.toBigInteger().multiply(other.z))
+      .mod(this.curve.q)
     if (!u.equals(ZERO)) return false
 
-    const v = other.x.toBigInteger().multiply(this.z).subtract(this.x.toBigInteger().multiply(other.z)).mod(this.curve.q)
+    const v = other.x
+      .toBigInteger()
+      .multiply(this.z)
+      .subtract(this.x.toBigInteger().multiply(other.z))
+      .mod(this.curve.q)
     return v.equals(ZERO)
   }
 
@@ -101,8 +134,10 @@ export class ECPointFp {
     if (b.isInfinity()) return this
     if (this === b) return this.twice()
 
-    const x1 = this.x, y1 = this.y
-    const x2 = b.x, y2 = b.y
+    const x1 = this.x,
+      y1 = this.y
+    const x2 = b.x,
+      y2 = b.y
     const dx = x2.subtract(x1)
     const dy = y2.subtract(y1)
 
@@ -120,11 +155,17 @@ export class ECPointFp {
     if (this.isInfinity()) return this
     if (!this.y.toBigInteger().signum()) return this.curve.infinity
 
-    const x1 = this.x, y1 = this.y
+    const x1 = this.x,
+      y1 = this.y
     const a = this.curve.a
-    const gamma = x1.square().multiply(this.curve.fromBigInteger(THREE)).add(a)
+    const gamma = x1
+      .square()
+      .multiply(this.curve.fromBigInteger(THREE))
+      .add(a)
       .divide(y1.multiply(this.curve.fromBigInteger(TWO)))
-    const x3 = gamma.square().subtract(x1.multiply(this.curve.fromBigInteger(TWO)))
+    const x3 = gamma
+      .square()
+      .subtract(x1.multiply(this.curve.fromBigInteger(TWO)))
     const y3 = gamma.multiply(x1.subtract(x3)).subtract(y1)
     return new ECPointFp(this.curve, x3, y3, this.z)
   }
@@ -177,7 +218,9 @@ export class ECPointFp {
     return Q.add(info.offset)
   }
 
-  _getCombSize() { return this.curve.q.bitLength() }
+  _getCombSize() {
+    return this.curve.q.bitLength()
+  }
 
   _preCalc() {
     const bits = this._getCombSize()
@@ -187,7 +230,8 @@ export class ECPointFp {
 
     const pow2Table = new Array(minWidth + 1)
     pow2Table[0] = this
-    for (let i = 1; i < minWidth; ++i) pow2Table[i] = pow2Table[i - 1].timesPow2(d)
+    for (let i = 1; i < minWidth; ++i)
+      pow2Table[i] = pow2Table[i - 1].timesPow2(d)
     pow2Table[minWidth] = pow2Table[0].subtract(pow2Table[1])
     this.curve.checkPoints(pow2Table, 0, pow2Table.length)
 
@@ -213,7 +257,8 @@ export class ECPointFp {
   }
 
   _fromBigInteger(bits, x) {
-    if (x.signum() < 0 || x.bitLength() > bits) throw new Error('BigInteger not in range')
+    if (x.signum() < 0 || x.bitLength() > bits)
+      throw new Error('BigInteger not in range')
     const len = (bits + 31) >> 5
     const z = new Array(len)
     let i = 0
@@ -236,11 +281,15 @@ export class ECCurveFp {
     this.infinity = new ECPointFp(this, null, null)
   }
 
-  getInfinity() { return this.infinity }
+  getInfinity() {
+    return this.infinity
+  }
 
   equals(other) {
     if (other === this) return true
-    return this.q.equals(other.q) && this.a.equals(other.a) && this.b.equals(other.b)
+    return (
+      this.q.equals(other.q) && this.a.equals(other.a) && this.b.equals(other.b)
+    )
   }
 
   fromBigInteger(x) {
@@ -254,10 +303,12 @@ export class ECCurveFp {
 
   checkPoints(points, off, len) {
     if (!points) throw new Error('points is null')
-    if (off < 0 || len < 0 || off > points.length - len) throw new Error('Invalid range')
+    if (off < 0 || len < 0 || off > points.length - len)
+      throw new Error('Invalid range')
     for (let i = 0; i < len; ++i) {
       const point = points[off + i]
-      if (!point || this !== point.curve) throw new Error(`points[${off + i}] is invalid`)
+      if (!point || this !== point.curve)
+        throw new Error(`points[${off + i}] is invalid`)
     }
   }
 
@@ -274,11 +325,19 @@ export class ECCurveFp {
       case 3: {
         const x = this.fromBigInteger(new BigInteger(s.substring(2), 16))
         let y = this.fromBigInteger(
-          x.multiply(x.square()).add(x.multiply(this.a)).add(this.b)
+          x
+            .multiply(x.square())
+            .add(x.multiply(this.a))
+            .add(this.b)
             .toBigInteger()
-            .modPow(this.q.divide(new BigInteger('4')).add(ONE), this.q)
+            .modPow(this.q.divide(new BigInteger('4')).add(ONE), this.q),
         )
-        if (!y.toBigInteger().mod(TWO).equals(new BigInteger(s.substring(0, 2), 16).subtract(TWO))) {
+        if (
+          !y
+            .toBigInteger()
+            .mod(TWO)
+            .equals(new BigInteger(s.substring(0, 2), 16).subtract(TWO))
+        ) {
           y = y.negate()
         }
         return new ECPointFp(this, x, y)
@@ -293,7 +352,7 @@ export class ECCurveFp {
         return new ECPointFp(
           this,
           this.fromBigInteger(new BigInteger(xHex, 16)),
-          this.fromBigInteger(new BigInteger(yHex, 16))
+          this.fromBigInteger(new BigInteger(yHex, 16)),
         )
       }
 

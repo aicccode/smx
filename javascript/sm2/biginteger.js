@@ -1,13 +1,12 @@
 /**
  * BigInteger 大整数运算库
- * 基于 Tom Wu 的 jsbn，清理为现代 ES Module 风格
  */
 
 // ---- 模块级常量 ----
 
-const DB = 28                      // 每个 digit 的位数（统一用 am3 策略）
-const DM = (1 << DB) - 1           // digit 掩码
-const DV = 1 << DB                 // digit 值上限
+const DB = 28 // 每个 digit 的位数（统一用 am3 策略）
+const DM = (1 << DB) - 1 // digit 掩码
+const DV = 1 << DB // digit 值上限
 
 const BI_FP = 52
 const FV = Math.pow(2, BI_FP)
@@ -34,42 +33,83 @@ const LOW_PRIMES = [
   613, 617, 619, 631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701,
   709, 719, 727, 733, 739, 743, 751, 757, 761, 769, 773, 787, 797, 809, 811,
   821, 823, 827, 829, 839, 853, 857, 859, 863, 877, 881, 883, 887, 907, 911,
-  919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991, 997
+  919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991, 997,
 ]
 const LP_LIM = (1 << 26) / LOW_PRIMES[LOW_PRIMES.length - 1]
 
 // ---- 辅助函数 ----
 
-function nbi() { return new BigInteger(null) }
-function nbv(i) { const r = nbi(); r.fromInt(i); return r }
+function nbi() {
+  return new BigInteger(null)
+}
+function nbv(i) {
+  const r = nbi()
+  r.fromInt(i)
+  return r
+}
 
-function int2char(n) { return BI_RM.charAt(n) }
-function intAt(s, i) { const c = BI_RC[s.charCodeAt(i)]; return (c == null) ? -1 : c }
+function int2char(n) {
+  return BI_RM.charAt(n)
+}
+function intAt(s, i) {
+  const c = BI_RC[s.charCodeAt(i)]
+  return c == null ? -1 : c
+}
 
 function nbits(x) {
-  let r = 1, t
-  if ((t = x >>> 16) !== 0) { x = t; r += 16 }
-  if ((t = x >> 8) !== 0) { x = t; r += 8 }
-  if ((t = x >> 4) !== 0) { x = t; r += 4 }
-  if ((t = x >> 2) !== 0) { x = t; r += 2 }
-  if ((t = x >> 1) !== 0) { r += 1 }
+  let r = 1,
+    t
+  if ((t = x >>> 16) !== 0) {
+    x = t
+    r += 16
+  }
+  if ((t = x >> 8) !== 0) {
+    x = t
+    r += 8
+  }
+  if ((t = x >> 4) !== 0) {
+    x = t
+    r += 4
+  }
+  if ((t = x >> 2) !== 0) {
+    x = t
+    r += 2
+  }
+  if ((t = x >> 1) !== 0) {
+    r += 1
+  }
   return r
 }
 
 function lbit(x) {
   if (x === 0) return -1
   let r = 0
-  if ((x & 0xffff) === 0) { x >>= 16; r += 16 }
-  if ((x & 0xff) === 0) { x >>= 8; r += 8 }
-  if ((x & 0xf) === 0) { x >>= 4; r += 4 }
-  if ((x & 3) === 0) { x >>= 2; r += 2 }
+  if ((x & 0xffff) === 0) {
+    x >>= 16
+    r += 16
+  }
+  if ((x & 0xff) === 0) {
+    x >>= 8
+    r += 8
+  }
+  if ((x & 0xf) === 0) {
+    x >>= 4
+    r += 4
+  }
+  if ((x & 3) === 0) {
+    x >>= 2
+    r += 2
+  }
   if ((x & 1) === 0) ++r
   return r
 }
 
 function cbit(x) {
   let r = 0
-  while (x !== 0) { x &= x - 1; ++r }
+  while (x !== 0) {
+    x &= x - 1
+    ++r
+  }
   return r
 }
 
@@ -86,7 +126,8 @@ export class BigInteger {
 
   /** am3: 28-bit 乘法累加（适合所有现代 JS 引擎） */
   am(i, x, w, j, c, n) {
-    const xl = x & 0x3fff, xh = x >> 14
+    const xl = x & 0x3fff,
+      xh = x >> 14
     while (--n >= 0) {
       let l = this[i] & 0x3fff
       const h = this[i++] >> 14
@@ -108,7 +149,7 @@ export class BigInteger {
 
   fromInt(x) {
     this.t = 1
-    this.s = (x < 0) ? -1 : 0
+    this.s = x < 0 ? -1 : 0
     if (x > 0) this[0] = x
     else if (x < -1) this[0] = x + DV
     else this.t = 0
@@ -122,12 +163,17 @@ export class BigInteger {
     else if (b === 2) k = 1
     else if (b === 32) k = 5
     else if (b === 4) k = 2
-    else { this.fromRadix(s, b); return }
+    else {
+      this.fromRadix(s, b)
+      return
+    }
     this.t = 0
     this.s = 0
-    let i = s.length, mi = false, sh = 0
+    let i = s.length,
+      mi = false,
+      sh = 0
     while (--i >= 0) {
-      const x = (k === 8) ? s[i] & 0xff : intAt(s, i)
+      const x = k === 8 ? s[i] & 0xff : intAt(s, i)
       if (x < 0) {
         if (s.charAt(i) === '-') mi = true
         continue
@@ -136,7 +182,7 @@ export class BigInteger {
       if (sh === 0) this[this.t++] = x
       else if (sh + k > DB) {
         this[this.t - 1] |= (x & ((1 << (DB - sh)) - 1)) << sh
-        this[this.t++] = (x >> (DB - sh))
+        this[this.t++] = x >> (DB - sh)
       } else this[this.t - 1] |= x << sh
       sh += k
       if (sh >= DB) sh -= DB
@@ -166,17 +212,26 @@ export class BigInteger {
     else if (b === 4) k = 2
     else return this.toRadix(b)
     const km = (1 << k) - 1
-    let d, m = false, r = '', i = this.t
-    let p = DB - (i * DB) % k
+    let d,
+      m = false,
+      r = '',
+      i = this.t
+    let p = DB - ((i * DB) % k)
     if (i-- > 0) {
-      if (p < DB && (d = this[i] >> p) > 0) { m = true; r = int2char(d) }
+      if (p < DB && (d = this[i] >> p) > 0) {
+        m = true
+        r = int2char(d)
+      }
       while (i >= 0) {
         if (p < k) {
           d = (this[i] & ((1 << p) - 1)) << (k - p)
           d |= this[--i] >> (p += DB - k)
         } else {
           d = (this[i] >> (p -= k)) & km
-          if (p <= 0) { p += DB; --i }
+          if (p <= 0) {
+            p += DB
+            --i
+          }
         }
         if (d > 0) m = true
         if (m) r += int2char(d)
@@ -190,7 +245,9 @@ export class BigInteger {
     if (this.signum() === 0 || b < 2 || b > 36) return '0'
     const cs = this.chunkSize(b)
     const a = Math.pow(b, cs)
-    const d = nbv(a), y = nbi(), z = nbi()
+    const d = nbv(a),
+      y = nbi(),
+      z = nbi()
     let r = ''
     this.divRemTo(d, y, z)
     while (y.signum() > 0) {
@@ -205,7 +262,9 @@ export class BigInteger {
     if (b == null) b = 10
     const cs = this.chunkSize(b)
     const d = Math.pow(b, cs)
-    let mi = false, j = 0, w = 0
+    let mi = false,
+      j = 0,
+      w = 0
     for (let i = 0; i < s.length; ++i) {
       const x = intAt(s, i)
       if (x < 0) {
@@ -232,18 +291,22 @@ export class BigInteger {
       if (a < 2) this.fromInt(1)
       else {
         this.fromNumber(a, c)
-        if (!this.testBit(a - 1)) this.bitwiseTo(BigInteger.ONE.shiftLeft(a - 1), op_or, this)
+        if (!this.testBit(a - 1))
+          this.bitwiseTo(BigInteger.ONE.shiftLeft(a - 1), op_or, this)
         if (this.isEven()) this.dAddOffset(1, 0)
         while (!this.isProbablePrime(b)) {
           this.dAddOffset(2, 0)
-          if (this.bitLength() > a) this.subTo(BigInteger.ONE.shiftLeft(a - 1), this)
+          if (this.bitLength() > a)
+            this.subTo(BigInteger.ONE.shiftLeft(a - 1), this)
         }
       }
     } else {
-      const x = [], t = a & 7
+      const x = [],
+        t = a & 7
       x.length = (a >> 3) + 1
       b.nextBytes(x)
-      if (t > 0) x[0] &= ((1 << t) - 1); else x[0] = 0
+      if (t > 0) x[0] &= (1 << t) - 1
+      else x[0] = 0
       this.fromString(x, 256)
     }
   }
@@ -252,16 +315,22 @@ export class BigInteger {
     let i = this.t
     const r = []
     r[0] = this.s
-    let p = DB - (i * DB) % 8, d, k = 0
+    let p = DB - ((i * DB) % 8),
+      d,
+      k = 0
     if (i-- > 0) {
-      if (p < DB && (d = this[i] >> p) !== (this.s & DM) >> p) r[k++] = d | (this.s << (DB - p))
+      if (p < DB && (d = this[i] >> p) !== (this.s & DM) >> p)
+        r[k++] = d | (this.s << (DB - p))
       while (i >= 0) {
         if (p < 8) {
           d = (this[i] & ((1 << p) - 1)) << (8 - p)
           d |= this[--i] >> (p += DB - 8)
         } else {
           d = (this[i] >> (p -= 8)) & 0xff
-          if (p <= 0) { p += DB; --i }
+          if (p <= 0) {
+            p += DB
+            --i
+          }
         }
         if ((d & 0x80) !== 0) d |= -256
         if (k === 0 && (this.s & 0x80) !== (d & 0x80)) ++k
@@ -273,23 +342,39 @@ export class BigInteger {
 
   // ---- 算术运算 ----
 
-  negate() { const r = nbi(); BigInteger.ZERO.subTo(this, r); return r }
-  abs() { return (this.s < 0) ? this.negate() : this }
-  clone() { const r = nbi(); this.copyTo(r); return r }
+  negate() {
+    const r = nbi()
+    BigInteger.ZERO.subTo(this, r)
+    return r
+  }
+  abs() {
+    return this.s < 0 ? this.negate() : this
+  }
+  clone() {
+    const r = nbi()
+    this.copyTo(r)
+    return r
+  }
 
   compareTo(a) {
     let r = this.s - a.s
     if (r !== 0) return r
     let i = this.t
     r = i - a.t
-    if (r !== 0) return (this.s < 0) ? -r : r
+    if (r !== 0) return this.s < 0 ? -r : r
     while (--i >= 0) if ((r = this[i] - a[i]) !== 0) return r
     return 0
   }
 
-  equals(a) { return this.compareTo(a) === 0 }
-  min(a) { return (this.compareTo(a) < 0) ? this : a }
-  max(a) { return (this.compareTo(a) > 0) ? this : a }
+  equals(a) {
+    return this.compareTo(a) === 0
+  }
+  min(a) {
+    return this.compareTo(a) < 0 ? this : a
+  }
+  max(a) {
+    return this.compareTo(a) > 0 ? this : a
+  }
 
   signum() {
     if (this.s < 0) return -1
@@ -306,10 +391,18 @@ export class BigInteger {
     return ((this[1] & ((1 << (32 - DB)) - 1)) << DB) | this[0]
   }
 
-  byteValue() { return (this.t === 0) ? this.s : (this[0] << 24) >> 24 }
-  shortValue() { return (this.t === 0) ? this.s : (this[0] << 16) >> 16 }
-  chunkSize(r) { return Math.floor(Math.LN2 * DB / Math.log(r)) }
-  isEven() { return ((this.t > 0) ? (this[0] & 1) : this.s) === 0 }
+  byteValue() {
+    return this.t === 0 ? this.s : (this[0] << 24) >> 24
+  }
+  shortValue() {
+    return this.t === 0 ? this.s : (this[0] << 16) >> 16
+  }
+  chunkSize(r) {
+    return Math.floor((Math.LN2 * DB) / Math.log(r))
+  }
+  isEven() {
+    return (this.t > 0 ? this[0] & 1 : this.s) === 0
+  }
   bitLength() {
     if (this.t <= 0) return 0
     return DB * (this.t - 1) + nbits(this[this.t - 1] ^ (this.s & DM))
@@ -350,7 +443,10 @@ export class BigInteger {
   rShiftTo(n, r) {
     r.s = this.s
     const ds = Math.floor(n / DB)
-    if (ds >= this.t) { r.t = 0; return }
+    if (ds >= this.t) {
+      r.t = 0
+      return
+    }
     const bs = n % DB
     const cbs = DB - bs
     const bm = (1 << bs) - 1
@@ -366,20 +462,23 @@ export class BigInteger {
 
   shiftLeft(n) {
     const r = nbi()
-    if (n < 0) this.rShiftTo(-n, r); else this.lShiftTo(n, r)
+    if (n < 0) this.rShiftTo(-n, r)
+    else this.lShiftTo(n, r)
     return r
   }
 
   shiftRight(n) {
     const r = nbi()
-    if (n < 0) this.lShiftTo(-n, r); else this.rShiftTo(n, r)
+    if (n < 0) this.lShiftTo(-n, r)
+    else this.rShiftTo(n, r)
     return r
   }
 
   // ---- 加减乘除 ----
 
   addTo(a, r) {
-    let i = 0, c = 0
+    let i = 0,
+      c = 0
     const m = Math.min(a.t, this.t)
     while (i < m) {
       c += this[i] + a[i]
@@ -388,14 +487,22 @@ export class BigInteger {
     }
     if (a.t < this.t) {
       c += a.s
-      while (i < this.t) { c += this[i]; r[i++] = c & DM; c >>= DB }
+      while (i < this.t) {
+        c += this[i]
+        r[i++] = c & DM
+        c >>= DB
+      }
       c += this.s
     } else {
       c += this.s
-      while (i < a.t) { c += a[i]; r[i++] = c & DM; c >>= DB }
+      while (i < a.t) {
+        c += a[i]
+        r[i++] = c & DM
+        c >>= DB
+      }
       c += a.s
     }
-    r.s = (c < 0) ? -1 : 0
+    r.s = c < 0 ? -1 : 0
     if (c > 0) r[i++] = c
     else if (c < -1) r[i++] = DV + c
     r.t = i
@@ -403,7 +510,8 @@ export class BigInteger {
   }
 
   subTo(a, r) {
-    let i = 0, c = 0
+    let i = 0,
+      c = 0
     const m = Math.min(a.t, this.t)
     while (i < m) {
       c += this[i] - a[i]
@@ -412,14 +520,22 @@ export class BigInteger {
     }
     if (a.t < this.t) {
       c -= a.s
-      while (i < this.t) { c += this[i]; r[i++] = c & DM; c >>= DB }
+      while (i < this.t) {
+        c += this[i]
+        r[i++] = c & DM
+        c >>= DB
+      }
       c += this.s
     } else {
       c += this.s
-      while (i < a.t) { c -= a[i]; r[i++] = c & DM; c >>= DB }
+      while (i < a.t) {
+        c -= a[i]
+        r[i++] = c & DM
+        c >>= DB
+      }
       c -= a.s
     }
-    r.s = (c < 0) ? -1 : 0
+    r.s = c < 0 ? -1 : 0
     if (c < -1) r[i++] = DV + c
     else if (c > 0) r[i++] = c
     r.t = i
@@ -427,7 +543,8 @@ export class BigInteger {
   }
 
   multiplyTo(a, r) {
-    const x = this.abs(), y = a.abs()
+    const x = this.abs(),
+      y = a.abs()
     let i = x.t
     r.t = i + y.t
     while (--i >= 0) r[i] = 0
@@ -439,11 +556,14 @@ export class BigInteger {
 
   squareTo(r) {
     const x = this.abs()
-    let i = r.t = 2 * x.t
+    let i = (r.t = 2 * x.t)
     while (--i >= 0) r[i] = 0
     for (i = 0; i < x.t - 1; ++i) {
       const c = x.am(i, x[i], r, 2 * i, 0, 1)
-      if ((r[i + x.t] += x.am(i + 1, 2 * x[i], r, 2 * i + 1, c, x.t - i - 1)) >= x.DV) {
+      if (
+        (r[i + x.t] += x.am(i + 1, 2 * x[i], r, 2 * i + 1, c, x.t - i - 1)) >=
+        x.DV
+      ) {
         r[i + x.t] -= x.DV
         r[i + x.t + 1] = 1
       }
@@ -463,17 +583,27 @@ export class BigInteger {
       return
     }
     if (r == null) r = nbi()
-    const y = nbi(), ts = this.s, ms = m.s
+    const y = nbi(),
+      ts = this.s,
+      ms = m.s
     const nsh = DB - nbits(pm[pm.t - 1])
-    if (nsh > 0) { pm.lShiftTo(nsh, y); pt.lShiftTo(nsh, r) }
-    else { pm.copyTo(y); pt.copyTo(r) }
+    if (nsh > 0) {
+      pm.lShiftTo(nsh, y)
+      pt.lShiftTo(nsh, r)
+    } else {
+      pm.copyTo(y)
+      pt.copyTo(r)
+    }
     const ys = y.t
     const y0 = y[ys - 1]
     if (y0 === 0) return
-    const yt = y0 * (1 << F1) + ((ys > 1) ? y[ys - 2] >> F2 : 0)
-    const d1 = FV / yt, d2 = (1 << F1) / yt, e = 1 << F2
-    let i = r.t, j = i - ys
-    const t = (q == null) ? nbi() : q
+    const yt = y0 * (1 << F1) + (ys > 1 ? y[ys - 2] >> F2 : 0)
+    const d1 = FV / yt,
+      d2 = (1 << F1) / yt,
+      e = 1 << F2
+    let i = r.t,
+      j = i - ys
+    const t = q == null ? nbi() : q
     y.dlShiftTo(j, t)
     if (r.compareTo(t) >= 0) {
       r[r.t++] = 1
@@ -483,7 +613,7 @@ export class BigInteger {
     t.subTo(y, y)
     while (y.t < ys) y[y.t++] = 0
     while (--j >= 0) {
-      let qd = (r[--i] === y0) ? DM : Math.floor(r[i] * d1 + (r[i - 1] + e) * d2)
+      let qd = r[--i] === y0 ? DM : Math.floor(r[i] * d1 + (r[i - 1] + e) * d2)
       if ((r[i] += y.am(0, qd, r, j, 0, ys)) < qd) {
         y.dlShiftTo(j, t)
         r.subTo(t, r)
@@ -500,13 +630,42 @@ export class BigInteger {
     if (ts < 0) BigInteger.ZERO.subTo(r, r)
   }
 
-  add(a) { const r = nbi(); this.addTo(a, r); return r }
-  subtract(a) { const r = nbi(); this.subTo(a, r); return r }
-  multiply(a) { const r = nbi(); this.multiplyTo(a, r); return r }
-  square() { const r = nbi(); this.squareTo(r); return r }
-  divide(a) { const r = nbi(); this.divRemTo(a, r, null); return r }
-  remainder(a) { const r = nbi(); this.divRemTo(a, null, r); return r }
-  divideAndRemainder(a) { const q = nbi(), r = nbi(); this.divRemTo(a, q, r); return [q, r] }
+  add(a) {
+    const r = nbi()
+    this.addTo(a, r)
+    return r
+  }
+  subtract(a) {
+    const r = nbi()
+    this.subTo(a, r)
+    return r
+  }
+  multiply(a) {
+    const r = nbi()
+    this.multiplyTo(a, r)
+    return r
+  }
+  square() {
+    const r = nbi()
+    this.squareTo(r)
+    return r
+  }
+  divide(a) {
+    const r = nbi()
+    this.divRemTo(a, r, null)
+    return r
+  }
+  remainder(a) {
+    const r = nbi()
+    this.divRemTo(a, null, r)
+    return r
+  }
+  divideAndRemainder(a) {
+    const q = nbi(),
+      r = nbi()
+    this.divRemTo(a, q, r)
+    return [q, r]
+  }
 
   mod(a) {
     const r = nbi()
@@ -551,10 +710,26 @@ export class BigInteger {
     r.clamp()
   }
 
-  and(a) { const r = nbi(); this.bitwiseTo(a, op_and, r); return r }
-  or(a) { const r = nbi(); this.bitwiseTo(a, op_or, r); return r }
-  xor(a) { const r = nbi(); this.bitwiseTo(a, op_xor, r); return r }
-  andNot(a) { const r = nbi(); this.bitwiseTo(a, op_andnot, r); return r }
+  and(a) {
+    const r = nbi()
+    this.bitwiseTo(a, op_and, r)
+    return r
+  }
+  or(a) {
+    const r = nbi()
+    this.bitwiseTo(a, op_or, r)
+    return r
+  }
+  xor(a) {
+    const r = nbi()
+    this.bitwiseTo(a, op_xor, r)
+    return r
+  }
+  andNot(a) {
+    const r = nbi()
+    this.bitwiseTo(a, op_andnot, r)
+    return r
+  }
 
   not() {
     const r = nbi()
@@ -565,7 +740,8 @@ export class BigInteger {
   }
 
   getLowestSetBit() {
-    for (let i = 0; i < this.t; ++i) if (this[i] !== 0) return i * DB + lbit(this[i])
+    for (let i = 0; i < this.t; ++i)
+      if (this[i] !== 0) return i * DB + lbit(this[i])
     if (this.s < 0) return this.t * DB
     return -1
   }
@@ -579,8 +755,8 @@ export class BigInteger {
 
   testBit(n) {
     const j = Math.floor(n / DB)
-    if (j >= this.t) return (this.s !== 0)
-    return ((this[j] & (1 << (n % DB))) !== 0)
+    if (j >= this.t) return this.s !== 0
+    return (this[j] & (1 << (n % DB))) !== 0
   }
 
   changeBit(n, op) {
@@ -589,9 +765,15 @@ export class BigInteger {
     return r
   }
 
-  setBit(n) { return this.changeBit(n, op_or) }
-  clearBit(n) { return this.changeBit(n, op_andnot) }
-  flipBit(n) { return this.changeBit(n, op_xor) }
+  setBit(n) {
+    return this.changeBit(n, op_or)
+  }
+  clearBit(n) {
+    return this.changeBit(n, op_andnot)
+  }
+  flipBit(n) {
+    return this.changeBit(n, op_xor)
+  }
 
   // ---- 模运算 ----
 
@@ -603,32 +785,41 @@ export class BigInteger {
     y = (y * (2 - (x & 0xf) * y)) & 0xf
     y = (y * (2 - (x & 0xff) * y)) & 0xff
     y = (y * (2 - (((x & 0xffff) * y) & 0xffff))) & 0xffff
-    y = (y * (2 - x * y % DV)) % DV
-    return (y > 0) ? DV - y : -y
+    y = (y * (2 - ((x * y) % DV))) % DV
+    return y > 0 ? DV - y : -y
   }
 
   modPowInt(e, m) {
     let z
-    if (e < 256 || m.isEven()) z = new Classic(m); else z = new Montgomery(m)
+    if (e < 256 || m.isEven()) z = new Classic(m)
+    else z = new Montgomery(m)
     return this.exp(e, z)
   }
 
   exp(e, z) {
     if (e > 0xffffffff || e < 1) return BigInteger.ONE
-    let r = nbi(), r2 = nbi()
+    let r = nbi(),
+      r2 = nbi()
     const g = z.convert(this)
     let i = nbits(e) - 1
     g.copyTo(r)
     while (--i >= 0) {
       z.sqrTo(r, r2)
       if ((e & (1 << i)) > 0) z.mulTo(r2, g, r)
-      else { const t = r; r = r2; r2 = t }
+      else {
+        const t = r
+        r = r2
+        r2 = t
+      }
     }
     return z.revert(r)
   }
 
   modPow(e, m) {
-    let i = e.bitLength(), k, r = nbv(1), z
+    let i = e.bitLength(),
+      k,
+      r = nbv(1),
+      z
     if (i <= 0) return r
     else if (i < 18) k = 1
     else if (i < 48) k = 3
@@ -639,7 +830,9 @@ export class BigInteger {
     else if (m.isEven()) z = new Barrett(m)
     else z = new Montgomery(m)
 
-    const g = [], k1 = k - 1, km = (1 << k) - 1
+    const g = [],
+      k1 = k - 1,
+      km = (1 << k) - 1
     let n = 3
     g[1] = z.convert(this)
     if (k > 1) {
@@ -652,7 +845,11 @@ export class BigInteger {
       }
     }
 
-    let j = e.t - 1, w, is1 = true, r2 = nbi(), t
+    let j = e.t - 1,
+      w,
+      is1 = true,
+      r2 = nbi(),
+      t
     i = nbits(e[j]) - 1
     while (j >= 0) {
       if (i >= k1) w = (e[j] >> (i - k1)) & km
@@ -661,17 +858,40 @@ export class BigInteger {
         if (j > 0) w |= e[j - 1] >> (DB + i - k1)
       }
       n = k
-      while ((w & 1) === 0) { w >>= 1; --n }
-      if ((i -= n) < 0) { i += DB; --j }
-      if (is1) { g[w].copyTo(r); is1 = false }
-      else {
-        while (n > 1) { z.sqrTo(r, r2); z.sqrTo(r2, r); n -= 2 }
-        if (n > 0) z.sqrTo(r, r2); else { t = r; r = r2; r2 = t }
+      while ((w & 1) === 0) {
+        w >>= 1
+        --n
+      }
+      if ((i -= n) < 0) {
+        i += DB
+        --j
+      }
+      if (is1) {
+        g[w].copyTo(r)
+        is1 = false
+      } else {
+        while (n > 1) {
+          z.sqrTo(r, r2)
+          z.sqrTo(r2, r)
+          n -= 2
+        }
+        if (n > 0) z.sqrTo(r, r2)
+        else {
+          t = r
+          r = r2
+          r2 = t
+        }
         z.mulTo(r2, g[w], r)
       }
       while (j >= 0 && (e[j] & (1 << i)) === 0) {
-        z.sqrTo(r, r2); t = r; r = r2; r2 = t
-        if (--i < 0) { i = DB - 1; --j }
+        z.sqrTo(r, r2)
+        t = r
+        r = r2
+        r2 = t
+        if (--i < 0) {
+          i = DB - 1
+          --j
+        }
       }
     }
     return z.revert(r)
@@ -680,13 +900,20 @@ export class BigInteger {
   modInverse(m) {
     const ac = m.isEven()
     if ((this.isEven() && ac) || m.signum() === 0) return BigInteger.ZERO
-    const u = m.clone(), v = this.clone()
-    const a = nbv(1), b = nbv(0), c = nbv(0), d = nbv(1)
+    const u = m.clone(),
+      v = this.clone()
+    const a = nbv(1),
+      b = nbv(0),
+      c = nbv(0),
+      d = nbv(1)
     while (u.signum() !== 0) {
       while (u.isEven()) {
         u.rShiftTo(1, u)
         if (ac) {
-          if (!a.isEven() || !b.isEven()) { a.addTo(this, a); b.subTo(m, b) }
+          if (!a.isEven() || !b.isEven()) {
+            a.addTo(this, a)
+            b.subTo(m, b)
+          }
           a.rShiftTo(1, a)
         } else if (!b.isEven()) b.subTo(m, b)
         b.rShiftTo(1, b)
@@ -694,7 +921,10 @@ export class BigInteger {
       while (v.isEven()) {
         v.rShiftTo(1, v)
         if (ac) {
-          if (!c.isEven() || !d.isEven()) { c.addTo(this, c); d.subTo(m, d) }
+          if (!c.isEven() || !d.isEven()) {
+            c.addTo(this, c)
+            d.subTo(m, d)
+          }
           c.rShiftTo(1, c)
         } else if (!d.isEven()) d.subTo(m, d)
         d.rShiftTo(1, d)
@@ -711,25 +941,42 @@ export class BigInteger {
     }
     if (v.compareTo(BigInteger.ONE) !== 0) return BigInteger.ZERO
     if (d.compareTo(m) >= 0) return d.subtract(m)
-    if (d.signum() < 0) d.addTo(m, d); else return d
-    if (d.signum() < 0) return d.add(m); else return d
+    if (d.signum() < 0) d.addTo(m, d)
+    else return d
+    if (d.signum() < 0) return d.add(m)
+    else return d
   }
 
-  pow(e) { return this.exp(e, new NullExp()) }
+  pow(e) {
+    return this.exp(e, new NullExp())
+  }
 
   gcd(a) {
-    let x = (this.s < 0) ? this.negate() : this.clone()
-    let y = (a.s < 0) ? a.negate() : a.clone()
-    if (x.compareTo(y) < 0) { const t = x; x = y; y = t }
-    let i = x.getLowestSetBit(), g = y.getLowestSetBit()
+    let x = this.s < 0 ? this.negate() : this.clone()
+    let y = a.s < 0 ? a.negate() : a.clone()
+    if (x.compareTo(y) < 0) {
+      const t = x
+      x = y
+      y = t
+    }
+    let i = x.getLowestSetBit(),
+      g = y.getLowestSetBit()
     if (g < 0) return x
     if (i < g) g = i
-    if (g > 0) { x.rShiftTo(g, x); y.rShiftTo(g, y) }
+    if (g > 0) {
+      x.rShiftTo(g, x)
+      y.rShiftTo(g, y)
+    }
     while (x.signum() > 0) {
       if ((i = x.getLowestSetBit()) > 0) x.rShiftTo(i, x)
       if ((i = y.getLowestSetBit()) > 0) y.rShiftTo(i, y)
-      if (x.compareTo(y) >= 0) { x.subTo(y, x); x.rShiftTo(1, x) }
-      else { y.subTo(x, y); y.rShiftTo(1, y) }
+      if (x.compareTo(y) >= 0) {
+        x.subTo(y, x)
+        x.rShiftTo(1, x)
+      } else {
+        y.subTo(x, y)
+        y.rShiftTo(1, y)
+      }
     }
     if (g > 0) y.lShiftTo(g, y)
     return y
@@ -738,7 +985,7 @@ export class BigInteger {
   modInt(n) {
     if (n <= 0) return 0
     const d = DV % n
-    let r = (this.s < 0) ? n - 1 : 0
+    let r = this.s < 0 ? n - 1 : 0
     if (this.t > 0) {
       if (d === 0) r = this[0] % n
       else for (let i = this.t - 1; i >= 0; --i) r = (d * r + this[i]) % n
@@ -752,13 +999,15 @@ export class BigInteger {
     let i
     const x = this.abs()
     if (x.t === 1 && x[0] <= LOW_PRIMES[LOW_PRIMES.length - 1]) {
-      for (i = 0; i < LOW_PRIMES.length; ++i) if (x[0] === LOW_PRIMES[i]) return true
+      for (i = 0; i < LOW_PRIMES.length; ++i)
+        if (x[0] === LOW_PRIMES[i]) return true
       return false
     }
     if (x.isEven()) return false
     i = 1
     while (i < LOW_PRIMES.length) {
-      let m = LOW_PRIMES[i], j = i + 1
+      let m = LOW_PRIMES[i],
+        j = i + 1
       while (j < LOW_PRIMES.length && m < LP_LIM) m *= LOW_PRIMES[j++]
       m = x.modInt(m)
       while (i < j) if (m % LOW_PRIMES[i++] === 0) return false
@@ -797,33 +1046,49 @@ export class BigInteger {
     r.t = i
     while (i > 0) r[--i] = 0
     let j
-    for (j = r.t - this.t; i < j; ++i) r[i + this.t] = this.am(0, a[i], r, i, 0, this.t)
+    for (j = r.t - this.t; i < j; ++i)
+      r[i + this.t] = this.am(0, a[i], r, i, 0, this.t)
     for (j = Math.min(a.t, n); i < j; ++i) this.am(0, a[i], r, i, 0, n - i)
     r.clamp()
   }
 
   multiplyUpperTo(a, n, r) {
     --n
-    let i = r.t = this.t + a.t - n
+    let i = (r.t = this.t + a.t - n)
     r.s = 0
     while (--i >= 0) r[i] = 0
-    for (i = Math.max(n - this.t, 0); i < a.t; ++i) r[this.t + i - n] = this.am(n - i, a[i], r, 0, 0, this.t + i - n)
+    for (i = Math.max(n - this.t, 0); i < a.t; ++i)
+      r[this.t + i - n] = this.am(n - i, a[i], r, 0, 0, this.t + i - n)
     r.clamp()
     r.drShiftTo(1, r)
   }
 
   // ---- 兼容只读属性 ----
 
-  get DV() { return DV }
-  get DM() { return DM }
-  get DB() { return DB }
+  get DV() {
+    return DV
+  }
+  get DM() {
+    return DM
+  }
+  get DB() {
+    return DB
+  }
 }
 
 // 位运算操作符函数
-function op_and(x, y) { return x & y }
-function op_or(x, y) { return x | y }
-function op_xor(x, y) { return x ^ y }
-function op_andnot(x, y) { return x & ~y }
+function op_and(x, y) {
+  return x & y
+}
+function op_or(x, y) {
+  return x | y
+}
+function op_xor(x, y) {
+  return x ^ y
+}
+function op_andnot(x, y) {
+  return x & ~y
+}
 
 // 静态常量（延迟初始化避免循环依赖）
 BigInteger.ZERO = nbv(0)
@@ -836,19 +1101,41 @@ BigInteger.nbv = nbv
 // ---- 模约简器 ----
 
 class NullExp {
-  convert(x) { return x }
-  revert(x) { return x }
-  mulTo(x, y, r) { x.multiplyTo(y, r) }
-  sqrTo(x, r) { x.squareTo(r) }
+  convert(x) {
+    return x
+  }
+  revert(x) {
+    return x
+  }
+  mulTo(x, y, r) {
+    x.multiplyTo(y, r)
+  }
+  sqrTo(x, r) {
+    x.squareTo(r)
+  }
 }
 
 class Classic {
-  constructor(m) { this.m = m }
-  convert(x) { return (x.s < 0 || x.compareTo(this.m) >= 0) ? x.mod(this.m) : x }
-  revert(x) { return x }
-  reduce(x) { x.divRemTo(this.m, null, x) }
-  mulTo(x, y, r) { x.multiplyTo(y, r); this.reduce(r) }
-  sqrTo(x, r) { x.squareTo(r); this.reduce(r) }
+  constructor(m) {
+    this.m = m
+  }
+  convert(x) {
+    return x.s < 0 || x.compareTo(this.m) >= 0 ? x.mod(this.m) : x
+  }
+  revert(x) {
+    return x
+  }
+  reduce(x) {
+    x.divRemTo(this.m, null, x)
+  }
+  mulTo(x, y, r) {
+    x.multiplyTo(y, r)
+    this.reduce(r)
+  }
+  sqrTo(x, r) {
+    x.squareTo(r)
+    this.reduce(r)
+  }
 }
 
 class Montgomery {
@@ -880,18 +1167,30 @@ class Montgomery {
     while (x.t <= this.mt2) x[x.t++] = 0
     for (let i = 0; i < this.m.t; ++i) {
       let j = x[i] & 0x7fff
-      const u0 = (j * this.mpl + (((j * this.mph + (x[i] >> 15) * this.mpl) & this.um) << 15)) & DM
+      const u0 =
+        (j * this.mpl +
+          (((j * this.mph + (x[i] >> 15) * this.mpl) & this.um) << 15)) &
+        DM
       j = i + this.m.t
       x[j] += this.m.am(0, u0, x, i, 0, this.m.t)
-      while (x[j] >= DV) { x[j] -= DV; x[++j]++ }
+      while (x[j] >= DV) {
+        x[j] -= DV
+        x[++j]++
+      }
     }
     x.clamp()
     x.drShiftTo(this.m.t, x)
     if (x.compareTo(this.m) >= 0) x.subTo(this.m, x)
   }
 
-  mulTo(x, y, r) { x.multiplyTo(y, r); this.reduce(r) }
-  sqrTo(x, r) { x.squareTo(r); this.reduce(r) }
+  mulTo(x, y, r) {
+    x.multiplyTo(y, r)
+    this.reduce(r)
+  }
+  sqrTo(x, r) {
+    x.squareTo(r)
+    this.reduce(r)
+  }
 }
 
 class Barrett {
@@ -906,14 +1205,22 @@ class Barrett {
   convert(x) {
     if (x.s < 0 || x.t > 2 * this.m.t) return x.mod(this.m)
     if (x.compareTo(this.m) < 0) return x
-    const r = nbi(); x.copyTo(r); this.reduce(r); return r
+    const r = nbi()
+    x.copyTo(r)
+    this.reduce(r)
+    return r
   }
 
-  revert(x) { return x }
+  revert(x) {
+    return x
+  }
 
   reduce(x) {
     x.drShiftTo(this.m.t - 1, this.r2)
-    if (x.t > this.m.t + 1) { x.t = this.m.t + 1; x.clamp() }
+    if (x.t > this.m.t + 1) {
+      x.t = this.m.t + 1
+      x.clamp()
+    }
     this.mu.multiplyUpperTo(this.r2, this.m.t + 1, this.q3)
     this.m.multiplyLowerTo(this.q3, this.m.t + 1, this.r2)
     while (x.compareTo(this.r2) < 0) x.dAddOffset(1, this.m.t + 1)
@@ -921,8 +1228,14 @@ class Barrett {
     while (x.compareTo(this.m) >= 0) x.subTo(this.m, x)
   }
 
-  mulTo(x, y, r) { x.multiplyTo(y, r); this.reduce(r) }
-  sqrTo(x, r) { x.squareTo(r); this.reduce(r) }
+  mulTo(x, y, r) {
+    x.multiplyTo(y, r)
+    this.reduce(r)
+  }
+  sqrTo(x, r) {
+    x.squareTo(r)
+    this.reduce(r)
+  }
 }
 
 // ---- SecureRandom ----
@@ -966,7 +1279,10 @@ export class SecureRandom {
     this._pptr = 0
 
     // 使用平台 CSPRNG 初始化熵池
-    if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+    if (
+      typeof globalThis.crypto !== 'undefined' &&
+      globalThis.crypto.getRandomValues
+    ) {
       const ua = new Uint8Array(32)
       globalThis.crypto.getRandomValues(ua)
       for (let i = 0; i < 32; ++i) this._pool[this._pptr++] = ua[i]
@@ -1003,7 +1319,8 @@ export class SecureRandom {
       this._seedTime()
       this._state = new Arcfour()
       this._state.init(this._pool)
-      for (this._pptr = 0; this._pptr < this._pool.length; ++this._pptr) this._pool[this._pptr] = 0
+      for (this._pptr = 0; this._pptr < this._pool.length; ++this._pptr)
+        this._pool[this._pptr] = 0
       this._pptr = 0
     }
     return this._state.next()
