@@ -3,11 +3,10 @@
  * 作为A侧与Java服务端(B侧)进行密钥交换
  */
 
-import { getSM3 } from '../../javascript/sm3/sm3.js'
-import { getSM4 } from '../../javascript/sm4/sm4.js'
+import { SM3 } from '../../javascript/sm3/sm3.js'
+import { SM4 } from '../../javascript/sm4/sm4.js'
 import { BigInteger } from '../../javascript/sm2/biginteger.js'
 import * as util from '../../javascript/sm2/utils.js'
-import { ECCurveFp } from '../../javascript/sm2/ec.js'
 
 const SERVER_URL = 'http://localhost:8080'
 const IDa = 'client@demo.aicc'
@@ -21,17 +20,13 @@ const ONE = new BigInteger('1')
  */
 function bigIntegerTo32Bytes(n) {
     const bytes = n.toByteArray()
-    if (bytes.length === 33) {
-        return bytes.slice(1)
-    } else if (bytes.length === 32) {
-        return bytes
-    } else {
-        const result = new Array(32).fill(0)
-        for (let i = 0; i < bytes.length; i++) {
-            result[32 - bytes.length + i] = bytes[i]
-        }
-        return result
+    if (bytes.length === 33) return bytes.slice(1)
+    if (bytes.length === 32) return bytes
+    const result = new Array(32).fill(0)
+    for (let i = 0; i < bytes.length; i++) {
+        result[32 - bytes.length + i] = bytes[i]
     }
+    return result
 }
 
 /**
@@ -39,14 +34,9 @@ function bigIntegerTo32Bytes(n) {
  */
 function asUnsignedByteArray(length, value) {
     const bytes = value.toByteArray()
-    if (bytes.length === length) {
-        return bytes
-    }
     const start = bytes[0] === 0 ? 1 : 0
     const count = bytes.length - start
-    if (count > length) {
-        throw new Error('length cannot represent value')
-    }
+    if (count > length) throw new Error('length cannot represent value')
     const tmp = new Array(length).fill(0)
     for (let i = 0; i < count; i++) {
         tmp[length - count + i] = bytes[start + i]
@@ -68,7 +58,7 @@ function intToBigEndian(n, bs, off) {
  * 计算用户身份标识值Z
  */
 function userSM3Z(publicKey, userId) {
-    const sm3 = getSM3()
+    const sm3 = new SM3()
     const userIdBytes = new TextEncoder().encode(userId)
     const entla = userIdBytes.length * 8
     sm3.update((entla >> 8) & 0xff)
@@ -96,7 +86,7 @@ function userSM3Z(publicKey, userId) {
     sm3.updateBytes(xBytes, 0, 32)
     sm3.updateBytes(yBytes, 0, 32)
 
-    return sm3.finish().getHashBytes()
+    return Array.from(sm3.digest())
 }
 
 /**
@@ -121,7 +111,7 @@ function KDF(keylen, vu, Za, Zb) {
     const result = new Array(keylen)
     let ct = 0x00000001
     for (let i = 0; i < Math.floor((keylen + 31) / 32); i++) {
-        const sm3 = getSM3()
+        const sm3 = new SM3()
         const p2x = asUnsignedByteArray(32, vu.getX().toBigInteger())
         sm3.updateBytes(p2x, 0, p2x.length)
         const p2y = asUnsignedByteArray(32, vu.getY().toBigInteger())
@@ -131,8 +121,7 @@ function KDF(keylen, vu, Za, Zb) {
         const ctBytes = new Array(4)
         intToBigEndian(ct, ctBytes, 0)
         sm3.updateBytes(ctBytes, 0, 4)
-        sm3.finish()
-        const sm3Bytes = sm3.getHashBytes()
+        const sm3Bytes = Array.from(sm3.digest())
         if (i === (Math.floor((keylen + 31) / 32) - 1) && (keylen % 32) !== 0) {
             for (let j = 0; j < (keylen % 32); j++) {
                 result[32 * ct - 32 + j] = sm3Bytes[j]
@@ -151,7 +140,7 @@ function KDF(keylen, vu, Za, Zb) {
  * 创建验证值S
  */
 function createS(tag, vu, Za, Zb, Ra, Rb) {
-    const sm3 = getSM3()
+    const sm3 = new SM3()
     const bXvu = bigIntegerTo32Bytes(vu.getX().toBigInteger())
     sm3.updateBytes(bXvu, 0, bXvu.length)
     sm3.updateBytes(Za, 0, Za.length)
@@ -164,14 +153,14 @@ function createS(tag, vu, Za, Zb, Ra, Rb) {
     sm3.updateBytes(bRay, 0, bRay.length)
     sm3.updateBytes(bRbx, 0, bRbx.length)
     sm3.updateBytes(bRby, 0, bRby.length)
-    const h1 = sm3.finish().getHashBytes()
+    const h1 = Array.from(sm3.digest())
 
-    const hash = getSM3()
+    const hash = new SM3()
     hash.update(tag)
     const bYvu = bigIntegerTo32Bytes(vu.getY().toBigInteger())
     hash.updateBytes(bYvu, 0, bYvu.length)
     hash.updateBytes(h1, 0, h1.length)
-    return hash.finish().getHashBytes()
+    return Array.from(hash.digest())
 }
 
 /**
@@ -183,7 +172,6 @@ function getSa(len, pB, Rb, pA, dA, Ra, ra, IDa, IDb, Sb) {
         const raBig = new BigInteger(ra, 16)
         const RaPoint = curve.decodePointHex(Ra)
         const RbPoint = curve.decodePointHex(Rb)
-        const pAPoint = curve.decodePointHex(pA)
         const pBPoint = curve.decodePointHex(pB)
 
         const x1_ = calcX(w, RaPoint.getX().toBigInteger())
@@ -199,7 +187,7 @@ function getSa(len, pB, Rb, pA, dA, Ra, ra, IDa, IDb, Sb) {
         const Zb = userSM3Z(pB, IDb)
         const Ka = KDF(len, U, Za, Zb)
         const S1 = createS(0x02, U, Za, Zb, RaPoint, RbPoint)
-        const SbBytes = util.hexToArray(Sb)
+        const SbBytes = Array.from(util.hexToBytes(Sb))
 
         let sbMatch = true
         for (let i = 0; i < S1.length; i++) {
@@ -225,10 +213,6 @@ function getSa(len, pB, Rb, pA, dA, Ra, ra, IDa, IDb, Sb) {
     }
 }
 
-function generateKeyPair() {
-    return util.generateKeyPairHex()
-}
-
 /**
  * 主测试流程
  */
@@ -236,13 +220,13 @@ async function main() {
     console.log('=== SM2 Key Exchange Demo (JavaScript Client) ===\n')
 
     // 生成A侧(客户端)证书密钥对
-    const certKeyPair = generateKeyPair()
+    const certKeyPair = util.generateKeyPairHex()
     console.log('Generated A certificate keypair:')
     console.log('  Private key (dA):', certKeyPair.privateKey)
     console.log('  Public key (pA):', certKeyPair.publicKey)
 
     // 生成A侧随机密钥对
-    const randomKeyPair = generateKeyPair()
+    const randomKeyPair = util.generateKeyPairHex()
     console.log('\nGenerated A random keypair:')
     console.log('  Private key (ra):', randomKeyPair.privateKey)
     console.log('  Public key (Ra):', randomKeyPair.publicKey)
@@ -326,7 +310,7 @@ async function main() {
 
     // 初始化SM4
     const iv = '00000000000000000000000000000000'
-    const sm4 = getSM4()
+    const sm4 = new SM4()
     sm4.setKey(result.Ka, iv, true)
 
     // 客户端加密消息
