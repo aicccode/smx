@@ -3,32 +3,8 @@ package site.aicc.sm2.ec;
 import java.math.BigInteger;
 
 import site.aicc.sm2.util.ConvertUtil;
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : 域元素</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-26 | 下午09:25:16</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+
+/** Field element for elliptic curve operations. */
 public abstract class AbstractECElement {
 
     public abstract BigInteger toBigInteger();
@@ -64,5 +40,5 @@ public abstract class AbstractECElement {
     public byte[] getEncoded() {
         return ConvertUtil.asUnsignedByteArray((getFieldSize() + 7) / 8, toBigInteger());
     }
-   
+
 }

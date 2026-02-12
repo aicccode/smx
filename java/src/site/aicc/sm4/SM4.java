@@ -6,41 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import site.aicc.sm3.SM3;
 
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : SMS4 分组密码算法 (SM4 Password Algorithm)</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p>SM4 sm4 = new SM4(); </p>
-*       <p>sm4.setKey("this is the key", "this is the iv");  </p>
-*       <p>String text = "te123st"; </p>
-*       <p>String hex = sm4.encrypt(text);</p>
-*       <p>System.out.println("sc->" + text);</p>
-*       <p>System.out.println("en-> " + hex);</p>
-*       <p>System.out.println("de->" + sm4.decrypt(hex));</p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-23 | 下午09:50:06</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+/** SM4 block cipher algorithm. */
 public class SM4 {
-    // S 盒
-    //@formatter:off
-    private static final short[] STable = { 
+    private static final short[] S_BOX_TABLE = {
             0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
             0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
             0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62,
@@ -58,55 +26,33 @@ public class SM4 {
             0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9, 0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84,
             0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48};
 
-    // S 盒 8 比特输入 8 比特输出 置换
-    private byte Sbox(byte input) {
-        byte output = (byte) STable[input & 0xFF];
-        return output;
+    private byte sbox(byte input) {
+        return (byte) S_BOX_TABLE[input & 0xFF];
     }
-    
+
     private static final int[] FK = { 0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc };
 
-    private static final int[] CK = { 
-            0x00070e15, 0x1c232a31, 0x383f464d, 0x545b6269, 
-            0x70777e85, 0x8c939aa1, 0xa8afb6bd, 0xc4cbd2d9, 
-            0xe0e7eef5, 0xfc030a11, 0x181f262d, 0x343b4249, 
-            0x50575e65, 0x6c737a81, 0x888f969d, 0xa4abb2b9, 
-            0xc0c7ced5, 0xdce3eaf1, 0xf8ff060d, 0x141b2229, 
-            0x30373e45, 0x4c535a61, 0x686f767d, 0x848b9299, 
+    private static final int[] CK = {
+            0x00070e15, 0x1c232a31, 0x383f464d, 0x545b6269,
+            0x70777e85, 0x8c939aa1, 0xa8afb6bd, 0xc4cbd2d9,
+            0xe0e7eef5, 0xfc030a11, 0x181f262d, 0x343b4249,
+            0x50575e65, 0x6c737a81, 0x888f969d, 0xa4abb2b9,
+            0xc0c7ced5, 0xdce3eaf1, 0xf8ff060d, 0x141b2229,
+            0x30373e45, 0x4c535a61, 0x686f767d, 0x848b9299,
             0xa0a7aeb5, 0xbcc3cad1, 0xd8dfe6ed, 0xf4fb0209,
             0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279 };
-    
-    // 轮密钥
-    //@formatter:on
-    private int[] rk = new int[32];
-    // CBC初始向量
+
+    private int[] roundKeys = new int[32];
     private byte[] iv = new byte[16];
-    /**
-     * 加密方法
-     * @param text
-     * @return
-     * @throws IOException
-     */
+
     public String encrypt(String text) throws IOException {
-        return doCrypt(text.getBytes(StandardCharsets.UTF_8), Arrays.copyOfRange(iv, 0, iv.length), true);
+        return processBlocks(text.getBytes(StandardCharsets.UTF_8), Arrays.copyOfRange(iv, 0, iv.length), true);
     }
-    /**
-     * 解密方法
-     * @param text
-     * @return
-     * @throws IOException
-     */
+
     public String decrypt(String text) throws IOException {
-        // 解密
-        return doCrypt(hex2Bytes(text), Arrays.copyOfRange(iv, 0, iv.length), false);
+        return processBlocks(hex2Bytes(text), Arrays.copyOfRange(iv, 0, iv.length), false);
     }
-    /**
-     * 设置密钥以及iv值
-     * @param key
-     * @param iv
-     * @param hex 密钥及IV是否是16进制字符串
-     * @return
-     */
+
     public SM4 setKey(String key, String iv, boolean hex) {
         if (hex) {
             setKey(hex2Bytes(key), hex2Bytes(iv));
@@ -115,13 +61,12 @@ public class SM4 {
         }
         return this;
     }
-    
+
     private void setKey(byte[] keyBytes, byte[] ivBytes) {
         this.initKey(keyBytes, ivBytes);
     }
 
     private void setKey(String keyString, String ivString) {
-        // 密钥和IV 不满足条件则使用SM3计算杂凑值截取
         byte[] key = keyString.getBytes(StandardCharsets.UTF_8);
         SM3 sm3 = new SM3();
         if (key.length != 16) {
@@ -142,48 +87,40 @@ public class SM4 {
     }
 
     private void initKey(byte[] key, byte[] iv) {
-        // 加密密钥 MK
-        int[] MK = new int[4];
+        int[] masterKey = new int[4];
         int offset = 0;
         for (int i = 0; i < key.length / 4; i++) {
-            MK[i] = (((key[offset] & 0xff) << 24) | ((key[++offset] & 0xff) << 16) | ((key[++offset] & 0xff) << 8) | (key[++offset] & 0xff));
+            masterKey[i] = (((key[offset] & 0xff) << 24) | ((key[++offset] & 0xff) << 16) | ((key[++offset] & 0xff) << 8) | (key[++offset] & 0xff));
             offset++;
         }
 
         int[] K = new int[36];
-        // 首先，(K0,K1,K2,K3)=(MK0⊕FK0,MK1⊕FK1,MK2⊕FK2,MK3⊕FK3)
-        K[0] = MK[0] ^ FK[0];
-        K[1] = MK[1] ^ FK[1];
-        K[2] = MK[2] ^ FK[2];
-        K[3] = MK[3] ^ FK[3];
-        // 轮密钥生成
+        K[0] = masterKey[0] ^ FK[0];
+        K[1] = masterKey[1] ^ FK[1];
+        K[2] = masterKey[2] ^ FK[2];
+        K[3] = masterKey[3] ^ FK[3];
         for (int i = 0; i < 32; i++) {
-            K[i + 4] = (K[i] ^ T_(K[i + 1] ^ K[i + 2] ^ K[i + 3] ^ CK[i]));
-            rk[i] = K[i + 4];
+            K[i + 4] = (K[i] ^ transformTPrime(K[i + 1] ^ K[i + 2] ^ K[i + 3] ^ CK[i]));
+            roundKeys[i] = K[i + 4];
         }
-        // IV 设置
         this.iv = Arrays.copyOfRange(iv, 0, 16);
     }
 
-    private String doCrypt(byte[] input, byte[] cbcIV, boolean encrypt) throws IOException {
-        // 补全分组
+    private String processBlocks(byte[] input, byte[] cbcVector, boolean encrypt) throws IOException {
         if (encrypt) {
-            input = fixInput(input);
+            input = applyPkcs7Padding(input);
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        // 128 bit 分组
         int offset = 0;
         for (int j = 0; j < input.length / 16; j++) {
             int[] X = new int[36];
-            // 解密时下一分组的IV
             byte[] nextiv = Arrays.copyOfRange(input, offset, offset + 16);
             for (int i = 0; i < 4; i++) {
                 if (encrypt) {
-                    // 加密时 CBC IV 混合
-                    int x1 = ((input[offset] ^ cbcIV[offset % 16]) & 0xff) << 24;
-                    int x2 = ((input[++offset] ^ cbcIV[offset % 16]) & 0xff) << 16;
-                    int x3 = ((input[++offset] ^ cbcIV[offset % 16]) & 0xff) << 8;
-                    int x4 = (input[++offset] ^ cbcIV[offset % 16]) & 0xff;
+                    int x1 = ((input[offset] ^ cbcVector[offset % 16]) & 0xff) << 24;
+                    int x2 = ((input[++offset] ^ cbcVector[offset % 16]) & 0xff) << 16;
+                    int x3 = ((input[++offset] ^ cbcVector[offset % 16]) & 0xff) << 8;
+                    int x4 = (input[++offset] ^ cbcVector[offset % 16]) & 0xff;
                     X[i] = x1 | x2 | x3 | x4 ;
                 } else {
                     X[i] = (((input[offset] & 0xff) << 24) | ((input[++offset] & 0xff) << 16) | ((input[++offset] & 0xff) << 8) | ((input[++offset] & 0xff)));
@@ -191,75 +128,62 @@ public class SM4 {
 
                 offset++;
             }
-            // 加 / 解密
             for (int i = 0; i < 32; i++) {
-                X[i + 4] = F(X[i], X[i + 1], X[i + 2], X[i + 3], encrypt ? rk[i] : rk[31 - i]);
+                X[i + 4] = roundFunction(X[i], X[i + 1], X[i + 2], X[i + 3], encrypt ? roundKeys[i] : roundKeys[31 - i]);
             }
-            int[] XO = Arrays.copyOfRange(X, 32, 36);
-            int[] XRO = R(XO);
-            byte[] XBO = new byte[16];
+            int[] lastFour = Arrays.copyOfRange(X, 32, 36);
+            int[] reversed = reverseOrder(lastFour);
+            byte[] outputBlock = new byte[16];
             int index = 0;
             for (int i = 0; i < 4; i++) {
-                XBO[index] = (byte) ((XRO[i] >>> 24) & 0xff);
-                XBO[++index] = (byte) ((XRO[i] >>> 16) & 0xff);
-                XBO[++index] = (byte) ((XRO[i] >>> 8) & 0xff);
-                XBO[++index] = (byte) (XRO[i] & 0xff);
+                outputBlock[index] = (byte) ((reversed[i] >>> 24) & 0xff);
+                outputBlock[++index] = (byte) ((reversed[i] >>> 16) & 0xff);
+                outputBlock[++index] = (byte) ((reversed[i] >>> 8) & 0xff);
+                outputBlock[++index] = (byte) (reversed[i] & 0xff);
                 index++;
             }
             if (encrypt) {
-                // 加密后 重置IV为上一分组加密结果
-                System.arraycopy(XBO, 0, cbcIV, 0, 16);
+                System.arraycopy(outputBlock, 0, cbcVector, 0, 16);
             } else {
-                // 解密时 CBC IV 恢复
-                for (int i = 0; i < XBO.length; i++) {
-                    XBO[i] ^= cbcIV[i];
+                for (int i = 0; i < outputBlock.length; i++) {
+                    outputBlock[i] ^= cbcVector[i];
                 }
-                System.arraycopy(nextiv, 0, cbcIV, 0, 16);
+                System.arraycopy(nextiv, 0, cbcVector, 0, 16);
             }
-            out.write(XBO);
+            out.write(outputBlock);
         }
         if (encrypt) {
-            // 输出16进制字符串结果
             return bytes2Hex(out.toByteArray(),false);
         } else {
             byte[] bs = out.toByteArray();
-            // 分组补全逆修复
             return new String(Arrays.copyOfRange(bs, 0, bs.length - bs[bs.length - 1]), StandardCharsets.UTF_8);
         }
 
     }
 
-    // 轮函数 F
-    private int F(int x0, int x1, int x2, int x3, int rk) {
-        return x0 ^ T(x1 ^ x2 ^ x3 ^ rk);
+    private int roundFunction(int x0, int x1, int x2, int x3, int rk) {
+        return x0 ^ transformT(x1 ^ x2 ^ x3 ^ rk);
     }
 
-    // 合成置换 T
-    private int T(int a) {
-        // 非线性变换τ
+    private int transformT(int a) {
         byte[] abs = int2Bytes(a);
         for (int i = 0; i < abs.length; i++) {
-            abs[i] = Sbox(abs[i]);
+            abs[i] = sbox(abs[i]);
         }
         int b = bytes2Int(abs);
-        // 线性变换 L
         return b ^ ((b << 2) | (b >>> (32 - 2))) ^ ((b << 10) | (b >>> (32 - 10))) ^ ((b << 18) | (b >>> (32 - 18))) ^ ((b << 24) | (b >>> (32 - 24)));
     }
 
-    // T' 变换
-    private int T_(int a) {
-        // 非线性变换τ
+    private int transformTPrime(int a) {
         byte[] abs = int2Bytes(a);
         for (int i = 0; i < abs.length; i++) {
-            abs[i] = Sbox(abs[i]);
+            abs[i] = sbox(abs[i]);
         }
         int b = bytes2Int(abs);
-        // 线性变换 L'
         return b ^ ((b << 13) | (b >>> (32 - 13))) ^ ((b << 23) | (b >>> (32 - 23)));
     }
 
-    // 反序变换 R
-    private int[] R(int[] A) {
+    private int[] reverseOrder(int[] A) {
         A[0] = A[0] ^ A[3];
         A[3] = A[0] ^ A[3];
         A[0] = A[0] ^ A[3];
@@ -269,9 +193,7 @@ public class SM4 {
         return A;
     }
 
-    // 分组输入补全pkcs7
-    private byte[] fixInput(byte[] input) {
-        // 补全输入，确保输入分组完整
+    private byte[] applyPkcs7Padding(byte[] input) {
         byte t = (byte) (16 - input.length % 16);
         byte[] out = new byte[input.length + t];
         System.arraycopy(input, 0, out, 0, input.length);
@@ -280,7 +202,7 @@ public class SM4 {
         }
         return out;
     }
-    
+
     private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
 
     public static String bytes2Hex(byte[] bytes, boolean upperCase) {

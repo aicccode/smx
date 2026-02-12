@@ -4,35 +4,10 @@ import java.math.BigInteger;
 
 import site.aicc.sm2.util.ConvertUtil;
 
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : 素数域元素</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-27 | 下午09:45:30</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+/** Prime field element Fp. */
 public class FpElement extends AbstractECElement {
 
-    BigInteger q, r, v;
+    private BigInteger q, r, v;
 
     static BigInteger calculateResidue(BigInteger p) {
         int bitLength = p.bitLength();
@@ -47,7 +22,7 @@ public class FpElement extends AbstractECElement {
 
     FpElement(BigInteger q, BigInteger r, BigInteger v) {
         if (v == null || v.signum() < 0 || v.compareTo(q) >= 0) {
-            throw new IllegalArgumentException("v 不在Fp域");
+            throw new IllegalArgumentException("v is not in Fp");
         }
 
         this.q = q;
@@ -55,38 +30,47 @@ public class FpElement extends AbstractECElement {
         this.v = v;
     }
 
+    @Override
     public BigInteger toBigInteger() {
         return v;
     }
 
+    @Override
     public int getFieldSize() {
         return q.bitLength();
     }
 
+    @Override
     public AbstractECElement add(AbstractECElement b) {
         return new FpElement(q, r, modAdd(v, b.toBigInteger()));
     }
 
+    @Override
     public AbstractECElement subtract(AbstractECElement b) {
         return new FpElement(q, r, modSubtract(v, b.toBigInteger()));
     }
 
+    @Override
     public AbstractECElement multiply(AbstractECElement b) {
         return new FpElement(q, r, modMult(v, b.toBigInteger()));
     }
 
+    @Override
     public AbstractECElement divide(AbstractECElement b) {
         return new FpElement(q, r, modMult(v, modInverse(b.toBigInteger())));
     }
 
+    @Override
     public AbstractECElement negate() {
         return v.signum() == 0 ? this : new FpElement(q, r, q.subtract(v));
     }
 
+    @Override
     public AbstractECElement square() {
         return new FpElement(q, r, modMult(v, v));
     }
 
+    @Override
     public AbstractECElement invert() {
         return new FpElement(q, r, modInverse(v));
     }
@@ -105,7 +89,7 @@ public class FpElement extends AbstractECElement {
         int[] p = ConvertUtil.fromBigInteger(bits, q);
         int[] n = ConvertUtil.fromBigInteger(bits, x);
         int[] z = new int[len];
-        invert(p, n, z);
+        invertMod(p, n, z);
         return ConvertUtil.toBigInteger(len, z);
     }
 
@@ -149,6 +133,7 @@ public class FpElement extends AbstractECElement {
         return x3;
     }
 
+    @Override
     public boolean equals(Object other) {
         if (other == this) {
             return true;
@@ -159,12 +144,17 @@ public class FpElement extends AbstractECElement {
         FpElement o = (FpElement) other;
         return q.equals(o.q) && v.equals(o.v);
     }
-    
-    private static final long M = 0xFFFFFFFFL;
-    private static void invert(int[] p, int[] x, int[] z) {
+
+    @Override
+    public int hashCode() {
+        return q.hashCode() ^ v.hashCode();
+    }
+
+    private static final long UNSIGNED_MASK = 0xFFFFFFFFL;
+    private static void invertMod(int[] p, int[] x, int[] z) {
         int len = p.length;
         if (isZero(len, x)) {
-            throw new IllegalArgumentException("'x' 不能为零");
+            throw new IllegalArgumentException("'x' cannot be zero");
         }
         if (isOne(len, x)) {
             System.arraycopy(x, 0, z, 0, len);
@@ -173,17 +163,17 @@ public class FpElement extends AbstractECElement {
         int[] u = copy(len, x);
         int[] a =  new int[len];
         a[0] = 1;
-        int ac = 0;
+        int carryA = 0;
         if ((u[0] & 1) == 0) {
-            ac = inversionStep(p, u, len, a, ac);
+            carryA = inversionStep(p, u, len, a, carryA);
         }
         if (isOne(len, u)) {
-            inversionResult(p, ac, a, z);
+            inversionResult(p, carryA, a, z);
             return;
         }
         int[] v = copy(len, p);
         int[] b =  new int[len];
-        int bc = 0;
+        int carryB = 0;
         int uvLen = len;
         for (;;) {
             while (u[uvLen - 1] == 0 && v[uvLen - 1] == 0) {
@@ -191,18 +181,18 @@ public class FpElement extends AbstractECElement {
             }
             if (gte(uvLen, u, v)) {
                 subFrom(uvLen, v, u);
-                ac += subFrom(len, b, a) - bc;
-                ac = inversionStep(p, u, uvLen, a, ac);
+                carryA += subFrom(len, b, a) - carryB;
+                carryA = inversionStep(p, u, uvLen, a, carryA);
                 if (isOne(uvLen, u)) {
-                    inversionResult(p, ac, a, z);
+                    inversionResult(p, carryA, a, z);
                     return;
                 }
             } else {
                 subFrom(uvLen, u, v);
-                bc += subFrom(len, a, b) - ac;
-                bc = inversionStep(p, v, uvLen, b, bc);
+                carryB += subFrom(len, a, b) - carryA;
+                carryB = inversionStep(p, v, uvLen, b, carryB);
                 if (isOne(uvLen, v)) {
-                    inversionResult(p, bc, b, z);
+                    inversionResult(p, carryB, b, z);
                     return;
                 }
             }
@@ -251,7 +241,7 @@ public class FpElement extends AbstractECElement {
     private static int add(int len, int[] x, int[] y, int[] z) {
         long c = 0;
         for (int i = 0; i < len; ++i) {
-            c += (x[i] & M) + (y[i] & M);
+            c += (x[i] & UNSIGNED_MASK) + (y[i] & UNSIGNED_MASK);
             z[i] = (int) c;
             c >>>= 32;
         }
@@ -261,7 +251,7 @@ public class FpElement extends AbstractECElement {
     private static int addTo(int len, int[] x, int[] z) {
         long c = 0;
         for (int i = 0; i < len; ++i) {
-            c += (x[i] & M) + (z[i] & M);
+            c += (x[i] & UNSIGNED_MASK) + (z[i] & UNSIGNED_MASK);
             z[i] = (int) c;
             c >>>= 32;
         }
@@ -276,11 +266,11 @@ public class FpElement extends AbstractECElement {
 
     private static boolean gte(int len, int[] x, int[] y) {
         for (int i = len - 1; i >= 0; --i) {
-            int x_i = x[i] ^ Integer.MIN_VALUE;
-            int y_i = y[i] ^ Integer.MIN_VALUE;
-            if (x_i < y_i)
+            int xUnsigned = x[i] ^ Integer.MIN_VALUE;
+            int yUnsigned = y[i] ^ Integer.MIN_VALUE;
+            if (xUnsigned < yUnsigned)
                 return false;
-            if (x_i > y_i)
+            if (xUnsigned > yUnsigned)
                 return true;
         }
         return true;
@@ -340,7 +330,7 @@ public class FpElement extends AbstractECElement {
     private static int subFrom(int len, int[] x, int[] z) {
         long c = 0;
         for (int i = 0; i < len; ++i) {
-            c += (z[i] & M) - (x[i] & M);
+            c += (z[i] & UNSIGNED_MASK) - (x[i] & UNSIGNED_MASK);
             z[i] = (int) c;
             c >>= 32;
         }

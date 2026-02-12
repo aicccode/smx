@@ -2,40 +2,9 @@ package site.aicc.sm2.util;
 
 import java.math.BigInteger;
 
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : 数据类型转换工具</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-25 | 下午09:05:32</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+/** Data type conversion utilities. */
 public class ConvertUtil {
-    /**
-     * 判断byte[] 数组是否相等
-     * 
-     * @param a
-     * @param b
-     * @return
-     */
+
     public static boolean byteArrayEqual(byte[] a, byte[] b) {
         if (a == b) {
             return true;
@@ -54,13 +23,6 @@ public class ConvertUtil {
         return true;
     }
 
-    /**
-     * int[] 转 BigInteger
-     * 
-     * @param len
-     * @param x
-     * @return
-     */
     public static BigInteger toBigInteger(int len, int[] x) {
         byte[] bs = new byte[len << 2];
         for (int i = 0; i < len; ++i) {
@@ -72,14 +34,8 @@ public class ConvertUtil {
         return new BigInteger(1, bs);
     }
 
-    /**
-     * BigInteger 转 byte[32]
-     * 
-     * @param n
-     * @return
-     */
     public static byte[] bigIntegerTo32Bytes(BigInteger n) {
-        byte tmpd[] = (byte[]) null;
+        byte[] tmpd = null;
         if (n == null) {
             return null;
         }
@@ -99,13 +55,6 @@ public class ConvertUtil {
         return tmpd;
     }
 
-    /**
-     * BigInteger 转 byte[]
-     *
-     * @param length
-     * @param value
-     * @return
-     */
     public static byte[] asUnsignedByteArray(int length, BigInteger value) {
         byte[] bytes = value.toByteArray();
         if (bytes.length == length) {
@@ -114,21 +63,13 @@ public class ConvertUtil {
         int start = bytes[0] == 0 ? 1 : 0;
         int count = bytes.length - start;
         if (count > length) {
-            throw new IllegalArgumentException("长度length无法表示value!");
+            throw new IllegalArgumentException("Value cannot be represented in the given length");
         }
         byte[] tmp = new byte[length];
         System.arraycopy(bytes, start, tmp, tmp.length - count, count);
         return tmp;
     }
 
-    /**
-     * byte[] 转 BigInteger
-     * 
-     * @param buf
-     * @param off
-     * @param length
-     * @return
-     */
     public static BigInteger fromUnsignedByteArray(byte[] buf, int off, int length) {
         byte[] mag = buf;
         if (off != 0 || length != buf.length) {
@@ -138,44 +79,24 @@ public class ConvertUtil {
         return new BigInteger(1, mag);
     }
 
-    /**
-     * byte[] 转十六进制字符串
-     * 
-     * @param bytes
-     * @return
-     */
     public static String byteToHex(byte[] bytes) {
         return getHexString(bytes, false);
     }
 
-    /**
-     * 十六进制字符串转byte[]
-     * 
-     * @param hex
-     * @return
-     * @throws IllegalArgumentException
-     */
     public static byte[] hexToByte(String hex) throws IllegalArgumentException {
         if (hex.length() % 2 != 0) {
-            throw new IllegalArgumentException("输入不是十六进制字符串");
+            throw new IllegalArgumentException("Input is not a hex string");
         }
         char[] arr = hex.toCharArray();
         byte[] b = new byte[hex.length() / 2];
         for (int i = 0, j = 0, l = hex.length(); i < l; i++, j++) {
             String swap = "" + arr[i++] + arr[i];
             int byteint = Integer.parseInt(swap, 16) & 0xFF;
-            b[j] = new Integer(byteint).byteValue();
+            b[j] = (byte) byteint;
         }
         return b;
     }
 
-    /**
-     * BigInteger 转 int[]
-     * 
-     * @param bits
-     * @param x
-     * @return
-     */
     public static int[] fromBigInteger(int bits, BigInteger x) {
         if (x.signum() < 0 || x.bitLength() > bits) {
             throw new IllegalArgumentException();
@@ -190,13 +111,6 @@ public class ConvertUtil {
         return z;
     }
 
-    /**
-     * 获取整数序列中的某个位
-     * 
-     * @param x
-     * @param bit
-     * @return
-     */
     public static int getBit(int[] x, int bit) {
         if (bit == 0) {
             return x[0] & 1;
@@ -221,13 +135,6 @@ public class ConvertUtil {
         return upperCase ? new String(hexChars).toUpperCase() : new String(hexChars).toLowerCase();
     }
 
-    /**
-     * int to bytes (big endian)
-     * 
-     * @param n
-     * @param bs
-     * @param off
-     */
     public static void intToBigEndian(int n, byte[] bs, int off) {
         bs[off] = (byte) (n >>> 24);
         bs[++off] = (byte) (n >>> 16);

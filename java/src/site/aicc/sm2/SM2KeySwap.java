@@ -7,47 +7,9 @@ import site.aicc.sm2.ec.AbstractECPoint;
 import site.aicc.sm2.util.ConvertUtil;
 import site.aicc.sm3.SM3;
 
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : SM2密钥交换协议算法</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-10-04 | 下午11:27:16</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+/** SM2 key exchange protocol implementation. */
 public class SM2KeySwap {
-    /**
-     * B用户密钥交换工具
-     * @param init
-     * @param byteLen
-     * @param pA
-     * @param Ra
-     * @param pB
-     * @param dB
-     * @param Rb
-     * @param rb
-     * @param IDa
-     * @param IDb
-     * @return
-     */
+
     protected static SM2KeySwapParams getSb(SM2Initializer init, int byteLen, AbstractECPoint pA, AbstractECPoint Ra, AbstractECPoint pB, BigInteger dB, AbstractECPoint Rb, BigInteger rb, String IDa, String IDb) {
         SM2KeySwapParams result = new SM2KeySwapParams();
         try {
@@ -56,20 +18,19 @@ public class SM2KeySwap {
             try {
                 init.validatePoint(Ra.getXCoord().toBigInteger(), Ra.getYCoord().toBigInteger());
             } catch (Exception e) {
-                throw new IllegalArgumentException("协商失败，A用户随机公钥不是椭圆曲线倍点。");
+                throw new IllegalArgumentException("Key exchange failed: A's random public key is not on the curve.");
             }
             BigInteger x1_ = calcX(init.getW(), Ra.getXCoord().toBigInteger());
             AbstractECPoint V = calcPoint(tb, x1_, pA, Ra);
             if (V.isInfinity()) {
-                throw new IllegalArgumentException("协商失败，V点是无穷远点。");
+                throw new IllegalArgumentException("Key exchange failed: V is at infinity.");
             }
             byte[] Za = init.userSM3Z(IDa.getBytes(StandardCharsets.UTF_8), pA);
             byte[] Zb = init.userSM3Z(IDb.getBytes(StandardCharsets.UTF_8), pB);
-            byte[] Kb = KDF(byteLen, V, Za, Zb);
+            byte[] Kb = SM2KdfUtil.kdf(byteLen, V, Za, Zb);
             byte[] Sb = createS((byte) 0x02, V, Za, Zb, Ra, Rb);
             result.setSb(ConvertUtil.byteToHex(Sb));
             result.setKb(ConvertUtil.byteToHex(Kb));
-            // 返回中间结果
             result.setV(V);
             result.setZa(Za);
             result.setZb(Zb);
@@ -81,21 +42,6 @@ public class SM2KeySwap {
         return result;
     }
 
-    /**
-     * A用户密钥交换工具
-     * @param init
-     * @param byteLen
-     * @param pB
-     * @param Rb
-     * @param pA
-     * @param dA
-     * @param Ra
-     * @param ra
-     * @param IDa
-     * @param IDb
-     * @param Sb
-     * @return
-     */
     protected static SM2KeySwapParams getSa(SM2Initializer init, int byteLen, AbstractECPoint pB, AbstractECPoint Rb, AbstractECPoint pA, BigInteger dA, AbstractECPoint Ra, BigInteger ra, String IDa, String IDb, byte[] Sb) {
         SM2KeySwapParams result = new SM2KeySwapParams();
         try {
@@ -104,20 +50,20 @@ public class SM2KeySwap {
             try {
                 init.validatePoint(Rb.getXCoord().toBigInteger(), Rb.getYCoord().toBigInteger());
             } catch (Exception e) {
-                throw new IllegalArgumentException("协商失败，B用户随机公钥不是椭圆曲线倍点。");
+                throw new IllegalArgumentException("Key exchange failed: B's random public key is not on the curve.");
             }
             BigInteger x2_ = calcX(init.getW(), Rb.getXCoord().toBigInteger());
             AbstractECPoint U = calcPoint(ta, x2_, pB, Rb);
             if (U.isInfinity()) {
-                throw new IllegalArgumentException("协商失败，U点是无穷远点。");
+                throw new IllegalArgumentException("Key exchange failed: U is at infinity.");
             }
 
             byte[] Za = init.userSM3Z(IDa.getBytes(StandardCharsets.UTF_8), pA);
             byte[] Zb = init.userSM3Z(IDb.getBytes(StandardCharsets.UTF_8), pB);
-            byte[] Ka = KDF(byteLen, U, Za, Zb);
+            byte[] Ka = SM2KdfUtil.kdf(byteLen, U, Za, Zb);
             byte[] S1 = createS((byte) 0x02, U, Za, Zb, Ra, Rb);
             if (!ConvertUtil.byteArrayEqual(Sb, S1)) {
-                throw new IllegalArgumentException("协商失败，B用户验证值与A侧计算值不相等。");
+                throw new IllegalArgumentException("Key exchange failed: B's verification value does not match.");
             }
             byte[] Sa = createS((byte) 0x03, U, Za, Zb, Ra, Rb);
             result.setSa(ConvertUtil.byteToHex(Sa));
@@ -129,22 +75,10 @@ public class SM2KeySwap {
         }
         return result;
     }
-    /**
-     * B用户密钥协商验证
-     * @param V
-     * @param Za
-     * @param Zb
-     * @param Ra
-     * @param Rb
-     * @param Sa
-     * @return
-     */
+
     protected static boolean checkSa(AbstractECPoint V, byte[] Za, byte[] Zb, AbstractECPoint Ra, AbstractECPoint Rb, byte[] Sa) {
         byte[] S2 = createS((byte) 0x03, V, Za, Zb, Ra, Rb);
-        if (!ConvertUtil.byteArrayEqual(Sa, S2)) {
-            return false;
-        }
-        return true;
+        return ConvertUtil.byteArrayEqual(Sa, S2);
     }
 
     private static byte[] createS(byte tag, AbstractECPoint vu, byte[] Za, byte[] Zb, AbstractECPoint Ra, AbstractECPoint Rb) {
@@ -182,32 +116,5 @@ public class SM2KeySwap {
 
     private static AbstractECPoint calcPoint(BigInteger t, BigInteger x, AbstractECPoint pA, AbstractECPoint rA) {
         return pA.add(rA.multiply(x)).multiply(t);
-    }
-
-    // 密钥派生函数KDF
-    private static byte[] KDF(int keylen, AbstractECPoint vu, byte[] Za, byte[] Zb) {
-        byte[] result = new byte[keylen];
-        int ct = 0x00000001;
-        for (int i = 0; i < (keylen + 31) / 32; i++) {
-            SM3 sm3 = new SM3();
-            byte p2x[] = vu.getXCoord().getEncoded();
-            sm3.update(p2x, 0, p2x.length);
-            byte p2y[] = vu.getYCoord().getEncoded();
-            sm3.update(p2y, 0, p2y.length);
-            sm3.update(Za, 0, Za.length);
-            sm3.update(Zb, 0, Zb.length);
-            byte[] ctBytes = new byte[4];
-            ConvertUtil.intToBigEndian(ct, ctBytes, 0);
-            sm3.update(ctBytes, 0, 4);
-            sm3.finish();
-            // 最后一段
-            if (i == ((keylen + 31) / 32 - 1) && (keylen % 32) != 0) {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * ct - 32, keylen % 32);
-            } else {
-                System.arraycopy(sm3.getHashBytes(), 0, result, 32 * ct - 32, 32);
-            }
-            ct++;
-        }
-        return result;
     }
 }

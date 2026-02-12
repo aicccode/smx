@@ -3,39 +3,16 @@ package site.aicc.sm2.ec;
 import java.math.BigInteger;
 
 import site.aicc.sm2.util.ConvertUtil;
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : double-and-add method</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-28 | 下午11:36:12</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+
+/** Double-and-add (comb) point multiplication method. */
 public class DoubleAndAddMultiplier extends AbstractECMultiplier {
 
+    @Override
     protected AbstractECPoint multiplyPositive(AbstractECPoint p, BigInteger k) {
         AbstractECCurve c = p.getCurve();
         int size = getCombSize(c);
         if (k.bitLength() > size) {
-            throw new IllegalStateException("倍点不合法");
+            throw new IllegalStateException("Invalid multiplier");
         }
         DoubleAndAddPreCalcInfo info = preCalc(p);
         int width = info.getWidth();

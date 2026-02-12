@@ -2,38 +2,13 @@ package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
 
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : </p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：素数域椭圆曲线点</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-27 | 下午10:54:58</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+/** Point on a prime field elliptic curve. */
 public class FpPoint extends AbstractECPoint {
 
     public FpPoint(AbstractECCurve curve, AbstractECElement x, AbstractECElement y) {
         super(curve, x, y);
         if ((x == null) != (y == null)) {
-            throw new IllegalArgumentException("域元素是null");
+            throw new IllegalArgumentException("Field element is null");
         }
     }
 
@@ -41,6 +16,7 @@ public class FpPoint extends AbstractECPoint {
         super(curve, x, y, zs);
     }
 
+    @Override
     protected boolean satisfiesCurveEquation() {
         AbstractECElement X = this.x, Y = this.y, A = curve.getA(), B = curve.getB();
         AbstractECElement lhs = Y.square();
@@ -48,6 +24,7 @@ public class FpPoint extends AbstractECPoint {
         return lhs.equals(rhs);
     }
 
+    @Override
     public AbstractECPoint subtract(AbstractECPoint b) {
         if (b.isInfinity()) {
             return this;
@@ -55,6 +32,7 @@ public class FpPoint extends AbstractECPoint {
         return this.add(b.negate());
     }
 
+    @Override
     public AbstractECPoint add(AbstractECPoint b) {
         if (this.isInfinity()) {
             return b;
@@ -82,6 +60,7 @@ public class FpPoint extends AbstractECPoint {
 
     }
 
+    @Override
     public AbstractECPoint twice() {
         if (this.isInfinity()) {
             return this;
@@ -99,6 +78,7 @@ public class FpPoint extends AbstractECPoint {
         return new FpPoint(curve, X3, Y3);
     }
 
+    @Override
     public AbstractECPoint twicePlus(AbstractECPoint b) {
         if (this == b) {
             return threeTimes();
@@ -144,6 +124,7 @@ public class FpPoint extends AbstractECPoint {
         return new FpPoint(curve, X4, Y4);
     }
 
+    @Override
     public AbstractECPoint threeTimes() {
         if (this.isInfinity()) {
             return this;
@@ -171,9 +152,10 @@ public class FpPoint extends AbstractECPoint {
         return new FpPoint(curve, X4, Y4);
     }
 
+    @Override
     public AbstractECPoint timesPow2(int e) {
         if (e < 0) {
-            throw new IllegalArgumentException("'e' 不能为负数");
+            throw new IllegalArgumentException("'e' cannot be negative");
         }
         if (e == 0 || this.isInfinity()) {
             return this;
@@ -211,15 +193,16 @@ public class FpPoint extends AbstractECPoint {
         AbstractECElement zInv = Z1.invert(), zInv2 = zInv.square(), zInv3 = zInv2.multiply(zInv);
         return new FpPoint(curve, X1.multiply(zInv2), Y1.multiply(zInv3));
     }
-    // 2P
+
     protected AbstractECElement two(AbstractECElement x) {
         return x.add(x);
     }
-    // 3P
+
     protected AbstractECElement three(AbstractECElement x) {
         return two(x).add(x);
     }
-    // -P
+
+    @Override
     protected AbstractECPoint negate() {
         if (this.isInfinity()) {
             return this;

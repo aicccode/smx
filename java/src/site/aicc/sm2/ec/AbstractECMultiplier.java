@@ -1,32 +1,8 @@
 package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : 倍点运算器</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-26 | 下午10:35:11</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+
+/** Abstract base class for EC point multiplication algorithms. */
 public abstract class AbstractECMultiplier {
 
     public AbstractECPoint multiply(AbstractECPoint p, BigInteger k) {
@@ -41,7 +17,7 @@ public abstract class AbstractECMultiplier {
 
     private static AbstractECPoint validatePoint(AbstractECPoint p) {
         if (!p.isValid()) {
-            throw new IllegalArgumentException("该点是无效的点!");
+            throw new IllegalArgumentException("Invalid EC point");
         }
         return p;
     }

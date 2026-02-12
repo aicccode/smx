@@ -1,32 +1,8 @@
 package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : 椭圆曲线上的点</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-26 | 下午10:38:16</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+
+/** Point on an elliptic curve. */
 public abstract class AbstractECPoint {
 
     protected AbstractECCurve curve;
@@ -45,7 +21,7 @@ public abstract class AbstractECPoint {
         this.y = y;
         this.zs = zs;
     }
-    
+
     AbstractECPreCalcInfo getPreCalcInfo() {
             return this.preCalcInfo;
     }
@@ -134,7 +110,7 @@ public abstract class AbstractECPoint {
 
     public AbstractECPoint timesPow2(int e) {
         if (e < 0) {
-            throw new IllegalArgumentException("'e' 不能为负数");
+            throw new IllegalArgumentException("'e' cannot be negative");
         }
 
         AbstractECPoint p = this;

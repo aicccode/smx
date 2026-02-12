@@ -1,34 +1,10 @@
 package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
-//@formatter:off
-/**
-* <ul>
-*     <li>
-*       <h3>类功能概述：</h3>
-*       <p>本类用于(For) : w-ary non-adjacent form (wNAF) method</p>
-*     </li>
-*     <li>
-*       <h4> 使用示例(Example)：</h4>
-*       <p></p>
-*       <p></p>
-*     </li>
-*     <li>
-*       <h3>版本历史</h3>
-*       <ul>
-*           <li>Version : 1.00</li>
-*           <li>Date : 2020-09-28 | 下午11:16:25</li>
-*          
-*           <li>History : 新建类.</li>
-*       </ul>
-*     </li>
-*     
-*     
-* </ul>
-*/
-//@formatter:on
+
+/** w-ary non-adjacent form (wNAF) point multiplication method. */
 public class WNAFMultiplier extends AbstractECMultiplier {
-    // 通过移位操作计算存储需要的位数
+
     private static int getBitLen(int size) {
         if (size == 0)
             return 0;
@@ -42,6 +18,7 @@ public class WNAFMultiplier extends AbstractECMultiplier {
         return order;
     }
 
+    @Override
     protected AbstractECPoint multiplyPositive(AbstractECPoint p, BigInteger k) {
         int width = Math.max(2, Math.min(16, getWindowSize(k.bitLength())));
         WNAFPreCalcInfo wnafPreCompInfo = preCalc(p, width);
@@ -144,10 +121,10 @@ public class WNAFMultiplier extends AbstractECMultiplier {
             return generateCompact(k);
         }
         if (width < 2 || width > 16) {
-            throw new IllegalArgumentException("'width' 范围必须是 [2, 16]");
+            throw new IllegalArgumentException("'width' must be in [2, 16]");
         }
         if ((k.bitLength() >>> 16) != 0) {
-            throw new IllegalArgumentException("'k' 的位数必须小于 2^16");
+            throw new IllegalArgumentException("'k' bit length must be less than 2^16");
         }
         if (k.signum() == 0) {
             return new int[0];
@@ -184,7 +161,7 @@ public class WNAFMultiplier extends AbstractECMultiplier {
 
     private static int[] generateCompact(BigInteger k) {
         if ((k.bitLength() >>> 16) != 0) {
-            throw new IllegalArgumentException("'k'的位数必须小于 2^16");
+            throw new IllegalArgumentException("'k' bit length must be less than 2^16");
         }
         if (k.signum() == 0) {
             return new int[0];
