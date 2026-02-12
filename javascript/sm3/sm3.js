@@ -1,255 +1,245 @@
-class Sm3Impl {
-  // 初始IV常量
-  static IV = [0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600, 0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E]
+import { stringToBytes, bytesToHex, bytesToIntBE, intToBytesBE } from '../common/utils.js'
 
+/** SM3 初始向量 */
+const IV = new Uint32Array([
+  0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600,
+  0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E
+])
+
+/** 32 位循环左移 */
+function rotl(x, n) {
+  return ((x << n) | (x >>> (32 - n))) >>> 0
+}
+
+/** 置换函数 P0 */
+function P0(x) { return x ^ rotl(x, 9) ^ rotl(x, 17) }
+
+/** 置换函数 P1 */
+function P1(x) { return x ^ rotl(x, 15) ^ rotl(x, 23) }
+
+/** 布尔函数 FF (j >= 16) */
+function FF1(x, y, z) { return (x & y) | (x & z) | (y & z) }
+
+/** 布尔函数 GG (j >= 16) */
+function GG1(x, y, z) { return (x & y) | (~x & z) }
+
+/**
+ * SM3 哈希算法
+ *
+ * 用法：
+ *   const h = new SM3()
+ *   h.update(bytes).update(moreBytes)
+ *   const hash = h.digest()       // Uint8Array(32)
+ *   const hex  = h.hexDigest()    // string
+ *
+ * 便捷方法：
+ *   SM3.hash('abc')               // Uint8Array(32)
+ *   SM3.hashHex('abc')            // 大写 hex string
+ */
+export class SM3 {
   constructor() {
-    this.buff512Bit = new Int8Array(64)
-    this.buffPoint = 0
-    this.dataLength = 0
-    this.V = Sm3Impl.IV.slice()
+    this._buf = new Uint8Array(64) // 512-bit 块缓冲
+    this._pos = 0                  // 缓冲区写入位置
+    this._len = 0                  // 已处理字节总长度
+    this._V = new Uint32Array(IV)  // 当前哈希状态
+    this._finished = false
   }
 
   /**
-   * 输入单个字节
-   *
-   * @param {number} data
-   * @return {Sm3Impl}
+   * 输入数据（支持单个字节或字节数组）
+   * @param {number|Uint8Array|number[]} data - 单个字节 (0-255) 或字节数组
+   * @returns {SM3}
    */
   update(data) {
-    this.buff512Bit[this.buffPoint++] = data
-    this.dataLength += 8
-    // 够一个块，立即处理
-    if (this.buffPoint === 64) {
-      // 迭代压缩
-      this.processFullBuff(this.buff512Bit)
-      this.buffPoint = 0
+    if (typeof data === 'number') {
+      this._buf[this._pos++] = data & 0xff
+      this._len++
+      if (this._pos === 64) {
+        this._compress(this._buf)
+        this._pos = 0
+      }
+      return this
+    }
+    for (let i = 0; i < data.length; i++) {
+      this._buf[this._pos++] = data[i] & 0xff
+      this._len++
+      if (this._pos === 64) {
+        this._compress(this._buf)
+        this._pos = 0
+      }
     }
     return this
   }
-  /**
-   * 输入字符串
-   *
-   * @param {String} text
-   * @return {Sm3Impl}
-   */
 
+  /**
+   * 输入字符串（UTF-8 编码）
+   * @param {string} text
+   * @returns {SM3}
+   */
   updateString(text) {
-    const code = encodeURIComponent(text)
-    const bytes = []
-    for (let i = 0; i < code.length; i++) {
-      const c = code.charAt(i)
-      if (c === '%') {
-        const hex = code.charAt(i + 1) + code.charAt(i + 2)
-        const hexVal = parseInt(hex, 16)
-        bytes.push(hexVal)
-        i += 2
-      } else bytes.push(c.charCodeAt(0))
-    }
-    return this.updateBytes(bytes, 0, bytes.length)
+    return this.update(stringToBytes(text))
   }
 
   /**
-   * 输入字节数组
-   *
-   * @param {Int8Array} data
-   * @param {number} inOffset
+   * 输入字节数组的指定区间（兼容旧 API）
+   * @param {Uint8Array|number[]} data
+   * @param {number} offset
    * @param {number} length
-   * @return {Sm3Impl}
+   * @returns {SM3}
    */
-  updateBytes(data, inOffset, length) {
+  updateBytes(data, offset, length) {
     for (let i = 0; i < length; i++) {
-      this.buff512Bit[this.buffPoint++] = data[inOffset + i]
-      this.dataLength += 8
-      // 够一个块，立即处理
-      if (this.buffPoint === 64) {
-        // 迭代压缩
-        this.processFullBuff(this.buff512Bit)
-        this.buffPoint = 0
+      this._buf[this._pos++] = data[offset + i] & 0xff
+      this._len++
+      if (this._pos === 64) {
+        this._compress(this._buf)
+        this._pos = 0
       }
     }
     return this
   }
 
   /**
-   * 获取最终的杂凑值，获取之前必须先调用finish
-   *
-   * @return {string} 杂凑值 hexString
+   * 完成哈希计算，返回 32 字节摘要
+   * @returns {Uint8Array}
    */
-  getHashCode() {
-    return this.hashValue
+  digest() {
+    if (!this._finished) {
+      this._pad()
+      this._finished = true
+    }
+    const out = new Uint8Array(32)
+    for (let i = 0; i < 8; i++) {
+      intToBytesBE(this._V[i], out, i * 4)
+    }
+    return out
   }
 
   /**
-   * 获取最终的杂凑值，获取之前必须先调用finish
-   *
-   * @return {Int8Array} 杂凑值 byte数组
+   * 完成哈希计算，返回大写十六进制字符串
+   * @returns {string}
    */
-  getHashBytes() {
-    return this.hashBytes
+  hexDigest() {
+    return bytesToHex(this.digest()).toUpperCase()
   }
 
-  /**
-   * 结束输入，处理最终块
-   *
-   * @return {Sm3Impl}
-   */
+  // ---- 兼容旧 API ----
+
+  /** @deprecated 使用 digest() / hexDigest() */
   finish() {
-    // 最后一个块处理
-    const end = this.buff512Bit.slice(0, this.buffPoint)
-    const blockLen = end.length * 8
-    // 1
-    const one = this.limitToSignedByte(128)
-    // 需填0长度
-    const fillZeroLen = (512 - (blockLen + 65) % 512) - 7
-    // 总长度Bit
-    const allLen = fillZeroLen + blockLen + 65 + 7
-    // 总长度Byte
-    const allByteLen = allLen / 8
-    //
-    const buff = new Int8Array(allByteLen)
-    // 填充数据
-    for (let i = 0; i < allByteLen; i++) {
-      if (i < end.length) {
-        // 填充消息
-        buff[i] = end[i]
-      } else if (i === end.length) {
-        // 填充1
-        buff[i] = one
-      } else if (i > allByteLen - 5) {
-        // 最后四字节填充全部数据的总长度
-        buff[i] = (this.dataLength >> ((allByteLen - i - 1) * 8)) & 0xFF
-      } else {
-        // 填充0
-        buff[i] = 0
-      }
-    }
-    // 当剩余缓存中内容大于等于448位时，这里会有两个块
-    for (let i = 0; i < allLen / 512; i++) {
-      const block = buff.slice(i * 512 / 8, (i + 1) * 512 / 8)
-      // 迭代压缩
-      this.processFullBuff(block)
-    }
-    // 记录杂凑值，重置本实例
-    this.generatorHashString()
-    this.reset()
+    this._hashBytes = this.digest()
+    this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
+    // 重置状态以支持复用
+    this._V = new Uint32Array(IV)
+    this._pos = 0
+    this._len = 0
+    this._finished = false
     return this
   }
-  limitToSignedByte(i) {
-    const b = i & 0xFF
-    let c = 0
-    if (b >= 128) {
-      c = b % 128
-      c = -1 * (128 - c)
-    } else {
-      c = b
+
+  /** @deprecated 使用 hexDigest() */
+  getHashCode() { return this._hashValue }
+
+  /** @deprecated 使用 digest() */
+  getHashBytes() { return this._hashBytes }
+
+  // ---- 内部方法 ----
+
+  /** 消息填充 */
+  _pad() {
+    const bitLen = this._len * 8
+
+    // 追加 0x80
+    this._buf[this._pos++] = 0x80
+    // 如果剩余空间不够放 8 字节长度，先填满当前块
+    if (this._pos > 56) {
+      while (this._pos < 64) this._buf[this._pos++] = 0
+      this._compress(this._buf)
+      this._pos = 0
     }
-    return c
-  }
-  generatorHashString() {
-    this.hashBytes = new Int8Array(32)
-    let off = 0
-    for (const element of this.V) {
-      this.hashBytes[off] = this.limitToSignedByte((element >>> 24) & 0xff)
-      this.hashBytes[++off] = this.limitToSignedByte((element >>> 16) & 0xff)
-      this.hashBytes[++off] = this.limitToSignedByte((element >>> 8) & 0xff)
-      this.hashBytes[++off] = this.limitToSignedByte(element & 0xff)
-      off++
-    }
-    // 转16进制大写串
-    let result = ''
-    for (const element of this.hashBytes) {
-      result += (element & 0xff).toString(16).padStart(2, '0')
-    }
-    this.hashValue = result.toUpperCase()
+    // 填充零
+    while (this._pos < 56) this._buf[this._pos++] = 0
+    // 追加 64 位大端序消息长度（JS 安全整数范围内用两个 32 位写入）
+    intToBytesBE(Math.floor(bitLen / 0x100000000), this._buf, 56)
+    intToBytesBE(bitLen >>> 0, this._buf, 60)
+    this._compress(this._buf)
   }
 
-  reset() {
-    this.V = Sm3Impl.IV.slice()
-    this.buffPoint = 0
-    this.dataLength = 0
-  }
-
-  processFullBuff(block) {
-    // 消息扩展至132个字
-    const w = new Array(68)
-    let offset = 0
-    // w0 ~ w15
+  /** 压缩函数：处理一个 64 字节块 */
+  _compress(block) {
+    // 消息扩展
+    const w = new Int32Array(68)
     for (let j = 0; j < 16; j++) {
-      w[j] = ((block[offset] & 0xff) << 24) | ((block[++offset] & 0xff) << 16) | ((block[++offset] & 0xff) << 8) | ((block[++offset] & 0xff))
-      offset++
+      w[j] = bytesToIntBE(block, j * 4)
     }
-    // w16 ~ w67
     for (let j = 16; j < 68; j++) {
-      const wj3 = w[j - 3]
-      const r15 = ((wj3 << 15) | (wj3 >>> (32 - 15)))
-      const wj13 = w[j - 13]
-      const r7 = ((wj13 << 7) | (wj13 >>> (32 - 7)))
-      w[j] = this.P1(w[j - 16] ^ w[j - 9] ^ r15) ^ r7 ^ w[j - 6]
+      w[j] = P1(w[j - 16] ^ w[j - 9] ^ rotl(w[j - 3], 15)) ^ rotl(w[j - 13], 7) ^ w[j - 6]
     }
-    // w'0 ~ w'63
-    const w2 = new Array(64)
-    for (let j = 0; j < w2.length; j++) {
+
+    const w2 = new Int32Array(64)
+    for (let j = 0; j < 64; j++) {
       w2[j] = w[j] ^ w[j + 4]
     }
 
-    // 压缩函数
-    let A = this.V[0]
-    let B = this.V[1]
-    let C = this.V[2]
-    let D = this.V[3]
-    let E = this.V[4]
-    let F = this.V[5]
-    let G = this.V[6]
-    let H = this.V[7]
+    // 压缩
+    let A = this._V[0], B = this._V[1], C = this._V[2], D = this._V[3]
+    let E = this._V[4], F = this._V[5], G = this._V[6], H = this._V[7]
+
     for (let j = 0; j < 64; j++) {
-      const A12 = ((A << 12) | (A >>> (32 - 12)))
-      // 常量 Tj
-      const T_j = j < 16 ? ((0x79CC4519 << j) | (0x79CC4519 >>> (32 - j))) : ((0x7A879D8A << (j % 32)) | (0x7A879D8A >>> (32 - (j % 32))))
-      const S_S = A12 + E + T_j
-      const SS1 = ((S_S << 7) | (S_S >>> (32 - 7)))
+      const A12 = rotl(A, 12)
+      const Tj = j < 16
+        ? rotl(0x79CC4519, j)
+        : rotl(0x7A879D8A, j % 32)
+      const SS1 = rotl((A12 + E + Tj) | 0, 7)
       const SS2 = SS1 ^ A12
-      const TT1 = j < 16 ? ((A ^ B ^ C) + D + SS2 + w2[j]) : (this.FF1(A, B, C) + D + SS2 + w2[j])
-      const TT2 = j < 16 ? ((E ^ F ^ G) + H + SS1 + w[j]) : (this.GG1(E, F, G) + H + SS1 + w[j])
+
+      const TT1 = j < 16
+        ? ((A ^ B ^ C) + D + SS2 + w2[j]) | 0
+        : (FF1(A, B, C) + D + SS2 + w2[j]) | 0
+      const TT2 = j < 16
+        ? ((E ^ F ^ G) + H + SS1 + w[j]) | 0
+        : (GG1(E, F, G) + H + SS1 + w[j]) | 0
+
       D = C
-      C = ((B << 9) | (B >>> (32 - 9)))
+      C = rotl(B, 9)
       B = A
       A = TT1
       H = G
-      G = ((F << 19) | (F >>> (32 - 19)))
+      G = rotl(F, 19)
       F = E
-      E = this.P0(TT2)
+      E = P0(TT2)
     }
-    this.V[0] ^= A
-    this.V[1] ^= B
-    this.V[2] ^= C
-    this.V[3] ^= D
-    this.V[4] ^= E
-    this.V[5] ^= F
-    this.V[6] ^= G
-    this.V[7] ^= H
+
+    this._V[0] ^= A
+    this._V[1] ^= B
+    this._V[2] ^= C
+    this._V[3] ^= D
+    this._V[4] ^= E
+    this._V[5] ^= F
+    this._V[6] ^= G
+    this._V[7] ^= H
   }
 
-  FF1(X, Y, Z) {
-    return (X & Y) | (X & Z) | (Y & Z)
+  // ---- 静态便捷方法 ----
+
+  /**
+   * 一次性计算字符串的 SM3 哈希
+   * @param {string} str
+   * @returns {Uint8Array}
+   */
+  static hash(str) {
+    return new SM3().updateString(str).digest()
   }
 
-  GG1(x, y, z) {
-    return (x & y) | ((~x) & z)
-  }
-
-  P0(x) {
-    const x9 = (x << 9) | (x >>> (32 - 9))
-    const x17 = (x << 17) | (x >>> (32 - 17))
-    return x ^ x9 ^ x17
-  }
-
-  P1(x) {
-    const x15 = (x << 15) | (x >>> (32 - 15))
-    const x23 = (x << 23) | (x >>> (32 - 23))
-    return x ^ x15 ^ x23
+  /**
+   * 一次性计算字符串的 SM3 哈希（大写 hex）
+   * @param {string} str
+   * @returns {string}
+   */
+  static hashHex(str) {
+    return new SM3().updateString(str).hexDigest()
   }
 }
 
-export const getSM3 = () => {
-  return new Sm3Impl()
-}
+/** @deprecated 使用 new SM3() */
+export const getSM3 = () => new SM3()
