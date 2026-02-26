@@ -1,29 +1,203 @@
-# SMX
+# SMX - 国密算法多语言实现
 
-完全基于国家密码管理局发布的商用密码算法标准，在无任何第三方依赖的前提下，实现国密核心算法在多编程语言环境下的全维度落地，涵盖 Java（SM2、SM3、SM4）、JavaScript（SM2、SM3、SM4）、Swift（SM2、SM3、SM4）、Rust（SM2、SM3、SM4）、Go（SM2、SM3、SM4）等主流开发语言；实现功能覆盖哈希运算（SM3）、对称加解密（SM4）、非对称加解密（SM2）、数字签名与验签（SM2）、密钥交换（SM2）等国密算法核心应用场景。
+完全基于国家密码管理局发布的商用密码算法标准，在**零第三方依赖**的前提下，实现 SM2、SM3、SM4 国密核心算法在 **Java、JavaScript、Swift、Rust、Go、C** 六种主流编程语言下的全维度落地。
 
-This set of implementation solutions is fully based on the commercial cryptographic algorithm standards issued by the State Cryptography Administration of China. Without any third-party dependencies, it has achieved full-dimensional implementation of core national cryptographic algorithms in multiple programming language environments, covering mainstream development languages such as Java (SM2, SM3, SM4), JavaScript (SM2, SM3, SM4), Swift (SM2, SM3, SM4), Rust (SM2, SM3, SM4), and Go (SM2, SM3, SM4). The implemented functions cover core application scenarios of national cryptographic algorithms including hash operation (SM3), symmetric encryption and decryption (SM4), asymmetric encryption and decryption (SM2), digital signature and verification (SM2), and key exchange (SM2).
+所有实现均严格遵循国家密码管理局发布的算法规范与测试用例，算法输出与官方测试基准完全一致，可直接应用于商用密码产品的研发与部署。
 
-国产密码算法（简称 “国密算法”）是由国家密码管理局审核认定的自主可控商用密码算法体系，目前在金融、政务、通信等关键领域得到广泛应用，已发布的核心算法包括 SM2、SM3、SM4、SM9 等，其中 SM2 属于非对称密码算法，SM3 为哈希算法，SM4 是对称分组密码算法，SM9 则为标识密码算法，四类算法分别适配不同的密码应用安全需求。
+## 功能矩阵
 
-National cryptographic algorithms (referred to as "Guomi algorithms") are an independently controllable commercial cryptographic algorithm system approved and recognized by the State Cryptography Administration of China. Currently, they are widely used in key fields such as finance, government affairs, and communications. The released core algorithms include SM2, SM3, SM4, SM9, etc. Among them, SM2 is an asymmetric cryptographic algorithm, SM3 is a hash algorithm, SM4 is a symmetric block cipher algorithm, and SM9 is an identity-based cryptographic algorithm. These four types of algorithms are respectively adapted to different security requirements of cryptographic applications.
+| 功能 | Java | JavaScript | Swift | Rust | Go | C |
+|------|:----:|:----------:|:-----:|:----:|:--:|:-:|
+| SM3 哈希 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM4 对称加解密 (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 非对称加解密 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 数字签名/验签 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 密钥交换 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-SM2 算法：全称为 SM2 椭圆曲线公钥密码算法，是我国自主研发的非对称密码算法，其核心基于椭圆曲线点群离散对数难题构建安全体系，相较于传统 RSA 算法具备更高的密码强度 ——256 位的 SM2 算法安全等级已等效于 2048 位 RSA 算法。该算法包含三大核心组件：SM2-1 椭圆曲线数字签名算法（用于数字签名与验签）、SM2-2 椭圆曲线密钥交换协议（用于密钥协商）、SM2-3 椭圆曲线公钥加密算法（用于非对称数据加密），可全面支撑数字签名、密钥协商、数据加密等核心密码功能。
+## 项目结构
 
-SM2 Algorithm: Fully named SM2 Elliptic Curve Public Key Cryptographic Algorithm, it is an asymmetric cryptographic algorithm independently developed by China. Its security system is built based on the discrete logarithm problem of elliptic curve point groups, and it has higher cryptographic strength compared with the traditional RSA algorithm —— the security level of the 256-bit SM2 algorithm is equivalent to that of the 2048-bit RSA algorithm. The algorithm consists of three core components: SM2-1 Elliptic Curve Digital Signature Algorithm (for digital signature and verification), SM2-2 Elliptic Curve Key Exchange Protocol (for key negotiation), and SM2-3 Elliptic Curve Public Key Encryption Algorithm (for asymmetric data encryption), which can fully support core cryptographic functions such as digital signature, key negotiation, and data encryption.
+```
+smx/
+├── java/            # Java 实现 (Maven, site.aicc:gm-java)
+├── javascript/      # JavaScript 实现 (npm, ES Module)
+├── swift/           # Swift 实现 (SwiftPM, GMSwift)
+├── rust/            # Rust 实现 (Cargo, gm-rust)
+├── go/              # Go 实现 (Go Module, smx)
+├── c/               # C 实现 (Makefile, C99)
+├── demo/            # 跨语言密钥交换与加密通信Demo
+│   ├── server-java/     # Java HTTP 服务端 (B侧)
+│   ├── client-js/       # JavaScript 客户端 (A侧)
+│   ├── client-rust/     # Rust 客户端 (A侧)
+│   ├── client-swift/    # Swift 客户端 (A侧)
+│   ├── client-go/       # Go 客户端 (A侧)
+│   ├── client-c/        # C 客户端 (A侧, libcurl)
+│   └── run-tests.sh     # 一键测试脚本
+└── doc/             # 算法规范文档 (PDF)
+```
 
-SM3 算法：全称为 SM3 杂凑算法，是我国自主设计的密码哈希算法，适用于商用密码场景下的数字签名与验签、消息认证码生成与验证、安全随机数生成等场景，可满足各类商用密码应用的高安全需求。从哈希值长度维度来看，MD5 算法输出 128 比特哈希值，SHA-1 算法输出 160 比特哈希值，而 SM3 算法输出 256 比特哈希值，更长的输出长度大幅提升了算法的抗碰撞能力，因此 SM3 算法的安全性显著高于 MD5 和 SHA-1 算法。
+## 各语言实现
 
-SM3 Algorithm: Fully named SM3 Hash Algorithm, it is a cryptographic hash algorithm independently designed by China. It is applicable to scenarios such as digital signature and verification, message authentication code generation and verification, and secure random number generation in commercial cryptographic scenarios, and can meet the high security requirements of various commercial cryptographic applications. From the perspective of hash value length, the MD5 algorithm outputs a 128-bit hash value, the SHA-1 algorithm outputs a 160-bit hash value, while the SM3 algorithm outputs a 256-bit hash value. The longer output length greatly improves the anti-collision capability of the algorithm, so the security of the SM3 algorithm is significantly higher than that of the MD5 and SHA-1 algorithms.
+### Java
 
-SM4 算法：全称为 SM4 分组密码算法，是我国自主设计的对称分组密码算法，主要用于数据的加密与解密运算，保障数据和信息的机密性。对称密码算法的核心安全基础是足够的密钥长度与分组长度，SM4 算法的密钥长度和分组长度均为 128 比特，与国际主流的 AES 算法参数一致，其安全强度远高于 3DES 算法（密钥长度 112/168 比特），是我国商用密码体系中对称加密的核心算法。
+```bash
+cd java
+mvn test        # 运行测试
+mvn install     # 安装到本地仓库
+```
 
-SM4 Algorithm: Fully named SM4 Block Cipher Algorithm, it is a symmetric block cipher algorithm independently designed by China, mainly used for data encryption and decryption operations to ensure the confidentiality of data and information. The core security foundation of symmetric cryptographic algorithms is sufficient key length and block length. The SM4 algorithm has a key length and block length of 128 bits, consistent with the parameters of the internationally mainstream AES algorithm, and its security strength is much higher than that of the 3DES algorithm (key length 112/168 bits), making it the core algorithm for symmetric encryption in China's commercial cryptographic system.
+- **构建工具：** Maven
+- **包名：** `site.aicc` (`gm-java:1.0.0`)
+- **最低版本：** Java 8+
+- **依赖：** 无（仅 JUnit 用于测试）
 
-SM9 算法：全称为 SM9 标识密码算法，是国家密码管理局发布的基于身份的加密（IBE, Identity-Based Encryption）算法。与传统公钥密码算法不同，SM9 算法直接将用户的身份标识（如手机号、邮箱、身份证号等）作为公钥，无需依赖数字证书完成身份认证与加密解密，大幅简化了密码体系的部署与管理成本，适用于分布式系统、物联网等轻量级密码应用场景。
+### JavaScript
 
-SM9 Algorithm: Fully named SM9 Identity-Based Cryptographic Algorithm, it is an Identity-Based Encryption (IBE) algorithm issued by the State Cryptography Administration of China. Different from traditional public key cryptographic algorithms, the SM9 algorithm directly uses the user's identity identifier (such as mobile phone number, email, ID card number, etc.) as the public key, and does not need to rely on digital certificates to complete identity authentication, encryption and decryption, which greatly reduces the deployment and management costs of the cryptographic system, and is suitable for lightweight cryptographic application scenarios such as distributed systems and the Internet of Things (IoT).
+```bash
+cd javascript
+npm test        # 运行测试
+```
 
-目前，SM2、SM3、SM4 算法的全部实现均严格遵循国家密码管理局发布的算法规范与测试用例，已通过全维度合规性测试，算法输出结果与官方测试基准完全一致，可直接应用于商用密码产品的研发与部署。
+- **构建工具：** npm (ES Module)
+- **包名：** `gm-js`
+- **运行环境：** Node.js (ES Module)
+- **依赖：** 无
 
-At present, all implementations of the SM2, SM3, and SM4 algorithms in this solution strictly comply with the algorithm specifications and test cases issued by the State Cryptography Administration of China, have passed full-dimensional compliance testing, and the algorithm output results are completely consistent with the official test benchmarks, which can be directly applied to the research and development and deployment of commercial cryptographic products.
+### Swift
+
+```bash
+cd swift
+swift test      # 运行测试
+swift build     # 编译
+```
+
+- **构建工具：** Swift Package Manager
+- **库名：** `GMSwift`
+- **最低版本：** Swift 5.7+, iOS 15+, macOS 10.13+
+- **依赖：** 无
+
+### Rust
+
+```bash
+cd rust
+cargo test      # 运行测试
+cargo build     # 编译
+```
+
+- **构建工具：** Cargo
+- **包名：** `gm-rust`
+- **最低版本：** Rust 2024 edition
+- **依赖：** 无
+
+### Go
+
+```bash
+cd go
+go test ./...   # 运行测试
+```
+
+- **构建工具：** Go Modules
+- **模块名：** `smx`
+- **最低版本：** Go 1.21+
+- **依赖：** 无
+
+### C
+
+```bash
+cd c
+make test       # 编译并运行测试
+```
+
+- **构建工具：** Makefile (gcc)
+- **标准：** C99
+- **依赖：** 无（核心库），libcurl（仅Demo客户端）
+
+## 跨语言Demo
+
+Demo 验证六种语言的 SM2 实现能够完成**密钥交换协议**并使用协商密钥进行 **SM4 加密解密通信**。
+
+### 架构
+
+```
+┌─────────────┐     HTTP      ┌─────────────┐
+│ JS Client   │─────────────>│             │
+├─────────────┤              │             │
+│ Rust Client │─────────────>│   Java      │
+├─────────────┤              │   Server    │
+│Swift Client │─────────────>│   (B侧)     │
+├─────────────┤              │             │
+│ Go Client   │─────────────>│             │
+├─────────────┤              │             │
+│  C Client   │─────────────>│             │
+└─────────────┘              └─────────────┘
+     (A侧)
+```
+
+### 密钥交换流程
+
+```
+Client(A)                          Server(B)
+   │                                   │
+   │ 生成 dA/pA, ra/Ra                  │
+   │ POST /api/keyswap/init            │
+   ├──────────────────────────────────>│
+   │                                   │ 生成 rb/Rb, 计算 Sb, Kb
+   │        {sessionId, pB, Rb, Sb}    │
+   │<──────────────────────────────────┤
+   │                                   │
+   │ 计算 Sa, Ka, 验证 Sb               │
+   │ POST /api/keyswap/confirm {Sa}    │
+   ├──────────────────────────────────>│
+   │                                   │ 验证 Sa
+   │                       {success}   │
+   │<──────────────────────────────────┤
+   │                                   │
+   │ ========= Ka == Kb 密钥协商完成 =========│
+   │                                   │
+   │ SM4(Ka) 加密消息                    │
+   │ POST /api/crypto/test             │
+   ├──────────────────────────────────>│
+   │                                   │ SM4(Kb) 解密验证 + 加密回复
+   │     {decryptMatch, ciphertext}    │
+   │<──────────────────────────────────┤
+   │ SM4(Ka) 解密回复                    │
+```
+
+### 一键测试
+
+```bash
+cd demo
+./run-tests.sh
+```
+
+## 算法简介
+
+### SM2 椭圆曲线公钥密码算法
+
+基于椭圆曲线点群离散对数难题，256 位安全等级等效于 2048 位 RSA。包含三大核心组件：
+- **SM2-1** 椭圆曲线数字签名算法
+- **SM2-2** 椭圆曲线密钥交换协议
+- **SM2-3** 椭圆曲线公钥加密算法
+
+### SM3 杂凑算法
+
+输出 256 位哈希值，安全性显著高于 MD5 (128 位) 和 SHA-1 (160 位)，适用于数字签名、消息认证码、随机数生成等场景。
+
+### SM4 分组密码算法
+
+密钥长度与分组长度均为 128 位，与 AES 参数一致，是国密体系中对称加密的核心算法。本实现采用 CBC 模式 + PKCS7 填充。
+
+## 参考文档
+
+`doc/` 目录包含国家密码管理局发布的算法规范文档：
+
+| 文档 | 说明 |
+|------|------|
+| `sm2.pdf` | SM2 椭圆曲线公钥密码算法规范 |
+| `sm2_param.pdf` | SM2 推荐曲线参数 |
+| `sm3.pdf` | SM3 杂凑算法规范 |
+| `SM4.pdf` | SM4 分组密码算法规范 |
+| `SM9.pdf` | SM9 标识密码算法规范 |
+
+## License
+
+[Apache License 2.0](LICENSE)
