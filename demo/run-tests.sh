@@ -19,13 +19,13 @@ echo "=========================================="
 echo ""
 
 # 构建并安装Java SM2模块到本地仓库
-echo -e "${YELLOW}[1/7] 构建并安装Java SM2模块...${NC}"
+echo -e "${YELLOW}[1/8] 构建并安装Java SM2模块...${NC}"
 cd ../java
 mvn -q install -DskipTests
 echo -e "${GREEN}Java SM2模块构建并安装完成${NC}"
 
 # 启动Java服务端
-echo -e "${YELLOW}[2/7] 启动Java服务端...${NC}"
+echo -e "${YELLOW}[2/8] 启动Java服务端...${NC}"
 cd "$SCRIPT_DIR/server-java"
 mvn -q compile
 mvn -q exec:java -Dexec.mainClass="site.aicc.demo.DemoServer" &
@@ -54,7 +54,7 @@ trap cleanup EXIT
 
 # 测试JavaScript客户端
 echo "=========================================="
-echo -e "${YELLOW}[3/7] 测试JavaScript客户端...${NC}"
+echo -e "${YELLOW}[3/8] 测试JavaScript客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-js"
 if node test-demo.mjs; then
@@ -66,7 +66,7 @@ echo ""
 
 # 测试Rust客户端
 echo "=========================================="
-echo -e "${YELLOW}[4/7] 测试Rust客户端...${NC}"
+echo -e "${YELLOW}[4/8] 测试Rust客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-rust"
 if cargo run -q 2>/dev/null; then
@@ -78,7 +78,7 @@ echo ""
 
 # 测试Swift客户端 (仅在macOS上)
 echo "=========================================="
-echo -e "${YELLOW}[5/7] 测试Swift客户端...${NC}"
+echo -e "${YELLOW}[5/8] 测试Swift客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-swift"
 if swift run 2>/dev/null; then
@@ -90,7 +90,7 @@ echo ""
 
 # 测试Go客户端
 echo "=========================================="
-echo -e "${YELLOW}[6/7] 测试Go客户端...${NC}"
+echo -e "${YELLOW}[6/8] 测试Go客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-go"
 if go run . 2>/dev/null; then
@@ -100,9 +100,21 @@ else
 fi
 echo ""
 
+# 测试C客户端 (独立测试，不依赖服务端)
+echo "=========================================="
+echo -e "${YELLOW}[7/8] 测试C客户端...${NC}"
+echo "=========================================="
+cd "$SCRIPT_DIR/client-c"
+if make -s test 2>/dev/null; then
+    echo -e "${GREEN}C客户端测试通过${NC}"
+else
+    echo -e "${RED}C客户端测试失败${NC}"
+fi
+echo ""
+
 # 汇总
 echo "=========================================="
-echo -e "${YELLOW}[7/7] 测试完成${NC}"
+echo -e "${YELLOW}[8/8] 测试完成${NC}"
 echo "=========================================="
 echo ""
 echo "所有测试已完成，服务端将关闭。"

@@ -1,18 +1,24 @@
 # SM2跨语言密钥交换与加密通信Demo
 
-本Demo验证Java、JavaScript、Rust、Swift四种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
+本Demo验证Java、JavaScript、Rust、Swift、Go、C六种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
 
 ## 架构
 
 ```
 ┌─────────────┐     HTTP      ┌─────────────┐
 │ JS Client   │─────────────>│             │
-├─────────────┤              │   Java      │
-│ Rust Client │─────────────>│   Server    │
-├─────────────┤              │   (B侧)     │
-│Swift Client │─────────────>│             │
+├─────────────┤              │             │
+│ Rust Client │─────────────>│   Java      │
+├─────────────┤              │   Server    │
+│Swift Client │─────────────>│   (B侧)     │
+├─────────────┤              │             │
+│ Go Client   │─────────────>│             │
 └─────────────┘              └─────────────┘
      (A侧)
+
+┌─────────────┐
+│  C Client   │  独立测试（本地模拟A/B双方）
+└─────────────┘
 ```
 
 ## 目录结构
@@ -24,7 +30,9 @@ demo/
 ├── server-java/                 # Java HTTP服务端
 ├── client-js/                   # JavaScript客户端
 ├── client-rust/                 # Rust客户端
-└── client-swift/                # Swift客户端
+├── client-swift/                # Swift客户端
+├── client-go/                   # Go客户端
+└── client-c/                    # C客户端（独立测试，无第三方依赖）
 ```
 
 ## API接口
@@ -53,10 +61,10 @@ A确认密钥交换
 加密通信测试
 ```json
 // Request
-{"sessionId": "uuid", "plaintext": "hello"}
+{"sessionId": "uuid", "clientCiphertext": "hex", "clientPlaintext": "string"}
 
 // Response
-{"ciphertext": "hex", "decrypted": "hello", "match": true}
+{"clientDecrypted": "string", "clientDecryptMatch": true, "serverPlaintext": "string", "serverCiphertext": "hex"}
 ```
 
 ## 快速开始
@@ -93,6 +101,27 @@ cargo run
 cd client-swift
 swift run
 ```
+
+5. 测试Go客户端
+```bash
+cd client-go
+go run .
+```
+
+6. 测试C客户端（独立运行，不依赖服务端）
+```bash
+cd client-c
+make test
+```
+
+## C客户端说明
+
+C客户端采用纯C99实现，无任何第三方依赖。由于不使用HTTP库，C客户端在本地同时模拟A/B双方完成密钥交换，并使用协商密钥进行SM4加密解密验证。
+
+测试内容：
+- SM2密钥交换：本地模拟A/B双方，验证Ka==Kb，验证Sa/Sb
+- SM4加密解密：使用协商密钥加密明文，对方使用相同密钥解密验证
+- SM2加密解密：公钥加密、私钥解密，支持中文明文
 
 ## 密钥交换流程
 
