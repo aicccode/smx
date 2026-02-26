@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <curl/curl.h>
+
+#define SERVER_URL "http://localhost:8080"
+#define IDA "c-client@demo.aicc"
 
 static int passed = 0, failed = 0;
 
@@ -15,77 +19,202 @@ static void check(const char *name, int cond) {
     }
 }
 
-static void test_key_exchange_and_crypto(void) {
-    printf("=== SM2 Key Exchange + SM4 Encrypt/Decrypt Demo ===\n\n");
+/* ========== Simple JSON helpers (flat objects only) ========== */
 
-    /* --- Step 1: Generate keypairs for A and B --- */
+/* Extract a string value for a given key from JSON. Returns malloc'd string or NULL. */
+static char *json_get_string(const char *json, const char *key) {
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':' || *p == '\t') p++;
+    if (*p != '"') return NULL;
+    p++;
+    const char *end = p;
+    while (*end && *end != '"') {
+        if (*end == '\\') end++;
+        end++;
+    }
+    size_t len = (size_t)(end - p);
+    char *result = (char *)malloc(len + 1);
+    memcpy(result, p, len);
+    result[len] = '\0';
+    return result;
+}
+
+/* Extract a boolean value for a given key from JSON. */
+static int json_get_bool(const char *json, const char *key) {
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return 0;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':' || *p == '\t') p++;
+    return strncmp(p, "true", 4) == 0;
+}
+
+/* ========== libcurl response buffer ========== */
+
+typedef struct {
+    char *data;
+    size_t len;
+} ResponseBuffer;
+
+static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t total = size * nmemb;
+    ResponseBuffer *buf = (ResponseBuffer *)userp;
+    char *tmp = (char *)realloc(buf->data, buf->len + total + 1);
+    if (!tmp) return 0;
+    buf->data = tmp;
+    memcpy(buf->data + buf->len, contents, total);
+    buf->len += total;
+    buf->data[buf->len] = '\0';
+    return total;
+}
+
+/* POST JSON to url, returns response body (malloc'd). Caller must free(). */
+static char *post_json(const char *url, const char *json_body) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    ResponseBuffer buf = { NULL, 0 };
+    buf.data = (char *)malloc(1);
+    buf.data[0] = '\0';
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(buf.data);
+        return NULL;
+    }
+    return buf.data;
+}
+
+/* ========== JSON escape helper (for plaintext that may contain special chars) ========== */
+
+static char *json_escape(const char *s) {
+    size_t len = 0;
+    const char *p;
+    for (p = s; *p; p++) {
+        if (*p == '"' || *p == '\\') len += 2;
+        else len++;
+    }
+    char *out = (char *)malloc(len + 1);
+    char *q = out;
+    for (p = s; *p; p++) {
+        if (*p == '"' || *p == '\\') *q++ = '\\';
+        *q++ = *p;
+    }
+    *q = '\0';
+    return out;
+}
+
+/* ========== Main test flow ========== */
+
+int main(void) {
+    printf("=== SM2 Key Exchange Demo (C Client) ===\n\n");
+
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    /* Step 1: Generate keypairs */
     printf("[1] Generating keypairs...\n");
-    char priA[65], pubA[131], priB[65], pubB[131];
+    char priA[65], pubA[131], ra_hex[65], rA_pub[131];
     sm2_gen_keypair(priA, pubA);
-    sm2_gen_keypair(priB, pubB);
+    sm2_gen_keypair(ra_hex, rA_pub);
     printf("  A private: %.16s...\n", priA);
     printf("  A public:  %.20s...\n", pubA);
-    printf("  B private: %.16s...\n", priB);
-    printf("  B public:  %.20s...\n", pubB);
-
-    /* --- Step 2: Generate ephemeral keypairs --- */
-    printf("\n[2] Generating ephemeral keypairs...\n");
-    char ra_hex[65], rA_pub[131], rb_hex[65], rB_pub[131];
-    sm2_gen_keypair(ra_hex, rA_pub);
-    sm2_gen_keypair(rb_hex, rB_pub);
     printf("  A ephemeral: %.16s...\n", ra_hex);
-    printf("  B ephemeral: %.16s...\n", rb_hex);
 
-    /* --- Step 3: Key exchange --- */
-    printf("\n[3] Performing key exchange...\n");
-    const char *idA = "ALICE123@YAHOO.COM";
-    const char *idB = "BILL456@YAHOO.COM";
     int keyLen = 16;
 
-    BigInt256 dA = bigint256_from_hex(priA);
-    BigInt256 dB = bigint256_from_hex(priB);
-    BigInt256 ra = bigint256_from_hex(ra_hex);
-    BigInt256 rb = bigint256_from_hex(rb_hex);
+    /* Step 2: Key Exchange Init */
+    printf("\n--- Step 2: Key Exchange Init ---\n");
+    char init_body[512];
+    snprintf(init_body, sizeof(init_body),
+        "{\"IDa\":\"%s\",\"pA\":\"%s\",\"Ra\":\"%s\",\"keyLen\":%d}",
+        IDA, pubA, rA_pub, keyLen);
 
-    ECPoint pA = ec_point_from_hex_encoded(pubA);
-    ECPoint pB = ec_point_from_hex_encoded(pubB);
-    ECPoint rA = ec_point_from_hex_encoded(rA_pub);
-    ECPoint rB = ec_point_from_hex_encoded(rB_pub);
-
-    /* B computes Sb */
-    SM2KeySwapParams resultB = sm2_get_sb(keyLen, pA, rA, pB, &dB, rB, &rb, idA, idB);
-    check("B key exchange success", resultB.success);
-    if (!resultB.success) {
-        printf("  Error: %s\n", resultB.message);
-        return;
+    char *init_resp = post_json(SERVER_URL "/api/keyswap/init", init_body);
+    if (!init_resp) {
+        fprintf(stderr, "Failed to connect to server. Make sure Java server is running on port 8080\n");
+        curl_global_cleanup();
+        return 1;
     }
-    printf("  Sb: %.16s...\n", resultB.sb);
-    printf("  Kb: %s\n", resultB.kb);
+    printf("  Response: %s\n", init_resp);
 
-    /* A computes Sa and Ka */
+    char *sessionId = json_get_string(init_resp, "sessionId");
+    char *IDb = json_get_string(init_resp, "IDb");
+    char *pB_hex = json_get_string(init_resp, "pB");
+    char *Rb_hex = json_get_string(init_resp, "Rb");
+    char *Sb_hex = json_get_string(init_resp, "Sb");
+
+    check("init response has sessionId", sessionId != NULL);
+    check("init response has pB", pB_hex != NULL);
+    check("init response has Rb", Rb_hex != NULL);
+    check("init response has Sb", Sb_hex != NULL);
+
+    /* Step 3: Calculate Sa and Ka */
+    printf("\n--- Step 3: Calculate Sa and Ka ---\n");
+
+    BigInt256 dA = bigint256_from_hex(priA);
+    BigInt256 ra = bigint256_from_hex(ra_hex);
+    ECPoint pB = ec_point_from_hex_encoded(pB_hex);
+    ECPoint rB = ec_point_from_hex_encoded(Rb_hex);
+    ECPoint pA = ec_point_from_hex_encoded(pubA);
+    ECPoint rA = ec_point_from_hex_encoded(rA_pub);
+
     uint8_t sb_bytes[32];
-    hex_to_bytes(resultB.sb, sb_bytes, 32);
+    hex_to_bytes(Sb_hex, sb_bytes, 32);
 
-    SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra, idA, idB, sb_bytes, 32);
-    check("A key exchange success", resultA.success);
+    SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra,
+                                           IDA, IDb, sb_bytes, 32);
+    check("getSa success", resultA.success);
     if (!resultA.success) {
-        printf("  Error: %s\n", resultA.message);
-        return;
+        fprintf(stderr, "  Error: %s\n", resultA.message);
+        goto cleanup;
     }
     printf("  Sa: %.16s...\n", resultA.sa);
     printf("  Ka: %s\n", resultA.ka);
 
-    /* Verify Ka == Kb */
-    check("Ka == Kb", strcmp(resultA.ka, resultB.kb) == 0);
+    /* Step 4: Key Exchange Confirm */
+    printf("\n--- Step 4: Key Exchange Confirm ---\n");
+    char confirm_body[256];
+    snprintf(confirm_body, sizeof(confirm_body),
+        "{\"sessionId\":\"%s\",\"Sa\":\"%s\"}", sessionId, resultA.sa);
 
-    /* B verifies Sa */
-    uint8_t sa_bytes[32];
-    hex_to_bytes(resultA.sa, sa_bytes, 32);
-    int sa_ok = sm2_check_sa(resultB.v, resultB.za, resultB.zb, rA, rB, sa_bytes, 32);
-    check("B verifies Sa", sa_ok);
+    char *confirm_resp = post_json(SERVER_URL "/api/keyswap/confirm", confirm_body);
+    if (!confirm_resp) {
+        fprintf(stderr, "Failed to send confirm request\n");
+        goto cleanup;
+    }
+    printf("  Response: %s\n", confirm_resp);
 
-    /* --- Step 4: SM4 encrypt/decrypt with negotiated key --- */
-    printf("\n[4] SM4 encryption with negotiated key...\n");
+    int confirmed = json_get_bool(confirm_resp, "success");
+    check("key exchange confirmed", confirmed);
+    free(confirm_resp);
+
+    if (!confirmed) {
+        fprintf(stderr, "Key exchange confirmation failed\n");
+        goto cleanup;
+    }
+
+    printf("\n  Key exchange completed! Negotiated key: %s\n", resultA.ka);
+
+    /* Step 5: Bidirectional Crypto Test */
+    printf("\n--- Step 5: Bidirectional Crypto Test ---\n");
+
     uint8_t ka_bytes[16];
     hex_to_bytes(resultA.ka, ka_bytes, 16);
     uint8_t zero_iv[16];
@@ -95,57 +224,65 @@ static void test_key_exchange_and_crypto(void) {
     sm4_init(&sm4);
     sm4_set_key(&sm4, ka_bytes, 16, zero_iv, 16);
 
-    const char *plaintext = "Hello SM2 key exchange + SM4!";
-    char *ciphertext = sm4_encrypt(&sm4, plaintext);
-    printf("  Plaintext:  %s\n", plaintext);
-    printf("  Ciphertext: %s\n", ciphertext);
+    const char *clientPlaintext = "Hello from C Client!";
+    char *clientCiphertext = sm4_encrypt(&sm4, clientPlaintext);
+    printf("  Client plaintext:  %s\n", clientPlaintext);
+    printf("  Client ciphertext: %s\n", clientCiphertext);
 
-    /* B decrypts with same key */
-    SM4 sm4b;
-    sm4_init(&sm4b);
-    uint8_t kb_bytes[16];
-    hex_to_bytes(resultB.kb, kb_bytes, 16);
-    sm4_set_key(&sm4b, kb_bytes, 16, zero_iv, 16);
+    /* Build crypto test request */
+    char *escaped_plain = json_escape(clientPlaintext);
+    size_t crypto_body_len = 256 + strlen(sessionId) + strlen(clientCiphertext) + strlen(escaped_plain);
+    char *crypto_body = (char *)malloc(crypto_body_len);
+    snprintf(crypto_body, crypto_body_len,
+        "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\",\"clientPlaintext\":\"%s\"}",
+        sessionId, clientCiphertext, escaped_plain);
+    free(escaped_plain);
 
-    char *decrypted = sm4_decrypt(&sm4b, ciphertext);
-    check("SM4 decrypt with negotiated key", decrypted != NULL && strcmp(decrypted, plaintext) == 0);
-    if (decrypted) printf("  Decrypted:  %s\n", decrypted);
+    char *crypto_resp = post_json(SERVER_URL "/api/crypto/test", crypto_body);
+    free(crypto_body);
+    if (!crypto_resp) {
+        fprintf(stderr, "Failed to send crypto request\n");
+        free(clientCiphertext);
+        goto cleanup;
+    }
+    printf("  Response: %s\n", crypto_resp);
 
-    free(ciphertext);
-    free(decrypted);
-}
+    /* Verify server decrypted client message */
+    int serverDecryptOk = json_get_bool(crypto_resp, "clientDecryptMatch");
+    check("server decrypted client message", serverDecryptOk);
 
-static void test_sm2_encrypt_decrypt(void) {
-    printf("\n=== SM2 Encrypt/Decrypt Demo ===\n\n");
+    /* Client decrypts server message */
+    char *serverCiphertext = json_get_string(crypto_resp, "serverCiphertext");
+    char *serverPlaintext = json_get_string(crypto_resp, "serverPlaintext");
 
-    char pri[65], pub[131];
-    sm2_gen_keypair(pri, pub);
+    if (serverCiphertext && serverPlaintext) {
+        char *decrypted = sm4_decrypt(&sm4, serverCiphertext);
+        int clientDecryptOk = decrypted && strcmp(decrypted, serverPlaintext) == 0;
+        check("client decrypted server message", clientDecryptOk);
+        printf("  Server plaintext: %s\n", serverPlaintext);
+        if (decrypted) printf("  Client decrypted: %s\n", decrypted);
 
-    const char *messages[] = {
-        "Hello SM2!",
-        "encryption standard",
-        "\xe5\x9b\xbd\xe5\xaf\x86SM2\xe5\x85\xac\xe9\x92\xa5\xe5\x8a\xa0\xe5\xaf\x86", /* 国密SM2公钥加密 */
-    };
-    int num_msgs = 3;
-    int i;
+        if (serverDecryptOk && clientDecryptOk)
+            printf("\n  Bidirectional Crypto test PASSED!\n");
+        else
+            printf("\n  Bidirectional Crypto test FAILED!\n");
 
-    for (i = 0; i < num_msgs; i++) {
-        printf("[%d] Message: %s\n", i+1, messages[i]);
-        char *encrypted = sm2_encrypt(messages[i], pub);
-        check("  encrypt not null", encrypted != NULL);
-
-        char *decrypted = sm2_decrypt(encrypted, pri);
-        check("  decrypt matches", decrypted != NULL && strcmp(decrypted, messages[i]) == 0);
-
-        if (decrypted) printf("  Decrypted: %s\n", decrypted);
-        free(encrypted);
         free(decrypted);
     }
-}
 
-int main(void) {
-    test_key_exchange_and_crypto();
-    test_sm2_encrypt_decrypt();
+    free(serverCiphertext);
+    free(serverPlaintext);
+    free(crypto_resp);
+    free(clientCiphertext);
+
+cleanup:
+    free(init_resp);
+    free(sessionId);
+    free(IDb);
+    free(pB_hex);
+    free(Rb_hex);
+    free(Sb_hex);
+    curl_global_cleanup();
 
     printf("\n=== Demo Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

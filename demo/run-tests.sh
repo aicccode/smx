@@ -100,12 +100,13 @@ else
 fi
 echo ""
 
-# 测试C客户端 (独立测试，不依赖服务端)
+# 测试C客户端
 echo "=========================================="
 echo -e "${YELLOW}[7/8] 测试C客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-c"
-if make -s test 2>/dev/null; then
+make -s clean 2>/dev/null; make -s 2>/dev/null
+if ./demo; then
     echo -e "${GREEN}C客户端测试通过${NC}"
 else
     echo -e "${RED}C客户端测试失败${NC}"
