@@ -1,10 +1,9 @@
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SMX;
 
-const string serverUrl = "http://127.0.0.1:8080";
+const string serverUrl = "http://localhost:8080";
 const string ida = "csharp-client@demo.aicc";
 
 Console.WriteLine("=== SM2 Key Exchange Demo (C# Client) ===");
@@ -24,34 +23,14 @@ Console.WriteLine($"  Public key (Ra): {raPubHex}");
 
 int keyLen = 16;
 
-// Raw TCP HTTP POST — sends headers+body in one write to work with Java HttpServer's InputStream.available()
+using var http = new HttpClient(new HttpClientHandler { UseProxy = false });
+
 async Task<T> PostJson<T>(string url, object req)
 {
     var json = JsonSerializer.Serialize(req);
-    var uri = new Uri(url);
-    var bodyBytes = Encoding.UTF8.GetBytes(json);
-    var header = $"POST {uri.PathAndQuery} HTTP/1.1\r\nHost: {uri.Host}:{uri.Port}\r\nContent-Type: application/json\r\nContent-Length: {bodyBytes.Length}\r\nConnection: close\r\n\r\n";
-    var headerBytes = Encoding.ASCII.GetBytes(header);
-
-    // Combine into one buffer so it's sent in a single TCP segment
-    var packet = new byte[headerBytes.Length + bodyBytes.Length];
-    Buffer.BlockCopy(headerBytes, 0, packet, 0, headerBytes.Length);
-    Buffer.BlockCopy(bodyBytes, 0, packet, headerBytes.Length, bodyBytes.Length);
-
-    using var tcp = new TcpClient();
-    await tcp.ConnectAsync(uri.Host, uri.Port);
-    var stream = tcp.GetStream();
-    await stream.WriteAsync(packet);
-    await stream.FlushAsync();
-
-    // Read full response
-    using var ms = new MemoryStream();
-    await stream.CopyToAsync(ms);
-    var raw = Encoding.UTF8.GetString(ms.ToArray());
-
-    // Extract body after \r\n\r\n
-    var sep = raw.IndexOf("\r\n\r\n");
-    var respJson = sep >= 0 ? raw[(sep + 4)..] : raw;
+    var content = new StringContent(json, Encoding.UTF8, "application/json");
+    var response = await http.PostAsync(url, content);
+    var respJson = await response.Content.ReadAsStringAsync();
     Console.WriteLine($"Response: {respJson}");
     return JsonSerializer.Deserialize<T>(respJson)!;
 }
