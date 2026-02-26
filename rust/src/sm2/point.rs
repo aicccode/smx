@@ -91,10 +91,6 @@ impl JacobianPoint {
         }
     }
 
-    fn is_infinity(&self) -> bool {
-        self.z.is_zero()
-    }
-
     fn to_affine(&self) -> ECPoint {
         if self.z.is_zero() {
             return ECPoint::infinity();
@@ -178,39 +174,6 @@ impl JacobianPoint {
         JacobianPoint { x: x3, y: y3, z: z3 }
     }
 
-    /// Jacobian + Jacobian 通用点加法
-    fn add(&self, other: &JacobianPoint) -> JacobianPoint {
-        if self.z.is_zero() {
-            return JacobianPoint { x: other.x, y: other.y, z: other.z };
-        }
-        if other.z.is_zero() {
-            return JacobianPoint { x: self.x, y: self.y, z: self.z };
-        }
-
-        let z1sq = self.z.square();
-        let z2sq = other.z.square();
-        let u1 = self.x.multiply(&z2sq);
-        let u2 = other.x.multiply(&z1sq);
-        let s1 = self.y.multiply(&other.z).multiply(&z2sq);
-        let s2 = other.y.multiply(&self.z).multiply(&z1sq);
-        let h = u2.subtract(&u1);
-        let r = s2.subtract(&s1);
-
-        if h.is_zero() {
-            if r.is_zero() {
-                return self.double();
-            }
-            return Self::infinity();
-        }
-
-        let hh = h.square();
-        let hhh = hh.multiply(&h);
-        let x3 = r.square().subtract(&hhh).subtract(&u1.multiply(&hh).double());
-        let y3 = r.multiply(&u1.multiply(&hh).subtract(&x3)).subtract(&s1.multiply(&hhh));
-        let z3 = self.z.multiply(&other.z).multiply(&h);
-
-        JacobianPoint { x: x3, y: y3, z: z3 }
-    }
 }
 
 /// 椭圆曲线点（仿射坐标）
