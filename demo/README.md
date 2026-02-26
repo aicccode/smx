@@ -1,6 +1,6 @@
 # SM2跨语言密钥交换与加密通信Demo
 
-本Demo验证Java、JavaScript、Rust、Swift、Go、C六种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
+本Demo验证Java、JavaScript、Rust、Swift、Go、C、C#七种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
 
 ## 架构
 
@@ -15,6 +15,8 @@
 │ Go Client   │─────────────>│             │
 ├─────────────┤              │             │
 │  C Client   │─────────────>│             │
+├─────────────┤              │             │
+│  C# Client  │─────────────>│             │
 └─────────────┘              └─────────────┘
      (A侧)
 ```
@@ -30,7 +32,8 @@ demo/
 ├── client-rust/                 # Rust客户端
 ├── client-swift/                # Swift客户端
 ├── client-go/                   # Go客户端
-└── client-c/                    # C客户端（使用libcurl）
+├── client-c/                    # C客户端（使用libcurl）
+└── client-csharp/               # C#客户端（.NET 8）
 ```
 
 ## API接口
@@ -110,6 +113,12 @@ go run .
 ```bash
 cd client-c
 make && ./demo
+```
+
+7. 测试C#客户端
+```bash
+cd client-csharp
+dotnet run
 ```
 
 ## 密钥交换流程

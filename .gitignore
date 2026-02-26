@@ -29,3 +29,7 @@ replay_pid*
 *.o
 c/test_all
 demo/client-c/demo
+
+# C# build output
+bin/
+obj/
