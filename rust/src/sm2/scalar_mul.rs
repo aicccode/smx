@@ -8,8 +8,7 @@
 //! k < n, the incomplete addition can only meet its doubling case at the last window: before
 //! window j the accumulator holds S * 2^(5j) * P with S a multiple of 32, and for j > 0 we have
 //! |S| + 16 < n, so S = +-d (mod n) would force S = 0, i.e. an infinite accumulator, which is
-//! selected away. Other inputs (off-curve points, for which the order is unknown) get the full
-//! case handling in every window.
+//! selected away. Callers reject points off the curve before any of this.
 
 use super::curve::{Affine, Jacobian, normalize_batch};
 use super::field::{Limbs, ct_barrier, fe_add, fe_mul, fe_neg, fe_sqr, fe_sub, select};
@@ -117,16 +116,11 @@ pub(crate) fn is_on_curve(point: &Affine) -> bool {
     fe_sqr(&point.y) == rhs
 }
 
-/// [k]P, constant time in k, for any 256-bit k and any finite (P is public) point.
-///
-/// On the curve, k is first reduced modulo the group order. Off the curve the group order is
-/// unknown, so the exact integer k is used and every addition handles all cases.
+/// [k]P, constant time in k, for any 256-bit k and a valid finite point (of order n).
 pub(crate) fn mul_ct(point: &Affine, k: &Limbs) -> Jacobian {
-    let on_curve = is_on_curve(point);
-    let scalar = if on_curve { reduce_scalar(k) } else { *k };
+    let scalar = reduce_scalar(k);
 
-    // The table only depends on the public point. The variable-time addition also copes with
-    // the low-order points that can occur off the curve.
+    // The table only depends on the public point.
     let mut table = [point.to_jacobian(); ENTRIES];
     for i in 1..ENTRIES {
         table[i] = if i % 2 == 1 {
@@ -146,7 +140,7 @@ pub(crate) fn mul_ct(point: &Affine, k: &Limbs) -> Jacobian {
         let (magnitude, negative) = booth_digit(&scalar, index, WIDTH as u32);
         let mut entry = lookup_jacobian(&table, magnitude);
         entry.y = select(negative, &fe_neg(&entry.y), &entry.y);
-        acc = acc.add_ct(&entry, !on_curve || index == 0);
+        acc = acc.add_ct(&entry, index == 0);
     }
     acc
 }
@@ -218,7 +212,7 @@ pub(crate) fn mul_base_and_public(s: &Limbs, t: &Limbs, point: Option<&Affine>) 
     acc
 }
 
-/// [k]P with public k and on-curve P, in variable time.
+/// [k]P with public k and valid P, in variable time.
 pub(crate) fn mul_public(point: &Affine, k: &Limbs) -> Jacobian {
     let (digits, used) = wnaf(k, VARIABLE_ODD_WIDTH);
     let table = odd_multiples(point);

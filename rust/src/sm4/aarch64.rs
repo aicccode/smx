@@ -176,7 +176,7 @@ pub(super) unsafe fn key_schedule(key: &[u8; 16]) -> [u32; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::SBOX;
+    use super::super::sbox::SBOX;
     use super::*;
 
     #[target_feature(enable = "neon,aes")]

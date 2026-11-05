@@ -1,8 +1,12 @@
 //! SM3 实现（无第三方依赖），接口尽量贴近 Java/Swift/JS 版本
 
+use crate::ct::wipe;
 use crate::hex;
 
 const BLOCK_LEN: usize = 64;
+
+/// The 64-bit length field counts bits, so no message may reach 2^61 bytes.
+pub(crate) const MAX_MESSAGE_BYTES: u64 = (1 << 61) - 1;
 
 const IV: [u32; 8] = [
     0x7380_166F,
@@ -162,12 +166,17 @@ fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
     *state = [s0, s1, s2, s3, s4, s5, s6, s7];
 }
 
+/// Incremental SM3.
+///
+/// A message may have at most 2^61 - 1 bytes. Going beyond that makes `finish` produce no result:
+/// `hash_hex_upper` returns "" and `hash_bytes` all zeros, until the next message.
 #[derive(Clone)]
 pub struct Sm3 {
     v: [u32; 8],
     buff: [u8; BLOCK_LEN],
     buff_len: usize, // 已写入字节数
-    data_bits_len: u64,
+    data_len: u64,
+    too_long: bool,
     hash_bytes: [u8; 32],
     hash_value_hex: [u8; 64],
     finished: bool,
@@ -179,25 +188,53 @@ impl Default for Sm3 {
     }
 }
 
+/// The input and the digest can be secrets when SM3 is used as a KDF.
+impl Drop for Sm3 {
+    fn drop(&mut self) {
+        wipe(&mut self.v, [0; 8]);
+        wipe(&mut self.buff, [0; BLOCK_LEN]);
+        wipe(&mut self.hash_bytes, [0; 32]);
+        wipe(&mut self.hash_value_hex, [0; 64]);
+    }
+}
+
 impl Sm3 {
     pub fn new() -> Self {
         Sm3 {
             v: IV,
             buff: [0u8; BLOCK_LEN],
             buff_len: 0,
-            data_bits_len: 0,
+            data_len: 0,
+            too_long: false,
             hash_bytes: [0u8; 32],
             hash_value_hex: [0u8; 64],
             finished: false,
         }
     }
 
+    /// Counts `count` more message bytes; false once the message is over the limit.
+    #[inline]
+    fn account(&mut self, count: u64) -> bool {
+        match self.data_len.checked_add(count) {
+            Some(total) if total <= MAX_MESSAGE_BYTES && !self.too_long => {
+                self.data_len = total;
+                true
+            }
+            _ => {
+                self.too_long = true;
+                false
+            }
+        }
+    }
+
     /// 更新单字节
     #[inline]
     pub fn update_byte(&mut self, b: u8) -> &mut Self {
+        if !self.account(1) {
+            return self;
+        }
         self.buff[self.buff_len] = b;
         self.buff_len += 1;
-        self.data_bits_len = self.data_bits_len.wrapping_add(8);
         if self.buff_len == BLOCK_LEN {
             compress_blocks(&mut self.v, &self.buff);
             self.buff_len = 0;
@@ -208,9 +245,9 @@ impl Sm3 {
     /// 更新字节数组
     #[inline]
     pub fn update(&mut self, data: &[u8]) -> &mut Self {
-        self.data_bits_len = self
-            .data_bits_len
-            .wrapping_add((data.len() as u64).wrapping_mul(8));
+        if !self.account(data.len() as u64) {
+            return self;
+        }
         let mut rest = data;
         if self.buff_len > 0 {
             let take = rest.len().min(BLOCK_LEN - self.buff_len);
@@ -240,11 +277,14 @@ impl Sm3 {
         self.update(s.as_bytes())
     }
 
+    /// Completes the message and resets for the next one. See the type documentation for what
+    /// happens to messages over the length limit.
     pub fn finish(&mut self) -> &mut Self {
+        let valid = !self.too_long;
         let digest = self.finalize_digest();
         self.hash_bytes = digest;
         hex::encode_upper_into(&digest, &mut self.hash_value_hex);
-        self.finished = true;
+        self.finished = valid;
         self
     }
 
@@ -254,36 +294,37 @@ impl Sm3 {
 
     pub fn hash_hex_upper(&self) -> &str {
         if self.finished {
-            core::str::from_utf8(&self.hash_value_hex).expect("hex output is ASCII")
+            core::str::from_utf8(&self.hash_value_hex).unwrap_or("")
         } else {
             ""
         }
     }
 
-    /// Pads, returns the digest and resets for reuse, without touching the stored results.
-    ///
-    /// Compatibility note: as in the Java implementation this code was ported from, the length
-    /// field only carries the low 32 bits of the bit count, so messages of 2^29 bytes (512 MiB)
-    /// or more hash differently from standard SM3.
+    /// Pads, returns the digest (all zeros for a message over the limit) and resets for reuse,
+    /// without touching the stored results.
     pub(crate) fn finalize_digest(&mut self) -> [u8; 32] {
-        let len = self.buff_len;
-        self.buff[len] = 0x80;
-        self.buff[len + 1..].fill(0);
-        if len >= BLOCK_LEN - 8 {
-            compress_blocks(&mut self.v, &self.buff);
-            self.buff.fill(0);
-        }
-        let low_bits = self.data_bits_len as u32;
-        self.buff[BLOCK_LEN - 4..].copy_from_slice(&low_bits.to_be_bytes());
-        compress_blocks(&mut self.v, &self.buff);
-
         let mut out = [0u8; 32];
-        for (bytes, word) in out.chunks_exact_mut(4).zip(self.v) {
-            bytes.copy_from_slice(&word.to_be_bytes());
+        if !self.too_long {
+            let len = self.buff_len;
+            self.buff[len] = 0x80;
+            self.buff[len + 1..].fill(0);
+            if len >= BLOCK_LEN - 8 {
+                compress_blocks(&mut self.v, &self.buff);
+                self.buff.fill(0);
+            }
+            // Cannot overflow: the byte count is at most 2^61 - 1.
+            let bits = self.data_len * 8;
+            self.buff[BLOCK_LEN - 8..].copy_from_slice(&bits.to_be_bytes());
+            compress_blocks(&mut self.v, &self.buff);
+
+            for (bytes, word) in out.chunks_exact_mut(4).zip(self.v) {
+                bytes.copy_from_slice(&word.to_be_bytes());
+            }
         }
         self.v = IV;
         self.buff_len = 0;
-        self.data_bits_len = 0;
+        self.data_len = 0;
+        self.too_long = false;
         out
     }
 }
@@ -315,6 +356,40 @@ mod tests {
             h,
             "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0"
         );
+    }
+
+    /// The limit is checked without having to hash 2^61 bytes.
+    #[test]
+    fn length_limit_is_enforced_and_clears_on_finish() {
+        let mut sm3 = Sm3::new();
+        sm3.data_len = super::MAX_MESSAGE_BYTES;
+        sm3.update(b""); // adding nothing stays valid
+        assert!(!sm3.too_long);
+        sm3.update_byte(1);
+        assert!(sm3.too_long);
+        sm3.update(b"more"); // stays failed, does not wrap
+        sm3.finish();
+        assert_eq!(sm3.hash_hex_upper(), "");
+        assert_eq!(sm3.hash_bytes(), &[0u8; 32]);
+
+        sm3.data_len = u64::MAX - 1;
+        sm3.update(&[0u8; 5]); // overflow of the counter itself
+        assert!(sm3.too_long);
+        sm3.finish();
+        assert_eq!(sm3.hash_hex_upper(), "");
+
+        // The instance works again afterwards.
+        sm3.update_str("abc").finish();
+        assert_eq!(
+            sm3.hash_hex_upper(),
+            "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0"
+        );
+
+        // The longest allowed message still finalizes without overflow.
+        let mut sm3 = Sm3::new();
+        sm3.data_len = super::MAX_MESSAGE_BYTES;
+        sm3.finish();
+        assert_eq!(sm3.hash_hex_upper().len(), 64);
     }
 
     #[test]

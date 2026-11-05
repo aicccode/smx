@@ -2,7 +2,7 @@
 
 use super::bigint256::BigInt256;
 use super::curve::{Affine, Jacobian};
-use super::field::{P, reduce_once};
+use super::field::{P, sub_limbs};
 use super::fp::FpElement;
 use super::order;
 use super::scalar_mul;
@@ -59,6 +59,12 @@ pub const SM2_GY: FpElement = FpElement {
 pub const SM2_N: BigInt256 = BigInt256 { limbs: order::N };
 
 /// 椭圆曲线点（仿射坐标）
+///
+/// The fields are public, so a value of this type need not be a valid point. Every operation
+/// checks that it is (coordinates below p, on the curve) and treats anything else as invalid.
+/// Without a way to report failure in their signatures, parsers and group operations return the
+/// infinity point for invalid input, and all protocol entry points reject infinity. `is_on_curve`
+/// is the complete validity check for a public key.
 #[derive(Clone, Debug)]
 pub struct ECPoint {
     pub x: FpElement,
@@ -100,44 +106,59 @@ impl ECPoint {
     }
 
     /// 从十六进制坐标创建点
+    ///
+    /// Each coordinate must be exactly 64 hex digits, and the point valid; otherwise infinity.
     pub fn from_hex(x_hex: &str, y_hex: &str) -> Self {
-        ECPoint::new(FpElement::from_hex(x_hex), FpElement::from_hex(y_hex))
+        let parsed = BigInt256::from_fixed_hex(x_hex.as_bytes())
+            .zip(BigInt256::from_fixed_hex(y_hex.as_bytes()))
+            .map(|(x, y)| ECPoint {
+                x: FpElement { value: x },
+                y: FpElement { value: y },
+                infinity: false,
+            });
+        match parsed {
+            Some(point) if point.is_on_curve() => point,
+            _ => ECPoint::infinity(),
+        }
     }
 
-    /// 从编码的字节解码点（04||x||y格式）
+    /// 从编码的字节解码点（04||x||y格式）; infinity for anything but a valid point.
     pub fn from_encoded(data: &[u8]) -> Self {
-        if data.is_empty() {
-            return ECPoint::infinity();
-        }
-        if data[0] != 0x04 {
-            panic!("Only uncompressed point format is supported");
-        }
-        if data.len() != 65 {
-            panic!("Invalid point encoding length");
-        }
-        let x = FpElement::new(BigInt256::from_be_bytes(&data[1..33]));
-        let y = FpElement::new(BigInt256::from_be_bytes(&data[33..65]));
-        ECPoint::new(x, y)
+        Self::try_from_encoded(data).unwrap_or_else(ECPoint::infinity)
     }
 
-    /// 从十六进制编码解码点
+    /// 从十六进制编码解码点; infinity for anything but a valid point.
     pub fn from_hex_encoded(hex: &str) -> Self {
-        let digits = hex.trim_start_matches("0x").trim_start_matches("0X");
-        // The usual encoding needs no heap at all.
-        if digits.len() == 130 {
-            let mut bytes = [0u8; 65];
-            if crate::hex::decode_into(digits.as_bytes(), &mut bytes) {
-                return Self::from_encoded(&bytes);
-            }
+        Self::try_from_hex_encoded(hex).unwrap_or_else(ECPoint::infinity)
+    }
+
+    /// Decodes exactly 65 bytes `04 || x || y` of a valid point: x, y below p and on the curve.
+    pub fn try_from_encoded(data: &[u8]) -> Option<Self> {
+        if data.len() != 65 || data[0] != 0x04 {
+            return None;
         }
-        // Everything else keeps the historic parse: invalid pairs read as 0, an odd trailing
-        // digit is ignored.
-        let mut bytes = Vec::with_capacity(digits.len() / 2);
-        for i in 0..digits.len() / 2 {
-            let byte = u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).unwrap_or(0);
-            bytes.push(byte);
+        let point = ECPoint {
+            x: FpElement {
+                value: BigInt256::from_be_bytes(&data[1..33]),
+            },
+            y: FpElement {
+                value: BigInt256::from_be_bytes(&data[33..65]),
+            },
+            infinity: false,
+        };
+        point.is_on_curve().then_some(point)
+    }
+
+    /// Decodes exactly 130 hex digits (either case, no prefix) of a valid point.
+    pub fn try_from_hex_encoded(hex: &str) -> Option<Self> {
+        if hex.len() != 130 {
+            return None;
         }
-        Self::from_encoded(&bytes)
+        let mut bytes = [0u8; 65];
+        if !crate::hex::decode_into(hex.as_bytes(), &mut bytes) {
+            return None;
+        }
+        Self::try_from_encoded(&bytes)
     }
 
     /// 编码点为字节数组（04||x||y格式）
@@ -171,7 +192,7 @@ impl ECPoint {
 
     /// 取反
     pub fn negate(&self) -> Self {
-        if self.infinity {
+        if self.checked_affine().is_none() {
             return ECPoint::infinity();
         }
         ECPoint {
@@ -181,13 +202,26 @@ impl ECPoint {
         }
     }
 
-    /// Field limbs for the internal arithmetic. The public `value` field can hold a coordinate
-    /// that was never reduced, which the internal formulas do not expect.
+    /// Internal coordinates of a valid finite point.
+    #[inline]
+    pub(crate) fn checked_affine(&self) -> Option<Affine> {
+        if self.infinity {
+            return None;
+        }
+        let affine = Affine {
+            x: self.x.value.limbs,
+            y: self.y.value.limbs,
+        };
+        let below_p = sub_limbs(&affine.x, &P).1 & sub_limbs(&affine.y, &P).1;
+        (below_p == 1 && scalar_mul::is_on_curve(&affine)).then_some(affine)
+    }
+
+    /// Internal coordinates of a point the caller already validated.
     #[inline]
     fn affine(&self) -> Affine {
         Affine {
-            x: reduce_once(&self.x.value.limbs, &P),
-            y: reduce_once(&self.y.value.limbs, &P),
+            x: self.x.value.limbs,
+            y: self.y.value.limbs,
         }
     }
 
@@ -206,67 +240,83 @@ impl ECPoint {
         }
     }
 
-    /// 点加法
+    /// 点加法. An invalid operand gives infinity.
     #[allow(clippy::should_implement_trait)] // public name kept for API compatibility
     pub fn add(&self, other: &ECPoint) -> ECPoint {
-        if self.infinity {
-            return other.clone();
+        match (self.infinity, other.infinity) {
+            (true, true) => ECPoint::infinity(),
+            (true, false) => other.checked_copy(),
+            (false, true) => self.checked_copy(),
+            (false, false) => match (self.checked_affine(), other.checked_affine()) {
+                // 使用Jacobian坐标计算后转回仿射
+                (Some(a), Some(b)) => Self::from_jacobian(&a.to_jacobian().add_mixed_vartime(&b)),
+                _ => ECPoint::infinity(),
+            },
         }
-        if other.infinity {
-            return self.clone();
-        }
+    }
 
-        // 使用Jacobian坐标计算后转回仿射
-        Self::from_jacobian(
-            &self
-                .affine()
-                .to_jacobian()
-                .add_mixed_vartime(&other.affine()),
-        )
+    /// The point itself when valid, otherwise infinity.
+    fn checked_copy(&self) -> ECPoint {
+        if self.checked_affine().is_some() {
+            self.clone()
+        } else {
+            ECPoint::infinity()
+        }
     }
 
     /// 点倍乘（P + P）
     pub fn twice(&self) -> ECPoint {
-        if self.infinity {
-            return ECPoint::infinity();
+        match self.checked_affine() {
+            Some(affine) => Self::from_jacobian(&affine.to_jacobian().double()),
+            None => ECPoint::infinity(),
         }
-        Self::from_jacobian(&self.affine().to_jacobian().double())
     }
 
     /// 减法
     pub fn subtract(&self, other: &ECPoint) -> ECPoint {
-        self.add(&other.negate())
+        if other.infinity {
+            return self.checked_copy();
+        }
+        let negated = other.negate();
+        if negated.infinity {
+            return ECPoint::infinity();
+        }
+        self.add(&negated)
     }
 
     /// 标量乘法：常数时间（对标量k），基点G使用预计算表
+    ///
+    /// An invalid point gives infinity: multiplying a secret scalar with a point off the curve
+    /// would leak it (invalid-curve attack).
     pub fn multiply(&self, k: &BigInt256) -> ECPoint {
-        if self.infinity {
-            return ECPoint::infinity();
-        }
-        if self.x == SM2_GX && self.y == SM2_GY {
+        if !self.infinity && self.x == SM2_GX && self.y == SM2_GY {
             return Self::from_jacobian(&scalar_mul::mul_base(&k.limbs));
         }
-        Self::from_jacobian(&scalar_mul::mul_ct(&self.affine(), &k.limbs))
+        match self.checked_affine() {
+            Some(affine) => Self::from_jacobian(&scalar_mul::mul_ct(&affine, &k.limbs)),
+            None => ECPoint::infinity(),
+        }
     }
 
-    /// [k]self for a public scalar, in variable time. The point must be on the curve.
+    /// [k]self for a public scalar, in variable time. The point must be valid and finite.
     pub(crate) fn multiply_public(&self, k: &BigInt256) -> ECPoint {
-        if self.infinity {
-            return ECPoint::infinity();
-        }
         Self::from_jacobian(&scalar_mul::mul_public(&self.affine(), &k.limbs))
     }
 
-    /// [s]G + [t]self for public scalars, in variable time. The point must be on the curve.
+    /// [s]G + [t]self for public scalars, in variable time. The point must be valid and finite.
     pub(crate) fn base_mul_add_public(&self, s: &BigInt256, t: &BigInt256) -> ECPoint {
         let affine = self.affine();
-        let point = (!self.infinity).then_some(&affine);
-        Self::from_jacobian(&scalar_mul::mul_base_and_public(&s.limbs, &t.limbs, point))
+        Self::from_jacobian(&scalar_mul::mul_base_and_public(
+            &s.limbs,
+            &t.limbs,
+            Some(&affine),
+        ))
     }
 
-    /// 验证点在曲线上
+    /// 验证点在曲线上: a valid public key, meaning finite, with both coordinates below p and
+    /// satisfying the curve equation. Infinity is not a valid key, so this returns false for it.
     pub fn is_on_curve(&self) -> bool {
-        self.infinity || scalar_mul::is_on_curve(&self.affine())
+        self.checked_affine().is_some()
     }
 }
 

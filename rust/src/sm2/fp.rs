@@ -15,7 +15,7 @@ pub struct FpElement {
 impl FpElement {
     #[inline]
     pub fn new(value: BigInt256) -> Self {
-        // 确保值在有效范围内
+        // 确保值在有效范围内. This is arithmetic reduction; points reject such coordinates instead.
         FpElement {
             value: BigInt256::new(field::reduce_once(&value.limbs, &SM2_P.limbs)),
         }
@@ -92,18 +92,15 @@ impl FpElement {
         }
     }
 
-    /// 求逆（常数时间的 safegcd 算法）
+    /// 求逆（常数时间的 safegcd 算法）。Zero has no inverse and gives zero.
     pub fn invert(&self) -> FpElement {
-        if self.is_zero() {
-            panic!("Cannot invert zero");
-        }
         let reduced = field::reduce_once(&self.value.limbs, &SM2_P.limbs);
         FpElement {
             value: BigInt256::new(modinv::invert(&reduced, &MOD_P)),
         }
     }
 
-    /// 除法
+    /// 除法. Dividing by zero gives zero.
     pub fn divide(&self, other: &FpElement) -> FpElement {
         self.multiply(&other.invert())
     }

@@ -1,7 +1,8 @@
 //! Crate-internal hex conversion.
 //!
 //! Private keys pass through these helpers, so encoding and decoding are arithmetic only: no
-//! lookup table indexed by the data and no branch on it (checked for validity once, at the end).
+//! lookup table indexed by the data and no branch on the value of a valid digit. Only whether the
+//! text is valid hex is branched on, possibly at the first invalid digit, which reveals no key.
 
 /// ASCII digit for a nibble; `letter_offset` is 7 for upper case and 39 for lower case.
 #[inline(always)]
@@ -15,7 +16,7 @@ const fn nibble_to_ascii(nibble: u8, letter_offset: u8) -> u8 {
 /// Value of an ASCII hex digit in the low nibble, and all ones in the second result when the
 /// byte is not a hex digit (the value is then 0).
 #[inline(always)]
-const fn ascii_to_nibble(c: u8) -> (u8, i32) {
+pub(crate) const fn ascii_to_nibble(c: u8) -> (u8, i32) {
     let c = c as i32;
     let digit = c - b'0' as i32;
     let alpha = (c | 0x20) - b'a' as i32;
@@ -25,16 +26,10 @@ const fn ascii_to_nibble(c: u8) -> (u8, i32) {
     (value as u8, not_digit & not_alpha)
 }
 
-/// Hex digit value, with 0 for anything else. Used where invalid digits were always read as 0.
-#[inline(always)]
-pub(crate) const fn nibble_or_zero(c: u8) -> u8 {
-    ascii_to_nibble(c).0
-}
-
 fn encode(bytes: &[u8], letter_offset: u8) -> String {
     let mut out = vec![0u8; bytes.len() * 2];
     encode_into(bytes, &mut out, letter_offset);
-    String::from_utf8(out).expect("hex output is ASCII")
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[inline]
@@ -67,7 +62,7 @@ pub(crate) fn push_lower(out: &mut String, bytes: &[u8]) {
     for part in bytes.chunks(chunk.len() / 2) {
         let used = &mut chunk[..part.len() * 2];
         encode_into(part, used, 39);
-        out.push_str(core::str::from_utf8(used).expect("hex output is ASCII"));
+        out.push_str(core::str::from_utf8(used).unwrap_or_default());
     }
 }
 
@@ -167,14 +162,26 @@ fn decode_neon(hex: &[u8], out: &mut [u8]) -> (usize, bool) {
     (done, valid == 0xff)
 }
 
-/// Decodes an even-length string of plain hex digits. `None` covers every other input, for
-/// which callers fall back to the historic `from_str_radix` parse and its exact semantics.
+/// Decodes an even-length string of plain hex digits. `None` covers every other input, as well as
+/// running out of memory.
 pub(crate) fn decode_plain(hex: &str) -> Option<Vec<u8>> {
     if hex.len() % 2 != 0 {
         return None;
     }
-    let mut out = vec![0u8; hex.len() / 2];
+    let mut out = Vec::new();
+    out.try_reserve_exact(hex.len() / 2).ok()?;
+    out.resize(hex.len() / 2, 0);
     decode_into(hex.as_bytes(), &mut out).then_some(out)
+}
+
+/// Like `encode_lower`, returning `None` instead of aborting when memory runs out.
+pub(crate) fn try_encode_lower(bytes: &[u8]) -> Option<String> {
+    let len = bytes.len().checked_mul(2)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).ok()?;
+    out.resize(len, 0);
+    encode_into(bytes, &mut out, 39);
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -231,6 +238,7 @@ mod tests {
         assert_eq!(pushed, format!("x{lower}"));
         assert_eq!(decode_plain(&lower).unwrap(), bytes);
         assert_eq!(decode_plain(&upper).unwrap(), bytes);
+        assert_eq!(try_encode_lower(&bytes).unwrap(), lower);
         assert!(decode_plain("0").is_none());
         assert!(decode_plain("0g").is_none());
         assert!(decode_plain("+f").is_none());

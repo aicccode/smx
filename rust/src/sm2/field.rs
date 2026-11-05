@@ -3,6 +3,8 @@
 //! No function branches on or indexes by its operands: conditional steps use masks from carries
 //! (`select`).
 
+pub(crate) use crate::ct::ct_barrier;
+
 pub(crate) type Limbs = [u64; 4];
 
 /// p = 2^256 - 2^224 - 2^96 + 2^64 - 1
@@ -12,24 +14,6 @@ pub(crate) const P: Limbs = [
     0xFFFF_FFFF_FFFF_FFFF,
     0xFFFF_FFFE_FFFF_FFFF,
 ];
-
-/// Hides a mask from the optimizer. Without this LLVM can and does turn mask arithmetic on secret
-/// values back into conditional branches (seen on table lookups with rustc 1.99).
-#[inline(always)]
-pub(crate) fn ct_barrier(mut value: u64) -> u64 {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    {
-        // SAFETY: an empty template that only claims to transform the register.
-        unsafe {
-            core::arch::asm!("/* {0} */", inout(reg) value, options(pure, nomem, nostack, preserves_flags));
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        value = core::hint::black_box(value);
-    }
-    value
-}
 
 /// a + b + carry
 #[inline(always)]

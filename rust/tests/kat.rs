@@ -147,20 +147,29 @@ fn sm3_finish_resets_state() {
     assert_eq!(unhex(&first), h.hash_bytes());
 }
 
-/// The length field only carries the low 32 bits of the bit count (kept for compatibility,
-/// differs from the standard for messages of 2^29 bytes or more). Slow, so opt-in.
-#[test]
-#[ignore = "hashes 512 MiB; run with --release -- --ignored"]
-fn sm3_length_field_truncation_is_preserved() {
+/// Hashes `mib` MiB of zeros through the streaming interface.
+fn sm3_zeros_mib(mib: usize) -> String {
     let chunk = vec![0u8; 1 << 20];
     let mut h = Sm3::new();
-    for _ in 0..512 {
+    for _ in 0..mib {
         h.update(&chunk);
     }
     h.finish();
+    h.hash_hex_upper().to_string()
+}
+
+/// The length field is 64 bits: correct at and beyond 2^32 bits. Values independent of this
+/// library. Slow, so opt-in.
+#[test]
+#[ignore = "hashes 1.5 GiB; run with --release -- --ignored"]
+fn sm3_long_messages() {
     assert_eq!(
-        h.hash_hex_upper(),
-        "6EF22E2E10FF4CBD4A1590B79F37B504DA1A08C0026D7382AC477177040D99F6"
+        sm3_zeros_mib(512),
+        "7927CA8884A535D9A4D80986F7C478A790013EE370836DFB86A36B4443C86533"
+    );
+    assert_eq!(
+        sm3_zeros_mib(1024),
+        "F1ADF167041F7B4DDE929A73E500A642FBD03B9B457ADFE9EE15708EA34D12B3"
     );
 }
 
@@ -252,18 +261,26 @@ fn sm4_captured_vectors() {
     }
 }
 
-/// Keys and IVs that are not 16 bytes are derived from SM3, an unkeyed instance has zero keys.
+/// Keys and IVs must be exactly 16 bytes, and an instance without a key does nothing.
 #[test]
-fn sm4_derived_key_and_unkeyed_instance() {
+fn sm4_requires_a_full_key_and_iv() {
     let mut sm4 = SM4::new();
-    sm4.set_key(b"short", b"also-short-iv-xx-yy").unwrap();
+    assert!(sm4.encrypt("hello world").is_err());
+    assert!(sm4.decrypt("00000000000000000000000000000000").is_err());
+    assert!(sm4.set_key(b"short", &[0; 16]).is_err());
+    assert!(sm4.set_key(&[0; 16], b"short").is_err());
+    assert!(
+        sm4.encrypt("hello world").is_err(),
+        "a failed set_key keys nothing"
+    );
+
+    sm4.set_key(&[1; 16], &[2; 16]).unwrap();
+    let before = sm4.encrypt("hello world").unwrap();
+    assert!(sm4.set_key(&[3; 17], &[4; 16]).is_err());
     assert_eq!(
         sm4.encrypt("hello world").unwrap(),
-        "fd1f3f16924cedd4f1f11c5b5c60fb6c"
-    );
-    assert_eq!(
-        SM4::new().encrypt("hello world").unwrap(),
-        "3b7e52b0f04ef75c04d1b159a1055ad2"
+        before,
+        "a failed set_key changes nothing"
     );
 }
 
@@ -273,12 +290,13 @@ fn sm4_error_behaviour() {
     sm4.set_key(b"0123456789abcdef", b"fedcba9876543210")
         .unwrap();
     let msg = |c: &str| sm4.decrypt(c).unwrap_err().to_string();
-    assert_eq!(sm4.decrypt("").unwrap(), "");
     assert_eq!(msg("abc"), "Invalid hex string");
     assert_eq!(msg("zz"), "Invalid hex string");
-    // A partial block is reported with this (misnamed) error.
-    assert_eq!(msg("00"), "Invalid key length, expected 16 bytes");
-    // Valid block, invalid padding (decrypts to garbage).
+    assert_eq!(msg("+f"), "Invalid hex string");
+    assert_eq!(msg("é1"), "Invalid hex string");
+    // Wrong lengths and bad padding are one error.
+    assert_eq!(msg(""), "Invalid padding");
+    assert_eq!(msg("00"), "Invalid padding");
     assert_eq!(msg("00000000000000000000000000000000"), "Invalid padding");
 }
 
@@ -359,11 +377,14 @@ const EC_MULTIPLES: &[(&str, &str)] = &[
 fn sm2_generator_multiples() {
     for (k, expected) in EC_MULTIPLES {
         let scalar = BigInt256::from_hex(k);
-        assert_eq!(
-            SM2::get_public_key(&scalar).to_hex_encoded(),
-            *expected,
-            "k = {k}"
-        );
+        // Outside [1, n-2] the value is not a private key, whatever its multiple of G.
+        let n_minus_1 = "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54122";
+        let is_key = !scalar.is_zero() && scalar < BigInt256::from_hex(n_minus_1);
+        let as_key = SM2::get_public_key(&scalar);
+        assert_eq!(as_key.is_infinity(), !is_key, "k = {k}");
+        if is_key {
+            assert_eq!(as_key.to_hex_encoded(), *expected, "k = {k}");
+        }
         assert_eq!(
             ECPoint::generator().multiply(&scalar).to_hex_encoded(),
             *expected,

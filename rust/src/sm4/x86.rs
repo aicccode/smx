@@ -400,7 +400,7 @@ ymm_backend!(gfni_avx2, "avx2", sbox256_gfni);
 
 #[cfg(test)]
 mod tests {
-    use super::super::SBOX;
+    use super::super::sbox::SBOX;
     use super::*;
 
     fn cases<const N: usize>() -> impl Iterator<Item = [u8; N]> {

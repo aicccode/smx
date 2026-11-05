@@ -1,12 +1,21 @@
 //! SM2 密钥交换Demo客户端 - Rust版
 //! 作为A侧与Java服务端(B侧)进行密钥交换
+//!
+//! Demo limitations, not to be copied into a real system: traffic is plain HTTP, the peer's keys
+//! are not authenticated (a man in the middle could substitute them), and the protocol fixes the
+//! SM4 IV to zero, which reuses it for every message under a session key. CBC itself gives no
+//! integrity either; see the `gm_rust::sm4` documentation.
 
 use gm_rust::sm2::{bigint256::BigInt256, point::ECPoint, SM2};
 use gm_rust::sm4::SM4;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 
 const SERVER_URL: &str = "http://localhost:8080";
 const IDA: &str = "rust-client@demo.aicc";
+/// No response of this protocol comes close to this size.
+const MAX_RESPONSE_BYTES: u64 = 1 << 20;
 
 #[derive(Serialize)]
 struct InitRequest {
@@ -59,8 +68,6 @@ struct CryptoTestRequest {
 
 #[derive(Deserialize, Debug)]
 struct CryptoTestResponse {
-    #[serde(rename = "clientDecrypted")]
-    client_decrypted: String,
     #[serde(rename = "clientDecryptMatch")]
     client_decrypt_match: bool,
     #[serde(rename = "serverPlaintext")]
@@ -69,27 +76,58 @@ struct CryptoTestResponse {
     server_ciphertext: String,
 }
 
-fn hex_to_bytes(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.is_ascii() || hex.len() & 1 != 0 {
+        return Err("not a hex string".to_string());
+    }
+    (0..hex.len() / 2)
+        .map(|i| {
+            let pair = &hex[i * 2..i * 2 + 2];
+            if !pair.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return Err("not a hex string".to_string());
+            }
+            u8::from_str_radix(pair, 16).map_err(|_| "not a hex string".to_string())
+        })
         .collect()
 }
 
-fn main() {
+/// POSTs JSON and parses a JSON reply of bounded size.
+fn post<Request: Serialize, Reply: DeserializeOwned>(
+    path: &str,
+    request: &Request,
+) -> Result<Reply, String> {
+    let response = ureq::post(&format!("{SERVER_URL}{path}"))
+        .set("Content-Type", "application/json")
+        .send_json(request)
+        .map_err(|e| format!("request to {path} failed: {e}"))?;
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|e| format!("reading reply from {path} failed: {e}"))?;
+    if body.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!("reply from {path} is too large"));
+    }
+    serde_json::from_slice(&body).map_err(|e| format!("malformed reply from {path}: {e}"))
+}
+
+fn to_json<T: Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| format!("cannot encode request: {e}"))
+}
+
+fn run() -> Result<(), String> {
     println!("=== SM2 Key Exchange Demo (Rust Client) ===\n");
 
     // 生成A侧(客户端)证书密钥对
-    let (da_hex, pa_hex) = SM2::gen_key_pair();
+    let (da_hex, pa_hex) = SM2::try_gen_key_pair()?;
     println!("Generated A certificate keypair:");
-    println!("  Private key (dA): {}", da_hex);
-    println!("  Public key (pA): {}", pa_hex);
+    println!("  Public key (pA): {pa_hex}");
 
     // 生成A侧随机密钥对
-    let (ra_hex, ra_pub_hex) = SM2::gen_key_pair();
+    let (ra_hex, ra_pub_hex) = SM2::try_gen_key_pair()?;
     println!("\nGenerated A random keypair:");
-    println!("  Private key (ra): {}", ra_hex);
-    println!("  Public key (Ra): {}", ra_pub_hex);
+    println!("  Public key (Ra): {ra_pub_hex}");
 
     let key_len: usize = 16;
 
@@ -101,34 +139,23 @@ fn main() {
         r_a: ra_pub_hex.clone(),
         key_len,
     };
-    println!(
-        "Request: {:?}",
-        serde_json::to_string(&init_request).unwrap()
-    );
+    println!("Request: {}", to_json(&init_request)?);
 
-    let init_response: InitResponse = match ureq::post(&format!("{}/api/keyswap/init", SERVER_URL))
-        .set("Content-Type", "application/json")
-        .send_json(&init_request)
-    {
-        Ok(resp) => resp.into_json().expect("Failed to parse response"),
-        Err(e) => {
-            eprintln!("Failed to connect to server: {}", e);
-            eprintln!("Make sure the Java server is running on port 8080");
-            std::process::exit(1);
-        }
-    };
-    println!("Response: {:?}", init_response);
+    let init_response: InitResponse = post("/api/keyswap/init", &init_request)
+        .map_err(|e| format!("{e}\nMake sure the Java server is running on port 8080"))?;
+    println!("Response: {init_response:?}");
 
     // Step 2: 计算Sa和Ka
     println!("\n--- Step 2: Calculate Sa and Ka ---");
 
+    // Invalid points decode to infinity, which get_sa rejects.
     let p_b = ECPoint::from_hex_encoded(&init_response.p_b);
     let r_b = ECPoint::from_hex_encoded(&init_response.r_b);
     let p_a = ECPoint::from_hex_encoded(&pa_hex);
     let r_a = ECPoint::from_hex_encoded(&ra_pub_hex);
     let d_a = BigInt256::from_hex(&da_hex);
     let ra = BigInt256::from_hex(&ra_hex);
-    let sb_bytes = hex_to_bytes(&init_response.sb);
+    let sb_bytes = hex_to_bytes(&init_response.sb).map_err(|e| format!("server Sb: {e}"))?;
 
     let result = SM2::get_sa(
         key_len,
@@ -144,14 +171,14 @@ fn main() {
     );
 
     if !result.success {
-        eprintln!("getSa failed: {:?}", result.message);
-        std::process::exit(1);
+        return Err(format!("getSa failed: {:?}", result.message));
     }
 
-    let sa = result.sa.as_ref().unwrap();
-    let ka = result.ka.as_ref().unwrap();
-    println!("Sa: {}", sa);
-    println!("Ka (negotiated key): {}", ka);
+    let (Some(sa), Some(ka)) = (result.sa.as_ref(), result.ka.as_ref()) else {
+        return Err("getSa returned no result".to_string());
+    };
+    println!("Sa: {sa}");
+    println!("Ka (negotiated key): derived, not displayed");
 
     // Step 3: 确认密钥交换
     println!("\n--- Step 3: Key Exchange Confirm ---");
@@ -159,42 +186,34 @@ fn main() {
         session_id: init_response.session_id.clone(),
         sa: sa.clone(),
     };
-    println!(
-        "Request: {:?}",
-        serde_json::to_string(&confirm_request).unwrap()
-    );
+    println!("Request: {}", to_json(&confirm_request)?);
 
-    let confirm_response: ConfirmResponse =
-        ureq::post(&format!("{}/api/keyswap/confirm", SERVER_URL))
-            .set("Content-Type", "application/json")
-            .send_json(&confirm_request)
-            .expect("Failed to send confirm request")
-            .into_json()
-            .expect("Failed to parse confirm response");
-    println!("Response: {:?}", confirm_response);
+    let confirm_response: ConfirmResponse = post("/api/keyswap/confirm", &confirm_request)?;
+    println!("Response: {confirm_response:?}");
 
     if !confirm_response.success {
-        eprintln!("Key exchange confirmation failed");
-        std::process::exit(1);
+        return Err("Key exchange confirmation failed".to_string());
     }
 
     println!("\nKey exchange completed successfully!");
-    println!("Negotiated key (Ka): {}", ka);
 
     // Step 4: 双向加密通信测试
     println!("\n--- Step 4: Bidirectional Crypto Test ---");
 
-    // 初始化SM4
-    let iv = hex_to_bytes("00000000000000000000000000000000");
-    let ka_bytes = hex_to_bytes(ka);
+    // 初始化SM4. The all-zero IV is part of this demo's protocol; see the top of this file.
+    let iv = [0u8; 16];
+    let ka_bytes = hex_to_bytes(ka)?;
     let mut sm4 = SM4::new();
-    sm4.set_key(&ka_bytes, &iv).expect("Failed to set SM4 key");
+    sm4.set_key(&ka_bytes, &iv)
+        .map_err(|e| format!("cannot set SM4 key: {e}"))?;
 
     // 客户端加密消息
     let client_plaintext = "Hello from Rust Client!";
-    let client_ciphertext = sm4.encrypt(client_plaintext).expect("Failed to encrypt");
-    println!("Client plaintext: {}", client_plaintext);
-    println!("Client ciphertext: {}", client_ciphertext);
+    let client_ciphertext = sm4
+        .encrypt(client_plaintext)
+        .map_err(|e| format!("encryption failed: {e}"))?;
+    println!("Client plaintext: {client_plaintext}");
+    println!("Client ciphertext: {client_ciphertext}");
 
     // 发送给服务端
     let crypto_request = CryptoTestRequest {
@@ -202,19 +221,10 @@ fn main() {
         client_ciphertext: client_ciphertext.clone(),
         client_plaintext: client_plaintext.to_string(),
     };
-    println!(
-        "\nRequest: {:?}",
-        serde_json::to_string(&crypto_request).unwrap()
-    );
+    println!("\nRequest: {}", to_json(&crypto_request)?);
 
-    let crypto_response: CryptoTestResponse =
-        ureq::post(&format!("{}/api/crypto/test", SERVER_URL))
-            .set("Content-Type", "application/json")
-            .send_json(&crypto_request)
-            .expect("Failed to send crypto request")
-            .into_json()
-            .expect("Failed to parse crypto response");
-    println!("Response: {:?}", crypto_response);
+    let crypto_response: CryptoTestResponse = post("/api/crypto/test", &crypto_request)?;
+    println!("Response: {crypto_response:?}");
 
     // 验证服务端是否正确解密了客户端的消息
     let server_decrypt_ok = crypto_response.client_decrypt_match;
@@ -226,20 +236,26 @@ fn main() {
     // 客户端解密服务端的消息
     let server_decrypted = sm4
         .decrypt(&crypto_response.server_ciphertext)
-        .expect("Failed to decrypt");
+        .map_err(|e| format!("decryption failed: {e}"))?;
     let client_decrypt_ok = server_decrypted == crypto_response.server_plaintext;
     println!(
         "[Client decrypted server message]: {}",
         if client_decrypt_ok { "PASS" } else { "FAIL" }
     );
     println!("  Server plaintext: {}", crypto_response.server_plaintext);
-    println!("  Client decrypted: {}", server_decrypted);
+    println!("  Client decrypted: {server_decrypted}");
 
-    if server_decrypt_ok && client_decrypt_ok {
-        println!("\nBidirectional Crypto test PASSED!");
-    } else {
-        eprintln!("\nBidirectional Crypto test FAILED!");
+    if !(server_decrypt_ok && client_decrypt_ok) {
+        return Err("Bidirectional Crypto test FAILED!".to_string());
     }
-
+    println!("\nBidirectional Crypto test PASSED!");
     println!("\n=== Demo Complete ===");
+    Ok(())
+}
+
+fn main() {
+    if let Err(message) = run() {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
 }

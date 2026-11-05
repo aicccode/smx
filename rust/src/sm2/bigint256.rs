@@ -3,10 +3,14 @@
 use super::field::{self, Limbs};
 use super::modinv::{self, MOD_N, MOD_P};
 use super::order::{self, N};
+use crate::ct::{ct_barrier, wipe};
 use crate::hex;
 use core::cmp::Ordering;
+use core::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Also used for private keys, hence the `Debug` that shows no value and the `==` that compares
+/// all limbs without stopping early.
+#[derive(Clone, Copy)]
 pub struct BigInt256 {
     pub limbs: [u64; 4], // 小端序：limbs[0]是最低64位
 }
@@ -26,31 +30,62 @@ impl BigInt256 {
 
     /// 从十六进制字符串解析（大端表示）
     ///
-    /// Bytes that are not hex digits read as 0. Panics when longer than 64 digits.
+    /// Up to 64 hex digits with an optional single "0x"/"0X" prefix. This signature cannot report
+    /// failure, so anything else gives `BigInt256::ZERO`, which no key or scalar check accepts.
+    /// Use `try_from_hex` to tell the two apart.
     pub fn from_hex(hex: &str) -> Self {
+        Self::try_from_hex(hex).unwrap_or(Self::ZERO)
+    }
+
+    /// `from_hex` that reports invalid input. Examines every digit before deciding.
+    pub fn try_from_hex(hex: &str) -> Option<Self> {
         let digits = hex
-            .trim_start_matches("0x")
-            .trim_start_matches("0X")
+            .strip_prefix("0x")
+            .or_else(|| hex.strip_prefix("0X"))
+            .unwrap_or(hex)
             .as_bytes();
-        assert!(digits.len() <= 64, "hex string longer than 256 bits");
-        let mut limbs = [0u64; 4];
-        for (i, &c) in digits.iter().rev().enumerate() {
-            limbs[i / 16] |= u64::from(hex::nibble_or_zero(c)) << (4 * (i % 16));
+        if digits.is_empty() || digits.len() > 64 {
+            return None;
         }
-        BigInt256 { limbs }
+        let mut limbs = [0u64; 4];
+        let mut invalid = 0i32;
+        for (i, &c) in digits.iter().rev().enumerate() {
+            let (nibble, bad) = hex::ascii_to_nibble(c);
+            limbs[i / 16] |= u64::from(nibble) << (4 * (i % 16));
+            invalid |= bad;
+        }
+        (invalid == 0).then_some(BigInt256 { limbs })
+    }
+
+    /// Exactly 64 hex digits of either case, with no prefix: the form of keys and signature parts.
+    pub(crate) fn from_fixed_hex(hex: &[u8]) -> Option<Self> {
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        let valid = hex::decode_into(hex, &mut bytes);
+        let value = Self::from_be_bytes(&bytes);
+        wipe(&mut bytes, [0; 32]);
+        valid.then_some(value)
     }
 
     /// 从大端字节数组解析
     ///
-    /// Shorter input is left-padded with zeros, longer input keeps its last 32 bytes.
+    /// Shorter input is left-padded with zeros. More than 32 bytes does not fit and gives
+    /// `BigInt256::ZERO`.
     pub fn from_be_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() > 32 {
+            return Self::ZERO;
+        }
         let mut padded = [0u8; 32];
-        let copy_len = bytes.len().min(32);
-        padded[32 - copy_len..].copy_from_slice(&bytes[bytes.len() - copy_len..]);
+        padded[32 - bytes.len()..].copy_from_slice(bytes);
         let mut limbs = [0u64; 4];
         for (limb, chunk) in limbs.iter_mut().rev().zip(padded.chunks_exact(8)) {
-            *limb = u64::from_be_bytes(chunk.try_into().expect("chunks of 8"));
+            *limb = u64::from_be_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]);
         }
+        wipe(&mut padded, [0; 32]);
         BigInt256 { limbs }
     }
 
@@ -141,8 +176,12 @@ impl BigInt256 {
     /// 模乘法
     ///
     /// Constant time for the SM2 moduli p and n, which have dedicated reductions. Other moduli
-    /// use a general variable-time division.
+    /// use a general variable-time division, so they are not for secrets. A zero modulus gives
+    /// zero.
     pub fn mod_mul(&self, other: &BigInt256, modulus: &BigInt256) -> BigInt256 {
+        if modulus.is_zero() {
+            return Self::ZERO;
+        }
         let limbs = if modulus.limbs == N {
             order::mul_mod_n(&self.limbs, &other.limbs)
         } else if modulus.limbs == field::P {
@@ -181,10 +220,11 @@ impl BigInt256 {
     /// 模逆
     ///
     /// Constant-time safegcd for the SM2 moduli. For other moduli, a^(m-2) by Fermat's little
-    /// theorem, which is only an inverse when the modulus is prime.
+    /// theorem, in variable time. Where no inverse exists (zero, a zero modulus, or a composite
+    /// modulus that Fermat does not work for) the result is zero.
     pub fn mod_inverse(&self, modulus: &BigInt256) -> BigInt256 {
-        if self.is_zero() {
-            panic!("Cannot invert zero");
+        if self.is_zero() || modulus.is_zero() {
+            return Self::ZERO;
         }
         if modulus.limbs == N {
             let reduced = field::reduce_once(&self.limbs, &N);
@@ -197,13 +237,19 @@ impl BigInt256 {
 
         // 使用费马小定理: a^(-1) = a^(p-2) mod p
         let (p_minus_2, _) = modulus.sub(&BigInt256::new([2, 0, 0, 0]));
-        self.mod_pow(&p_minus_2, modulus)
+        let candidate = self.mod_pow(&p_minus_2, modulus);
+        let one = Self::ONE.mod_mul(&Self::ONE, modulus);
+        if self.mod_mul(&candidate, modulus) == one {
+            candidate
+        } else {
+            Self::ZERO
+        }
     }
 
-    /// 模幂运算 (base^exp mod modulus); variable time in the exponent.
+    /// 模幂运算 (base^exp mod modulus); variable time in the exponent, so not for secret exponents.
     pub fn mod_pow(&self, exp: &BigInt256, modulus: &BigInt256) -> BigInt256 {
         if exp.is_zero() {
-            return BigInt256::ONE;
+            return BigInt256::ONE.mod_mul(&BigInt256::ONE, modulus);
         }
 
         let mut result = BigInt256::ONE;
@@ -275,7 +321,7 @@ impl BigInt256 {
 /// Variable time, only used for moduli other than the SM2 ones.
 fn reduce_wide_generic(value: &[u64; 8], modulus: &Limbs) -> Limbs {
     let Some(n) = modulus.iter().rposition(|&l| l != 0).map(|top| top + 1) else {
-        panic!("Division by zero");
+        return [0; 4]; // unreachable from `mod_mul`, which handles a zero modulus
     };
 
     // Normalize so that the top limb of the divisor has its high bit set.
@@ -358,6 +404,22 @@ fn reduce_wide_generic(value: &[u64; 8], modulus: &Limbs) -> Limbs {
         };
     }
     out
+}
+
+impl PartialEq for BigInt256 {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (&self.limbs, &other.limbs);
+        ct_barrier((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])) == 0
+    }
+}
+
+impl Eq for BigInt256 {}
+
+impl fmt::Debug for BigInt256 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BigInt256(..)")
+    }
 }
 
 impl Default for BigInt256 {

@@ -4,16 +4,26 @@
 //! Block code sits behind one dispatch point, chosen at run time: GFNI + AVX2 and AES-NI (+ AVX2)
 //! on x86-64, the AES instructions with NEON on AArch64, and a portable table implementation.
 //!
-//! Cache-timing caveat: the portable code indexes tables with secret data, and its 1 KiB T-table
-//! is a larger target than the 256-byte S-box its key schedule uses. It only runs where no
-//! hardware path exists; the hardware paths use no data-dependent memory access.
+//! No path, key schedule included, has a memory access or branch that depends on secret data. The
+//! portable code computes the S-box with a Boolean circuit, slower than a table on purpose.
+//!
+//! # CBC gives no integrity
+//!
+//! This is unauthenticated CBC. A successful decryption says nothing about who produced the
+//! ciphertext, and anyone able to observe decryption failures can use them to recover plaintext.
+//! Authenticate the ciphertext (encrypt-then-MAC) before calling `decrypt`.
+//!
+//! The IV given to `set_key` is reused by every `encrypt` call until the next `set_key`, so equal
+//! plaintexts encrypt equally and a shared prefix shows. Set a fresh random IV per message.
 
+use crate::ct::{ct_barrier, wipe, wipe_bytes};
 use crate::hex;
 use std::error::Error;
 use std::fmt;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
+mod sbox;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -43,9 +53,13 @@ const POST_HI: [u8; 16] = [
 const INV_SHIFT_ROWS: [u8; 16] = [0, 13, 10, 7, 4, 1, 14, 11, 8, 5, 2, 15, 12, 9, 6, 3];
 
 /// SM4 算法实现
+///
+/// Holds only the key schedule and IV, so `&self` methods can run concurrently. See the module
+/// documentation for what CBC does not protect against.
 pub struct SM4 {
     rk: [u32; 32], // 轮密钥
     iv: [u8; 16],  // CBC初始向量
+    keyed: bool,
 }
 
 /// 自定义错误类型
@@ -70,26 +84,6 @@ impl fmt::Display for SM4Error {
 
 impl Error for SM4Error {}
 
-// S盒
-pub(crate) const SBOX: [u8; 256] = [
-    0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
-    0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
-    0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62,
-    0xe4, 0xb3, 0x1c, 0xa9, 0xc9, 0x08, 0xe8, 0x95, 0x80, 0xdf, 0x94, 0xfa, 0x75, 0x8f, 0x3f, 0xa6,
-    0x47, 0x07, 0xa7, 0xfc, 0xf3, 0x73, 0x17, 0xba, 0x83, 0x59, 0x3c, 0x19, 0xe6, 0x85, 0x4f, 0xa8,
-    0x68, 0x6b, 0x81, 0xb2, 0x71, 0x64, 0xda, 0x8b, 0xf8, 0xeb, 0x0f, 0x4b, 0x70, 0x56, 0x9d, 0x35,
-    0x1e, 0x24, 0x0e, 0x5e, 0x63, 0x58, 0xd1, 0xa2, 0x25, 0x22, 0x7c, 0x3b, 0x01, 0x21, 0x78, 0x87,
-    0xd4, 0x00, 0x46, 0x57, 0x9f, 0xd3, 0x27, 0x52, 0x4c, 0x36, 0x02, 0xe7, 0xa0, 0xc4, 0xc8, 0x9e,
-    0xea, 0xbf, 0x8a, 0xd2, 0x40, 0xc7, 0x38, 0xb5, 0xa3, 0xf7, 0xf2, 0xce, 0xf9, 0x61, 0x15, 0xa1,
-    0xe0, 0xae, 0x5d, 0xa4, 0x9b, 0x34, 0x1a, 0x55, 0xad, 0x93, 0x32, 0x30, 0xf5, 0x8c, 0xb1, 0xe3,
-    0x1d, 0xf6, 0xe2, 0x2e, 0x82, 0x66, 0xca, 0x60, 0xc0, 0x29, 0x23, 0xab, 0x0d, 0x53, 0x4e, 0x6f,
-    0xd5, 0xdb, 0x37, 0x45, 0xde, 0xfd, 0x8e, 0x2f, 0x03, 0xff, 0x6a, 0x72, 0x6d, 0x6c, 0x5b, 0x51,
-    0x8d, 0x1b, 0xaf, 0x92, 0xbb, 0xdd, 0xbc, 0x7f, 0x11, 0xd9, 0x5c, 0x41, 0x1f, 0x10, 0x5a, 0xd8,
-    0x0a, 0xc1, 0x31, 0x88, 0xa5, 0xcd, 0x7b, 0xbd, 0x2d, 0x74, 0xd0, 0x12, 0xb8, 0xe5, 0xb4, 0xb0,
-    0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9, 0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84,
-    0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
-];
-
 const FK: [u32; 4] = [0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc];
 
 pub(crate) const CK: [u32; 32] = [
@@ -100,6 +94,7 @@ pub(crate) const CK: [u32; 32] = [
 ];
 
 // 线性变换 L
+#[inline(always)]
 const fn l(b: u32) -> u32 {
     b ^ b.rotate_left(2) ^ b.rotate_left(10) ^ b.rotate_left(18) ^ b.rotate_left(24)
 }
@@ -110,35 +105,9 @@ pub(crate) const fn l_prime(b: u32) -> u32 {
     b ^ b.rotate_left(13) ^ b.rotate_left(23)
 }
 
-/// `L(S(x) << 24)`. The other three byte positions are rotations of this entry, because L
-/// commutes with rotation. See the module note on cache timing.
-const T_TABLE: [u32; 256] = {
-    let mut t = [0u32; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = l((SBOX[i] as u32) << 24);
-        i += 1;
-    }
-    t
-};
-
 #[inline(always)]
 fn t_soft(x: u32) -> u32 {
-    T_TABLE[(x >> 24) as usize]
-        ^ T_TABLE[((x >> 16) & 0xff) as usize].rotate_right(8)
-        ^ T_TABLE[((x >> 8) & 0xff) as usize].rotate_right(16)
-        ^ T_TABLE[(x & 0xff) as usize].rotate_right(24)
-}
-
-#[inline(always)]
-fn tau_soft(x: u32) -> u32 {
-    let b = x.to_be_bytes();
-    u32::from_be_bytes([
-        SBOX[b[0] as usize],
-        SBOX[b[1] as usize],
-        SBOX[b[2] as usize],
-        SBOX[b[3] as usize],
-    ])
+    l(sbox::sbox_word(x))
 }
 
 #[inline(always)]
@@ -165,6 +134,7 @@ pub(crate) fn expand_key(key: &[u8; 16], mut tau: impl FnMut(u32) -> u32) -> [u3
         k = [k[1], k[2], k[3], next];
         *out = next;
     }
+    wipe(&mut k, [0; 4]);
     rk
 }
 
@@ -312,7 +282,7 @@ impl Backend {
 
     fn key_schedule(self, key: &[u8; 16]) -> [u32; 32] {
         match self {
-            Backend::Soft => expand_key(key, tau_soft),
+            Backend::Soft => expand_key(key, sbox::sbox_word),
             // SAFETY: each variant is only constructed after detecting the features it needs.
             #[cfg(target_arch = "aarch64")]
             Backend::NeonAes => unsafe { aarch64::key_schedule(key) },
@@ -409,98 +379,106 @@ impl Default for SM4 {
     }
 }
 
+impl Drop for SM4 {
+    fn drop(&mut self) {
+        wipe(&mut self.rk, [0; 32]);
+        wipe(&mut self.iv, [0; 16]);
+    }
+}
+
 impl SM4 {
     /// 创建新的SM4实例
+    ///
+    /// The instance has no key yet: `encrypt` and `decrypt` fail until `set_key` succeeded.
     pub fn new() -> Self {
         SM4 {
             rk: [0; 32],
             iv: [0; 16],
+            keyed: false,
         }
     }
 
     /// 设置密钥和IV
+    ///
+    /// Both must be exactly 16 bytes. On failure the instance keeps its previous state.
     pub fn set_key(&mut self, key: &[u8], iv: &[u8]) -> Result<(), SM4Error> {
-        let key_bytes = normalize_key_material(key);
-        self.rk = Backend::detect().key_schedule(&key_bytes);
-        self.iv = normalize_key_material(iv);
+        let key: &[u8; 16] = key.try_into().map_err(|_| SM4Error::InvalidKeyLength)?;
+        let iv: &[u8; 16] = iv.try_into().map_err(|_| SM4Error::InvalidIVLength)?;
+        self.rk = Backend::detect().key_schedule(key);
+        self.iv = *iv;
+        self.keyed = true;
         Ok(())
     }
 
     /// 加密字符串
+    ///
+    /// CBC with PKCS#7, as lower-case hex. Gives no integrity; see the module documentation.
     pub fn encrypt(&self, plaintext: &str) -> Result<String, Box<dyn Error>> {
-        let buf = self.encrypt_padded(plaintext.as_bytes(), Backend::detect());
-        Ok(hex::encode_lower(&buf))
+        if !self.keyed {
+            return Err(Box::new(SM4Error::InvalidKeyLength));
+        }
+        let buf = self
+            .encrypt_padded(plaintext.as_bytes(), Backend::detect())
+            .ok_or("Out of memory")?;
+        Ok(hex::try_encode_lower(&buf).ok_or("Out of memory")?)
     }
 
     /// 解密字符串
+    ///
+    /// Bad ciphertext length, bad padding and a result that is not UTF-8 all return the same
+    /// `SM4Error::InvalidPadding`, because telling them apart is a decryption oracle. This does
+    /// not make unauthenticated CBC safe; see the module documentation.
     pub fn decrypt(&self, ciphertext: &str) -> Result<String, Box<dyn Error>> {
-        let mut buf = hex_to_bytes(ciphertext)?;
-        if buf.len() % BLOCK_LEN != 0 {
+        if !self.keyed {
             return Err(Box::new(SM4Error::InvalidKeyLength));
         }
+        let mut buf = hex::decode_plain(ciphertext).ok_or(SM4Error::InvalidHexString)?;
+        if buf.is_empty() || buf.len() % BLOCK_LEN != 0 {
+            return Err(Box::new(SM4Error::InvalidPadding));
+        }
         Backend::detect().cbc_decrypt(&self.rk, &self.iv, &mut buf);
-        let plain_len = pkcs7_unpadded_len(&buf)?;
+        let plain_len = pkcs7_unpadded_len(&buf);
+        let Some(plain_len) = plain_len else {
+            wipe_bytes(&mut buf);
+            return Err(Box::new(SM4Error::InvalidPadding));
+        };
+        wipe_bytes(&mut buf[plain_len..]);
         buf.truncate(plain_len);
-        Ok(String::from_utf8(buf)?)
+        String::from_utf8(buf).map_err(|invalid| {
+            let mut bytes = invalid.into_bytes();
+            wipe_bytes(&mut bytes);
+            Box::new(SM4Error::InvalidPadding) as Box<dyn Error>
+        })
     }
 
-    /// PKCS#7 pad and CBC encrypt into a fresh buffer.
-    fn encrypt_padded(&self, input: &[u8], backend: Backend) -> Vec<u8> {
+    /// PKCS#7 pad and CBC encrypt into a fresh buffer; `None` when out of memory.
+    fn encrypt_padded(&self, input: &[u8], backend: Backend) -> Option<Vec<u8>> {
         let pad_len = BLOCK_LEN - input.len() % BLOCK_LEN;
-        let mut buf = Vec::with_capacity(input.len() + pad_len);
+        let total = input.len().checked_add(pad_len)?;
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(total).ok()?;
         buf.extend_from_slice(input);
-        buf.resize(input.len() + pad_len, pad_len as u8);
+        buf.resize(total, pad_len as u8);
         backend.cbc_encrypt(&self.rk, &self.iv, &mut buf);
-        buf
+        Some(buf)
     }
 }
 
-/// Keys and IVs of any other length become the first 16 ASCII hex digits of their SM3 hash
-/// (matches the Java behaviour).
-fn normalize_key_material(material: &[u8]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    if material.len() == 16 {
-        out.copy_from_slice(material);
-    } else {
-        let digest = crate::sm3::digest_parts(&[material]);
-        hex::encode_upper_into(&digest[..8], &mut out);
+/// Length of the data before the PKCS#7 padding, for a non-empty whole number of blocks. The last
+/// block is always scanned completely and only the final result is branched on.
+#[inline(never)]
+fn pkcs7_unpadded_len(input: &[u8]) -> Option<usize> {
+    let block = &input[input.len() - BLOCK_LEN..];
+    let pad = u64::from(block[BLOCK_LEN - 1]);
+    // Non-zero unless 1 <= pad <= 16: the subtractions wrap into the top bit otherwise.
+    let bad_range = (pad.wrapping_sub(1) | (BLOCK_LEN as u64).wrapping_sub(pad)) >> 63;
+    let mut bad = ct_barrier(bad_range);
+    for (distance, &byte) in block.iter().rev().enumerate() {
+        // All ones when this byte is part of the padding.
+        let in_padding = ct_barrier(((distance as u64).wrapping_sub(pad) >> 63).wrapping_neg());
+        bad |= (u64::from(byte) ^ pad) & in_padding;
     }
-    out
-}
-
-/// Length of the data before the PKCS#7 padding. All padding bytes are always examined.
-fn pkcs7_unpadded_len(input: &[u8]) -> Result<usize, SM4Error> {
-    let Some(&last) = input.last() else {
-        return Ok(0);
-    };
-    let pad_len = last as usize;
-    if pad_len == 0 || pad_len > BLOCK_LEN || input.len() < pad_len {
-        return Err(SM4Error::InvalidPadding);
-    }
-    let start = input.len() - pad_len;
-    let mismatch = input[start..].iter().fold(0u8, |acc, &b| acc | (b ^ last));
-    if mismatch != 0 {
-        return Err(SM4Error::InvalidPadding);
-    }
-    Ok(start)
-}
-
-// 16进制字符串转字节数组
-fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, SM4Error> {
-    if hex_str.len() % 2 != 0 {
-        return Err(SM4Error::InvalidHexString);
-    }
-    if let Some(bytes) = hex::decode_plain(hex_str) {
-        return Ok(bytes);
-    }
-    // Anything but plain digits keeps the historic parse, including its acceptance of "+f".
-    let mut bytes = Vec::with_capacity(hex_str.len() / 2);
-    for i in (0..hex_str.len()).step_by(2) {
-        let byte =
-            u8::from_str_radix(&hex_str[i..i + 2], 16).map_err(|_| SM4Error::InvalidHexString)?;
-        bytes.push(byte);
-    }
-    Ok(bytes)
+    (ct_barrier(bad) == 0).then(|| input.len() - pad as usize)
 }
 
 #[cfg(test)]
@@ -509,9 +487,10 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_round_trip() {
-        // 测试SM3哈希一致性
-        let key = "this is the key";
-        let iv = "this is the iv";
+        // Key and IV as the removed text-key path derived them from "this is the key" and
+        // "this is the iv": the first 16 hex digits of their SM3 hashes. Other lengths now fail.
+        let key = "157224F19FD4C080";
+        let iv = "65B06A99625C008A";
 
         // 测试SM4加密
         let mut sm4 = SM4::new();
@@ -601,12 +580,67 @@ mod tests {
         }
     }
 
-    /// The soft path against a straight reading of the standard's round function.
+    /// Every kind of padding failure and length error gives one and the same error.
+    #[test]
+    fn padding_failures_are_indistinguishable() {
+        let (key, iv) = ([3u8; 16], [5u8; 16]);
+        let mut sm4 = SM4::new();
+        sm4.set_key(&key, &iv).unwrap();
+        let backend = Backend::detect();
+        let encrypt_raw_block = |block: &[u8; 16]| {
+            let mut buf = *block;
+            backend.cbc_encrypt(&sm4.rk, &iv, &mut buf);
+            hex::encode_lower(&buf)
+        };
+
+        // The padding byte itself: all values but 1..=16, with an otherwise clean block.
+        let mut outcomes = Vec::new();
+        for pad in 0..=255u8 {
+            let mut block = [pad; 16];
+            block[0] = b'a'; // keeps pad = 16 invalid and short paddings printable
+            let text = encrypt_raw_block(&block);
+            let outcome = sm4.decrypt(&text);
+            let expected_ok = (1..=15).contains(&pad);
+            assert_eq!(outcome.is_ok(), expected_ok, "pad {pad}");
+            if let Err(error) = outcome {
+                outcomes.push(error.to_string());
+            }
+        }
+        // Inconsistent bytes at each position of a padding of 16.
+        for position in 0..16 {
+            let mut block = [16u8; 16];
+            if position != 15 {
+                block[position] ^= 1;
+                outcomes.push(
+                    sm4.decrypt(&encrypt_raw_block(&block))
+                        .unwrap_err()
+                        .to_string(),
+                );
+            }
+        }
+        // Not UTF-8 under valid padding, and lengths that are not whole blocks.
+        let mut block = [1u8; 16];
+        block[0] = 0xff;
+        outcomes.push(
+            sm4.decrypt(&encrypt_raw_block(&block))
+                .unwrap_err()
+                .to_string(),
+        );
+        for text in ["", "00", "000000000000000000000000000000", &"0".repeat(34)] {
+            outcomes.push(sm4.decrypt(text).unwrap_err().to_string());
+        }
+        assert!(
+            outcomes.iter().all(|m| m == "Invalid padding"),
+            "{outcomes:?}"
+        );
+    }
+
     #[test]
     fn soft_round_function_matches_definition() {
         for x in pseudo_random(9, 4096).chunks_exact(4) {
             let x = u32::from_be_bytes(x.try_into().unwrap());
-            assert_eq!(t_soft(x), l(tau_soft(x)));
+            let b = x.to_be_bytes().map(|byte| sbox::SBOX[byte as usize]);
+            assert_eq!(t_soft(x), l(u32::from_be_bytes(b)));
         }
     }
 }

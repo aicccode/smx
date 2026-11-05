@@ -1,7 +1,7 @@
 //! Jacobian point arithmetic for y^2 = x^3 - 3x + b, on raw field limbs.
 //!
 //! (X, Y, Z) stands for the affine point (X/Z^2, Y/Z^3), and Z = 0 for infinity. The formulas do
-//! not use b, so they also give consistent results for points off the curve.
+//! not use b, which is why every input must be checked to be on the curve first.
 
 use super::field::{Limbs, fe_add, fe_dbl, fe_mul, fe_neg, fe_sqr, fe_sub, is_zero_mask, select};
 use super::modinv::{MOD_P, invert};
@@ -148,8 +148,7 @@ impl Jacobian {
     ///
     /// With `exceptional` false, the caller guarantees that self != other unless one of them is
     /// infinity. With it true the doubling case is also computed and selected. That flag only
-    /// ever depends on public facts: a position in the scalar or whether the input is on the
-    /// curve.
+    /// ever depends on a public fact: the position in the scalar.
     #[inline]
     pub(crate) fn add_mixed_ct(
         &self,

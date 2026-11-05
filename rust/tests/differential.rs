@@ -404,9 +404,10 @@ fn modular_multiplication_for_other_moduli() {
             assert_eq!(x.mod_square(&modulus).limbs, mul_m(&a, &a, m));
         }
     }
-    let result =
-        std::panic::catch_unwind(|| BigInt256::ONE.mod_mul(&BigInt256::ONE, &BigInt256::ZERO));
-    assert!(result.is_err());
+    assert_eq!(
+        BigInt256::ONE.mod_mul(&BigInt256::ONE, &BigInt256::ZERO),
+        BigInt256::ZERO
+    );
 }
 
 #[test]
@@ -485,24 +486,28 @@ fn modular_addition_keeps_single_correction_semantics() {
 }
 
 #[test]
-fn parsing_quirks_are_preserved() {
+fn integer_parsing_rejects_what_it_cannot_represent() {
     let hex = BigInt256::from_hex;
-    assert_eq!(hex("").limbs, ZERO);
     assert_eq!(hex("1").limbs, ONE);
     assert_eq!(hex("0x1").limbs, ONE);
-    // The "0x" prefixes are stripped first and the "0X" ones after that.
-    assert_eq!(hex("0x0X1").limbs, ONE);
-    assert_eq!(hex("0X0x1").limbs, ONE);
-    assert_eq!(hex("zz").limbs, ZERO);
-    assert_eq!(hex("1z").limbs, [0x10, 0, 0, 0]);
+    assert_eq!(hex("0X1").limbs, ONE);
     assert_eq!(hex("abCD").limbs, [0xabcd, 0, 0, 0]);
-    assert!(std::panic::catch_unwind(|| hex(&"0".repeat(65))).is_err());
     assert_eq!(hex(&"f".repeat(64)).limbs, MAX);
+    // None of these are numbers; ZERO is what every key check rejects.
+    for invalid in [
+        "", "0x", "zz", "1z", "+f", "0x0x1", "0X0x1", "é", " 1", "1 ",
+    ] {
+        assert_eq!(hex(invalid).limbs, ZERO, "{invalid}");
+        assert!(BigInt256::try_from_hex(invalid).is_none(), "{invalid}");
+    }
+    assert_eq!(hex(&"0".repeat(65)).limbs, ZERO);
+    assert_eq!(hex(&"f".repeat(65)).limbs, ZERO);
+    assert_eq!(BigInt256::try_from_hex("10").unwrap().limbs, [16, 0, 0, 0]);
+
     assert_eq!(BigInt256::from_be_bytes(&[1, 2]).limbs, [0x0102, 0, 0, 0]);
-    let mut long = vec![9u8; 8];
-    long.extend_from_slice(&[0u8; 31]);
-    long.push(5);
-    assert_eq!(BigInt256::from_be_bytes(&long).limbs, [5, 0, 0, 0]);
+    assert_eq!(BigInt256::from_be_bytes(&[]).limbs, ZERO);
+    assert_eq!(BigInt256::from_be_bytes(&[5; 33]).limbs, ZERO);
+    assert_eq!(BigInt256::from_be_bytes(&[0; 40]).limbs, ZERO);
 }
 
 // ---------------------------------------------------------------- tests: field
@@ -550,8 +555,20 @@ fn inversion_against_fermat() {
             );
         }
     }
-    assert!(std::panic::catch_unwind(|| FpElement::zero().invert()).is_err());
-    assert!(std::panic::catch_unwind(|| BigInt256::ZERO.mod_inverse(&SM2_N)).is_err());
+    assert!(FpElement::zero().invert().is_zero());
+    assert!(FpElement::one().divide(&FpElement::zero()).is_zero());
+    assert_eq!(BigInt256::ZERO.mod_inverse(&SM2_N), BigInt256::ZERO);
+    assert_eq!(
+        BigInt256::ONE.mod_inverse(&BigInt256::ZERO),
+        BigInt256::ZERO
+    );
+    // Composite modulus without an inverse.
+    let (two, four) = (BigInt256::new([2, 0, 0, 0]), BigInt256::new([4, 0, 0, 0]));
+    assert_eq!(two.mod_inverse(&four), BigInt256::ZERO);
+    assert_eq!(
+        BigInt256::ONE.mod_pow(&BigInt256::ZERO, &BigInt256::ONE),
+        BigInt256::ZERO
+    );
 }
 
 fn finv_or_zero(a: &U256, m: &U256) -> U256 {
@@ -635,42 +652,66 @@ fn variable_base_multiplication_edges_and_random() {
     assert!(ECPoint::infinity().multiply(&BigInt256::ONE).is_infinity());
 }
 
-/// Off the curve the group order is unknown: the exact integer scalar must be used.
+/// Invalid points must never reach the group law, for secret scalars least of all.
 #[test]
-fn off_curve_multiplication_uses_the_exact_scalar() {
+fn invalid_points_give_infinity_from_every_operation() {
     let mut rng = Rng(10);
-    let mut bases = Vec::new();
-    while bases.len() < 3 {
+    let g = ECPoint::generator();
+    let mut invalid = Vec::new();
+    while invalid.len() < 3 {
         let p = ECPoint::new(fp(rng.u256()), fp(rng.u256()));
         if !p.is_on_curve() {
-            bases.push(p);
+            invalid.push(p);
         }
     }
-    // y = 0 has order 2 on the curve it implies, and exercises all exceptional cases.
-    bases.push(ECPoint::new(fp([5, 0, 0, 0]), FpElement::zero()));
-    let mut scalars: Vec<U256> = vec![
-        ZERO,
-        ONE,
-        [2, 0, 0, 0],
-        [3, 0, 0, 0],
-        [16, 0, 0, 0],
-        [33, 0, 0, 0],
-    ];
-    scalars.extend([SM2_N.limbs, plus(&SM2_N.limbs, 1), MAX]);
-    for _ in 0..6 {
-        scalars.push(rng.interesting());
-    }
-    for base in &bases {
-        assert!(!base.is_on_curve());
-        let reference = to_ref(base);
-        for k in &scalars {
-            let actual = base.multiply(&BigInt256::new(*k));
-            assert_same(
-                &actual,
-                &ref_mul(&reference, k),
-                &format!("off-curve [{k:x?}]"),
+    // y = 0 has order 2 on the curve it implies.
+    invalid.push(ECPoint::new(fp([5, 0, 0, 0]), FpElement::zero()));
+    // A valid point whose small x allows x + p to fit: congruent to it, but not canonical.
+    let exponent = {
+        // (p + 1) / 4, for the square root in a field with p = 3 mod 4
+        let mut e = plus(&P, 1);
+        for _ in 0..2 {
+            e = [
+                (e[0] >> 1) | (e[1] << 63),
+                (e[1] >> 1) | (e[2] << 63),
+                (e[2] >> 1) | (e[3] << 63),
+                e[3] >> 1,
+            ];
+        }
+        e
+    };
+    let (x, y) = (1u64..)
+        .find_map(|small| {
+            let x = [small, 0, 0, 0];
+            let rhs = fadd(
+                &fsub(&fmul(&fmul(&x, &x), &x), &fadd(&fadd(&x, &x), &x)),
+                &SM2_B.value.limbs,
             );
-        }
+            let y = fpow(&rhs, &exponent);
+            (fmul(&y, &y) == rhs).then_some((x, y))
+        })
+        .unwrap();
+    assert!(ECPoint::new(fp(x), fp(y)).is_on_curve());
+    invalid.push(ECPoint {
+        x: FpElement {
+            value: BigInt256::new(x).add(&SM2_P).0,
+        },
+        y: fp(y),
+        infinity: false,
+    });
+    assert_eq!(invalid.len(), 5);
+    let scalar = BigInt256::new([3, 0, 0, 0]);
+    for p in &invalid {
+        assert!(!p.is_on_curve());
+        assert!(p.multiply(&scalar).is_infinity());
+        assert!(p.twice().is_infinity());
+        assert!(p.negate().is_infinity());
+        assert!(p.add(&g).is_infinity());
+        assert!(g.add(p).is_infinity());
+        assert!(p.add(&ECPoint::infinity()).is_infinity());
+        assert!(ECPoint::infinity().add(p).is_infinity());
+        assert!(p.subtract(&g).is_infinity());
+        assert!(g.subtract(p).is_infinity());
     }
 }
 
@@ -700,36 +741,59 @@ fn point_addition_cases() {
     }
     let order_two = ECPoint::new(fp([5, 0, 0, 0]), FpElement::zero());
     assert!(order_two.twice().is_infinity());
-    assert!(inf.is_on_curve());
+    assert!(!inf.is_on_curve(), "infinity is not a valid key");
     assert_eq!(inf.to_encoded(), vec![0x00]);
     assert_eq!(inf.to_hex_encoded(), "00");
 }
 
 #[test]
-fn point_decoding_quirks_are_preserved() {
+fn point_decoding_is_strict() {
     let g = ECPoint::generator();
     let text = g.to_hex_encoded();
-    assert_eq!(ECPoint::from_hex_encoded(&format!("0x{text}")), g);
+    assert_eq!(ECPoint::from_hex_encoded(&text), g);
     assert_eq!(ECPoint::from_hex_encoded(&text.to_uppercase()), g);
-    assert!(ECPoint::from_hex_encoded("").is_infinity());
-    assert!(ECPoint::from_encoded(&[]).is_infinity());
-    // Invalid pairs read as zero rather than failing.
+    assert_eq!(ECPoint::from_encoded(&g.to_encoded()), g);
+    let (x, y) = (g.x.to_hex(), g.y.to_hex());
+    assert_eq!(ECPoint::from_hex(&x, &y), g);
+    assert!(ECPoint::from_hex(&x, &x).is_infinity());
+    assert!(ECPoint::from_hex("1", "2").is_infinity());
+    assert!(ECPoint::from_hex(&x, &y[1..]).is_infinity());
+
     let mut broken = text.clone();
     broken.replace_range(2..4, "zz");
-    let decoded = ECPoint::from_hex_encoded(&broken);
-    assert_eq!(decoded.x.to_be_bytes()[0], 0);
-    assert_eq!(decoded.x.to_be_bytes()[1..], g.x.to_be_bytes()[1..]);
-    // An odd trailing digit is ignored.
-    assert_eq!(ECPoint::from_hex_encoded(&format!("{text}f")), g);
-    assert!(std::panic::catch_unwind(|| ECPoint::from_hex_encoded("05")).is_err());
-    assert!(std::panic::catch_unwind(|| ECPoint::from_hex_encoded("04")).is_err());
-    assert!(std::panic::catch_unwind(|| ECPoint::from_encoded(&[4; 64])).is_err());
-    // Coordinates at or above p are reduced.
+    let mut flipped = text.clone();
+    flipped.replace_range(128..130, "00");
+    for invalid in [
+        String::new(),
+        "00".to_string(),
+        "04".to_string(),
+        "05".to_string(),
+        format!("0x{text}"),
+        format!("{text}f"),
+        format!("{text}00"),
+        text[..129].to_string(),
+        text[2..].to_string(),
+        broken,
+        flipped,
+        "é".repeat(65),
+        format!("+{}", &text[1..]),
+    ] {
+        assert!(
+            ECPoint::from_hex_encoded(&invalid).is_infinity(),
+            "{invalid}"
+        );
+        assert!(
+            ECPoint::try_from_hex_encoded(&invalid).is_none(),
+            "{invalid}"
+        );
+    }
+    assert!(ECPoint::from_encoded(&[]).is_infinity());
+    assert!(ECPoint::from_encoded(&[4; 64]).is_infinity());
+    assert!(ECPoint::try_from_encoded(&[4; 66]).is_none());
+    // Coordinates at or above p are not reduced into something else.
     let mut raw = [0xffu8; 65];
     raw[0] = 4;
-    let reduced = ECPoint::from_encoded(&raw);
-    assert_eq!(reduced.x.value.limbs, rem(&MAX, &P));
-    assert_eq!(reduced.y.value.limbs, rem(&MAX, &P));
+    assert!(ECPoint::from_encoded(&raw).is_infinity());
 }
 
 #[test]
