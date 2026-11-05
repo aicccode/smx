@@ -607,7 +607,8 @@ private func xorBytes(_ data: [UInt8], _ key: [UInt8]) -> [UInt8] {
     }
 }
 
-/// 比较时间只取决于长度
+/// 比较时间只取决于长度。不内联，以便 Tools/check_constant_time.py 检查编译结果。
+@inline(never)
 private func constantTimeEquals(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {
     if lhs.count != rhs.count {
         return false
@@ -619,6 +620,7 @@ private func constantTimeEquals(_ lhs: [UInt8], _ rhs: [UInt8]) -> Bool {
     return difference == 0
 }
 
+@inline(never)
 private func constantTimeIsAllZero(_ bytes: [UInt8]) -> Bool {
     var accumulated: UInt8 = 0
     for byte in bytes {

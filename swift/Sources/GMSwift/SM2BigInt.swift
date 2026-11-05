@@ -45,6 +45,15 @@ func zeroMask(_ x: UInt64) -> UInt64 {
     return ((x | (0 &- x)) &>> 63) &- 1
 }
 
+/// 优化屏障：原样返回 mask，但优化器无法知道返回值只可能是 0 或全 1。
+/// LLVM 能认出 zeroMask 这样的写法，把 `x & mask` 变回比较加条件跳转（甚至跳过内存读取），
+/// 而这里 optnone 且不内联，连“返回值等于参数”都推断不出来。用在依赖秘密数据的选择上。
+@_optimize(none)
+@inline(never)
+func opaqueMask(_ mask: UInt64) -> UInt64 {
+    return mask
+}
+
 // MARK: - BigInt256
 
 public struct BigInt256: Comparable {

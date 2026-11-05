@@ -27,7 +27,86 @@ private func boothWindow(_ scalar: BigInt256, index: Int, width: Int) -> UInt64 
 /// y 取负（mask 全 1 时），保持 0 的规范表示
 @inline(__always)
 private func conditionalNegate(_ y: FpElement, _ mask: UInt64) -> FpElement {
-    return FpElement.select(mask, y.negate(), y)
+    return FpElement.select(opaqueMask(mask), y.negate(), y)
+}
+
+// MARK: - 全表扫描
+//
+// LLVM 曾把内联在循环里的 `entry & zeroMask(digit ^ index)` 编译成：比较 digit，只有命中时才读表项。
+// 分支和内存访问都依赖秘密的 digit。所以这里分成两个不内联的函数：掩码经内存传递，
+// 扫描函数看不到它们的来历，只能对每一项执行读取和 AND。
+// Tools/check_constant_time.py 在发布构建的反汇编上检查这两个函数。
+
+/// 写入 masks[0..<count]：masks[i] 在 digit == i + 1 时为全 1，否则为 0。digit 为 0 时全部是 0。
+/// 只用内建运算，这样 optnone 下也不会调用泛型函数。
+@_optimize(none)
+@inline(never)
+func fillSelectionMasks(digit: UInt64, masks: UnsafeMutablePointer<UInt64>, count: UInt64) {
+    var candidate: UInt64 = 1
+    var target = masks
+    while candidate <= count {
+        let difference = digit ^ candidate
+        target.pointee = ((difference | (0 &- difference)) &>> 63) &- 1
+        target = target.successor()
+        candidate = candidate &+ 1
+    }
+}
+
+/// 把每个表项的8个字与掩码相与后累积到 output。每一项的8个字都一定被读取。
+@inline(never)
+func scanTable8(
+    table: UnsafePointer<UInt64>, masks: UnsafePointer<UInt64>, count: Int, output: UnsafeMutablePointer<UInt64>
+) {
+    var (a0, a1, a2, a3, a4, a5, a6, a7): (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) =
+        (0, 0, 0, 0, 0, 0, 0, 0)
+    var index = 0
+    while index < count {
+        let mask = masks[index]
+        let entry = table + index &* 8
+        a0 |= entry[0] & mask
+        a1 |= entry[1] & mask
+        a2 |= entry[2] & mask
+        a3 |= entry[3] & mask
+        a4 |= entry[4] & mask
+        a5 |= entry[5] & mask
+        a6 |= entry[6] & mask
+        a7 |= entry[7] & mask
+        index &+= 1
+    }
+    output[0] = a0
+    output[1] = a1
+    output[2] = a2
+    output[3] = a3
+    output[4] = a4
+    output[5] = a5
+    output[6] = a6
+    output[7] = a7
+}
+
+/// 同 scanTable8，每个表项12个字（Jacobian 点）。
+@inline(never)
+func scanTable12(
+    table: UnsafePointer<UInt64>, masks: UnsafePointer<UInt64>, count: Int, output: UnsafeMutablePointer<UInt64>
+) {
+    var index = 0
+    output.initialize(repeating: 0, count: 12)
+    while index < count {
+        let mask = masks[index]
+        let entry = table + index &* 12
+        output[0] |= entry[0] & mask
+        output[1] |= entry[1] & mask
+        output[2] |= entry[2] & mask
+        output[3] |= entry[3] & mask
+        output[4] |= entry[4] & mask
+        output[5] |= entry[5] & mask
+        output[6] |= entry[6] & mask
+        output[7] |= entry[7] & mask
+        output[8] |= entry[8] & mask
+        output[9] |= entry[9] & mask
+        output[10] |= entry[10] & mask
+        output[11] |= entry[11] & mask
+        index &+= 1
+    }
 }
 
 struct JacobianPoint {
@@ -132,11 +211,11 @@ struct JacobianPoint {
         var result = JacobianPoint(x: x3, y: y3, z: z.multiply(h))
 
         if handleDoubling {
-            result = JacobianPoint.select(h.value.isZeroMask & r.value.isZeroMask, twice(), result)
+            result = JacobianPoint.select(opaqueMask(h.value.isZeroMask & r.value.isZeroMask), twice(), result)
         }
         let affine = JacobianPoint(x: qx, y: qy, z: .one)
-        result = JacobianPoint.select(z.value.isZeroMask, affine, result)
-        return JacobianPoint.select(qIsInfinity, self, result)
+        result = JacobianPoint.select(opaqueMask(z.value.isZeroMask), affine, result)
+        return JacobianPoint.select(opaqueMask(qIsInfinity), self, result)
     }
 
     /// 恒定时间完整加法，异常情况的处理同 addAffineMasked。Q 的无穷远由 Z = 0 表示。
@@ -156,10 +235,10 @@ struct JacobianPoint {
         var result = JacobianPoint(x: x3, y: y3, z: z.multiply(other.z).multiply(h))
 
         if handleDoubling {
-            result = JacobianPoint.select(h.value.isZeroMask & r.value.isZeroMask, twice(), result)
+            result = JacobianPoint.select(opaqueMask(h.value.isZeroMask & r.value.isZeroMask), twice(), result)
         }
-        result = JacobianPoint.select(z.value.isZeroMask, other, result)
-        return JacobianPoint.select(other.z.value.isZeroMask, self, result)
+        result = JacobianPoint.select(opaqueMask(z.value.isZeroMask), other, result)
+        return JacobianPoint.select(opaqueMask(other.z.value.isZeroMask), self, result)
     }
 
     /// 转换到仿射坐标（需要一次模逆，恒定时间）
@@ -226,21 +305,20 @@ struct JacobianPoint {
                 )
                 // 扫描整张表；digit = 0 时全部掩码为 0，得到 Z = 0 即无穷远
                 var selected = JacobianPoint(x: .zero, y: .zero, z: .zero)
-                for index in 0..<variableBaseEntries {
-                    let mask = zeroMask(digit ^ UInt64(truncatingIfNeeded: index &+ 1))
-                    let entry = table[index]
-                    selected.x.value.l0 |= entry.x.value.l0 & mask
-                    selected.x.value.l1 |= entry.x.value.l1 & mask
-                    selected.x.value.l2 |= entry.x.value.l2 & mask
-                    selected.x.value.l3 |= entry.x.value.l3 & mask
-                    selected.y.value.l0 |= entry.y.value.l0 & mask
-                    selected.y.value.l1 |= entry.y.value.l1 & mask
-                    selected.y.value.l2 |= entry.y.value.l2 & mask
-                    selected.y.value.l3 |= entry.y.value.l3 & mask
-                    selected.z.value.l0 |= entry.z.value.l0 & mask
-                    selected.z.value.l1 |= entry.z.value.l1 & mask
-                    selected.z.value.l2 |= entry.z.value.l2 & mask
-                    selected.z.value.l3 |= entry.z.value.l3 & mask
+                withUnsafeTemporaryAllocation(of: UInt64.self, capacity: variableBaseEntries) { masks in
+                    guard let maskBase = masks.baseAddress, let entries = UnsafeRawPointer(table.baseAddress) else {
+                        return
+                    }
+                    fillSelectionMasks(
+                        digit: digit, masks: maskBase, count: UInt64(truncatingIfNeeded: variableBaseEntries))
+                    withUnsafeMutableBytes(of: &selected) { output in
+                        scanTable12(
+                            table: entries.assumingMemoryBound(to: UInt64.self), masks: UnsafePointer(maskBase),
+                            count: variableBaseEntries,
+                            output: output.bindMemory(to: UInt64.self).baseAddress ?? maskBase
+                        )
+                    }
+                    secureWipe(UnsafeMutableRawBufferPointer(masks))
                 }
                 selected.y = conditionalNegate(selected.y, negate)
                 result = result.addMasked(selected, handleDoubling: window == 0 || !isOnCurve)
@@ -264,31 +342,27 @@ struct JacobianPoint {
                 width: UInt64(truncatingIfNeeded: GeneratorTables.combWidth)
             )
             let row = table + window &* GeneratorTables.combEntries &* 8
-            var x0: UInt64 = 0
-            var x1: UInt64 = 0
-            var x2: UInt64 = 0
-            var x3: UInt64 = 0
-            var y0: UInt64 = 0
-            var y1: UInt64 = 0
-            var y2: UInt64 = 0
-            var y3: UInt64 = 0
-            // 扫描整行，访问模式与 digit 无关
-            for index in 0..<GeneratorTables.combEntries {
-                let mask = zeroMask(digit ^ UInt64(truncatingIfNeeded: index &+ 1))
-                let entry = row + index &* 8
-                x0 |= entry[0] & mask
-                x1 |= entry[1] & mask
-                x2 |= entry[2] & mask
-                x3 |= entry[3] & mask
-                y0 |= entry[4] & mask
-                y1 |= entry[5] & mask
-                y2 |= entry[6] & mask
-                y3 |= entry[7] & mask
+            // 扫描整行，访问模式与 digit 无关；digit = 0 时结果全 0，由 qIsInfinity 处理
+            let (qx, qy) = withUnsafeTemporaryAllocation(of: UInt64.self, capacity: GeneratorTables.combEntries + 8) {
+                buffer -> (FpElement, FpElement) in
+                guard let masks = buffer.baseAddress else {
+                    return (.zero, .zero)
+                }
+                let selected = masks + GeneratorTables.combEntries
+                fillSelectionMasks(
+                    digit: digit, masks: masks, count: UInt64(truncatingIfNeeded: GeneratorTables.combEntries))
+                scanTable8(
+                    table: row, masks: UnsafePointer(masks), count: GeneratorTables.combEntries, output: selected)
+                let point = (
+                    FpElement(unchecked: BigInt256(selected[0], selected[1], selected[2], selected[3])),
+                    FpElement(unchecked: BigInt256(selected[4], selected[5], selected[6], selected[7]))
+                )
+                secureWipe(UnsafeMutableRawBufferPointer(buffer))
+                return point
             }
-            let qy = conditionalNegate(FpElement(unchecked: BigInt256(y0, y1, y2, y3)), negate)
             result = result.addAffineMasked(
-                FpElement(unchecked: BigInt256(x0, x1, x2, x3)),
-                qy,
+                qx,
+                conditionalNegate(qy, negate),
                 qIsInfinity: zeroMask(digit),
                 handleDoubling: window == GeneratorTables.combWindows - 1
             )
