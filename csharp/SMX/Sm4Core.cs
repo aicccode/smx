@@ -108,6 +108,7 @@ internal static class Sm4Core
     /// <summary>CBC-encrypts whole blocks in place. Chaining makes this serial, so it runs one block at a time.</summary>
     public static void EncryptCbc(ReadOnlySpan<uint> roundKeys, ReadOnlySpan<byte> iv, Span<byte> data)
     {
+        CheckSizes(roundKeys, iv, data);
         if (UseHardware)
         {
             AesNi.EncryptCbc(roundKeys, iv, data);
@@ -121,6 +122,7 @@ internal static class Sm4Core
     /// <summary>CBC-decrypts whole blocks in place.</summary>
     public static void DecryptCbc(ReadOnlySpan<uint> roundKeys, ReadOnlySpan<byte> iv, Span<byte> data)
     {
+        CheckSizes(roundKeys, iv, data);
         if (UseHardware)
         {
             AesNi.DecryptCbc(roundKeys, iv, data);
@@ -128,6 +130,15 @@ internal static class Sm4Core
         else
         {
             DecryptCbcSoftware(roundKeys, iv, data);
+        }
+    }
+
+    /// <summary>The hardware paths read and write through unchecked references, so sizes are enforced at this one gate.</summary>
+    private static void CheckSizes(ReadOnlySpan<uint> roundKeys, ReadOnlySpan<byte> iv, ReadOnlySpan<byte> data)
+    {
+        if (roundKeys.Length != RoundCount || iv.Length != BlockSize || data.Length % BlockSize != 0)
+        {
+            throw new ArgumentException("Invalid SM4 buffer size");
         }
     }
 
@@ -425,6 +436,7 @@ internal static class Sm4Core
             data.CopyTo(scratch);
             DecryptCbc(roundKeys, previous, scratch);
             scratch[..data.Length].CopyTo(data);
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(scratch);
         }
 
         private static Vector128<byte> ByteSwap32 =>

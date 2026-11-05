@@ -45,8 +45,8 @@ public class StandardVectorTests
     [Fact]
     public void Sm2VerifiesStandardSignature()
     {
-        const string signature = "F5A03B0648D2C4630EEAC513E1BB81A15944DA3827D5B74143AC7EACEEE720B3h" +
-            "B1B6AA29DF212FD8763182BC0D421CA1BB9038FD1F7F42D4840B69C485BBC1AA";
+        const string signature = "f5a03b0648d2c4630eeac513e1bb81a15944da3827d5b74143ac7eaceee720b3h" +
+            "b1b6aa29df212fd8763182bc0d421ca1bb9038fd1f7f42d4840b69c485bbc1aa";
         Assert.True(SM2.Verify("1234567812345678", signature, "message digest", PublicKey));
         Assert.False(SM2.Verify("1234567812345679", signature, "message digest", PublicKey));
         Assert.False(SM2.Verify("1234567812345678", signature, "message digesu", PublicKey));
@@ -56,10 +56,10 @@ public class StandardVectorTests
     public void Sm2DecryptsStandardCiphertext()
     {
         const string cipherText = "04" +
-            "04EBFC718E8D1798620432268E77FEB6415E2EDE0E073C0F4F640ECD2E149A73" +
-            "E858F9D81E5430A57B36DAAB8F950A3C64E6EE6A63094D99283AFF767E124DF0" +
-            "59983C18F809E262923C53AEC295D30383B54E39D609D160AFCB1908D0BD8766" +
-            "21886CA989CA9C7D58087307CA93092D651EFA";
+            "04ebfc718e8d1798620432268e77feb6415e2ede0e073c0f4f640ecd2e149a73" +
+            "e858f9d81e5430a57b36daab8f950a3c64e6ee6a63094d99283aff767e124df0" +
+            "59983c18f809e262923c53aec295d30383b54e39d609d160afcb1908d0bd8766" +
+            "21886ca989ca9c7d58087307ca93092d651efa";
         Assert.Equal("encryption standard", SM2.Decrypt(cipherText, PrivateKey));
     }
 }

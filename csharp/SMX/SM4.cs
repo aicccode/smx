@@ -1,10 +1,12 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Unicode;
 
 namespace SMX;
 
 /// <summary>
-/// SM4 in CBC mode with PKCS#7 padding; ciphertext is lowercase hex.
+/// SM4 in CBC mode with PKCS#7 padding; ciphertext is lowercase hex, and only lowercase is accepted, so that one
+/// ciphertext has one string form.
 /// <para>
 /// <b>CBC gives confidentiality only, with no integrity.</b> An attacker who can alter ciphertext can alter the plaintext
 /// in predictable ways, and if they can also learn whether decryption succeeded, they can recover the plaintext (a padding
@@ -79,52 +81,88 @@ public class SM4
     }
 
     /// <summary>
-    /// Decrypts hex ciphertext. Every failure of the ciphertext (bad hex, length, padding or UTF-8) raises the same
-    /// exception with the same message. Padding is validated without early exit, but whether a call succeeds is
-    /// inherently visible: see the class remarks about authenticating ciphertext first.
+    /// Decrypts lowercase hex ciphertext, exactly as <see cref="Encrypt"/> writes it, to text. Every failure of the
+    /// ciphertext (bad hex, length, padding or UTF-8) raises the same exception with the same message, and valid and
+    /// invalid padding do the same work: padding is checked without early exit, and UTF-8 validation always runs over the
+    /// whole buffer. That validation stops at the first invalid byte, so its time still varies with the content of the
+    /// data, and whether a call succeeds is inherently visible: see the class remarks about authenticating ciphertext
+    /// first. Use <see cref="DecryptToBytes"/> for data that is not text.
     /// </summary>
     /// <exception cref="ArgumentNullException"><paramref name="ciphertext"/> is null.</exception>
     /// <exception cref="ArgumentException">The ciphertext is invalid.</exception>
     /// <exception cref="InvalidOperationException">No key has been set.</exception>
     public string Decrypt(string ciphertext)
     {
-        ArgumentNullException.ThrowIfNull(ciphertext);
-        var keys = Volatile.Read(ref _keys) ?? throw new InvalidOperationException(KeyNotSet);
-
-        int byteLength = ciphertext.Length / 2;
-        if ((ciphertext.Length & 1) != 0 || byteLength == 0 || byteLength % BlockSize != 0)
-        {
-            throw new ArgumentException(InvalidCiphertext);
-        }
-
-        var buffer = new byte[byteLength];
+        var buffer = DecipherHex(ciphertext);
         try
         {
-            if (!HexUtils.TryDecode(ciphertext, buffer))
+            var check = CheckPlaintext(buffer);
+            if (!check.PaddingValid | !check.Utf8Valid)
             {
                 throw new ArgumentException(InvalidCiphertext);
             }
-
-            Sm4Core.DecryptCbc(keys.RoundKeys, keys.Iv, buffer);
-            int padLength = PaddingLength(buffer);
-            if (padLength == 0)
-            {
-                throw new ArgumentException(InvalidCiphertext);
-            }
-
-            try
-            {
-                return StrictUtf8.GetString(buffer, 0, buffer.Length - padLength);
-            }
-            catch (DecoderFallbackException)
-            {
-                throw new ArgumentException(InvalidCiphertext);
-            }
+            return Encoding.UTF8.GetString(buffer, 0, buffer.Length - check.PaddingLength);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(buffer);
         }
+    }
+
+    /// <summary>
+    /// Decrypts lowercase hex ciphertext to bytes, with no UTF-8 step. The caller should clear the result when done.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="ciphertext"/> is null.</exception>
+    /// <exception cref="ArgumentException">The ciphertext is invalid.</exception>
+    /// <exception cref="InvalidOperationException">No key has been set.</exception>
+    public byte[] DecryptToBytes(string ciphertext)
+    {
+        var buffer = DecipherHex(ciphertext);
+        try
+        {
+            int padLength = PaddingLength(buffer);
+            if (padLength == 0)
+            {
+                throw new ArgumentException(InvalidCiphertext);
+            }
+            return buffer[..^padLength];
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    private byte[] DecipherHex(string ciphertext)
+    {
+        ArgumentNullException.ThrowIfNull(ciphertext);
+        var keys = Volatile.Read(ref _keys) ?? throw new InvalidOperationException(KeyNotSet);
+
+        int byteLength = ciphertext.Length / 2;
+        if ((ciphertext.Length & 1) != 0 || byteLength == 0 || byteLength % BlockSize != 0 || !HexUtils.IsLowerCaseOnly(ciphertext))
+        {
+            throw new ArgumentException(InvalidCiphertext);
+        }
+
+        var buffer = new byte[byteLength];
+        if (!HexUtils.TryDecode(ciphertext, buffer))
+        {
+            throw new ArgumentException(InvalidCiphertext);
+        }
+        Sm4Core.DecryptCbc(keys.RoundKeys, keys.Iv, buffer);
+        return buffer;
+    }
+
+    /// <summary>
+    /// Both checks on a deciphered buffer, always both and always over all of it. Valid padding bytes are all ASCII (1 to
+    /// 16), so whole-buffer UTF-8 validity is the same as that of the plaintext alone when padding is valid; the same
+    /// call therefore serves valid and invalid padding, and both results are used, so it cannot be optimized away.
+    /// </summary>
+    internal static (bool PaddingValid, int PaddingLength, bool Utf8Valid, int BytesValidated) CheckPlaintext(ReadOnlySpan<byte> buffer)
+    {
+        int padLength = PaddingLength(buffer);
+        bool utf8Valid = Utf8.IsValid(buffer);
+        return (padLength != 0, padLength, utf8Valid, buffer.Length);
     }
 
     /// <summary>

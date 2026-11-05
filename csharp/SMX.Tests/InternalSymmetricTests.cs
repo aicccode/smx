@@ -275,20 +275,45 @@ public class InternalSymmetricTests
     }
 
     [Fact]
-    public void Sm3ResultsBehaveAsBefore()
+    public void Sm3DigestIsOnlyReadableWhenItExists()
     {
         var h = new SM3();
-        Assert.Equal("", h.HashHexUpper());
-        Assert.Empty(h.HashBytes());
-        h.Update(Encoding.ASCII.GetBytes("abc"));
-        h.Finish();
+        Assert.Throws<InvalidOperationException>(() => h.HashBytes());
+        Assert.Throws<InvalidOperationException>(() => h.HashHexUpper());
 
-        // The hex form is unaffected by callers scribbling on the array they were handed.
-        var bytes = h.HashBytes();
+        h.Update(Encoding.ASCII.GetBytes("abc"));
+        Assert.Throws<InvalidOperationException>(() => h.HashBytes());
+        h.Finish();
         var expected = h.HashHexUpper();
+        Assert.Equal("66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0", expected);
+
+        // Scribbling on a returned digest changes nothing later.
+        var bytes = h.HashBytes();
         bytes[0] ^= 0xFF;
         Assert.Equal(expected, h.HashHexUpper());
-        Assert.Same(bytes, h.HashBytes());
+        Assert.Equal(expected, Convert.ToHexString(h.HashBytes()));
+
+        // Finish twice fails, leaving the digest readable; it never turns into the empty-message hash.
+        Assert.Throws<InvalidOperationException>(() => h.Finish());
+        Assert.Equal(expected, h.HashHexUpper());
+
+        // Updating starts a new message, and the old digest stops being readable.
+        h.UpdateByte((byte)'x');
+        Assert.Throws<InvalidOperationException>(() => h.HashHexUpper());
+        h.Finish();
+        Assert.NotEqual(expected, h.HashHexUpper());
+
+        h.Update([]);
+        h.Finish();
+        Assert.Equal("1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B", h.HashHexUpper());
+    }
+
+    [Fact]
+    public void Sm3OfNoUpdatesIsTheEmptyHash()
+    {
+        var h = new SM3();
+        h.Finish();
+        Assert.Equal("1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B", h.HashHexUpper());
     }
 
     [Fact]

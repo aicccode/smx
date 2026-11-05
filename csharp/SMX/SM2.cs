@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Unicode;
 
 namespace SMX;
 
@@ -21,8 +22,8 @@ public class SM2KeySwapParams
 }
 
 /// <summary>
-/// SM2 sign, verify, encrypt, decrypt and key exchange. Hex keys and signature halves must have their exact length, in
-/// either case and with no prefix. Failures: <see cref="Verify"/> and <see cref="CheckSa"/> return false, GetSa and GetSb
+/// SM2 sign, verify, encrypt, decrypt and key exchange. Hex must have its exact length and no prefix. Keys may use either
+/// case; signatures and ciphertexts must be lowercase, as this library writes them. Failures: <see cref="Verify"/> and <see cref="CheckSa"/> return false, GetSa and GetSb
 /// report through <see cref="SM2KeySwapParams.Success"/>, and everything else throws <see cref="ArgumentException"/> for
 /// invalid input and <see cref="InvalidOperationException"/> for ciphertext that fails verification.
 /// <see cref="CryptographicException"/> means the system random generator failed or returned unusable output.
@@ -34,7 +35,10 @@ public static class SM2
     private const int C1Size = 65;
     private const int C1HexLength = C1Size * 2;
     private const int C3HexLength = HashSize * 2;
-    private const int StackUtf8Chars = 170;
+    private const int Utf8ChunkChars = 170;
+
+    /// <summary>Room for one more character, the half of a surrogate pair the encoder may carry over from the last piece.</summary>
+    private const int Utf8ChunkBytes = (Utf8ChunkChars + 1) * 3;
     private const int ScalarHexLength = CoordinateSize * 2;
     private const int MaxUserIdBytes = 8191;
     private const int MaxExchangeKeyBytes = 1024 * 1024;
@@ -133,10 +137,48 @@ public static class SM2
         throw new CryptographicException("encryption failed");
     }
 
-    /// <summary>Decrypts C1 || C3 || C2 hex. C2 must not be empty, and the plaintext must be valid UTF-8.</summary>
+    /// <summary>
+    /// Decrypts C1 || C3 || C2 in lowercase hex, exactly as <see cref="Encrypt"/> writes it, to text. C2 must not be empty
+    /// and the plaintext must be valid UTF-8. UTF-8 validation runs whether or not C3 matched, so both failures do the same
+    /// work apart from content-dependent time in that validation. Use <see cref="DecryptToBytes"/> for data that is not text.
+    /// </summary>
     /// <exception cref="ArgumentException">Malformed ciphertext, or an invalid private key.</exception>
     /// <exception cref="InvalidOperationException">The ciphertext does not verify under this key.</exception>
     public static string Decrypt(string ciphertext, string privateKey)
+    {
+        var plaintext = DecipherAndVerify(ciphertext, privateKey, out bool verified);
+        try
+        {
+            bool utf8Valid = Utf8.IsValid(plaintext);
+            if (!verified | !utf8Valid)
+            {
+                throw new InvalidOperationException(DecryptionFailed);
+            }
+            return Encoding.UTF8.GetString(plaintext);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
+    }
+
+    /// <summary>
+    /// Decrypts as <see cref="Decrypt"/> does, to bytes, with no UTF-8 step. The caller should clear the result when done.
+    /// </summary>
+    /// <exception cref="ArgumentException">Malformed ciphertext, or an invalid private key.</exception>
+    /// <exception cref="InvalidOperationException">The ciphertext does not verify under this key.</exception>
+    public static byte[] DecryptToBytes(string ciphertext, string privateKey)
+    {
+        var plaintext = DecipherAndVerify(ciphertext, privateKey, out bool verified);
+        if (!verified)
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+            throw new InvalidOperationException(DecryptionFailed);
+        }
+        return plaintext;
+    }
+
+    private static byte[] DecipherAndVerify(string ciphertext, string privateKey, out bool verified)
     {
         ArgumentNullException.ThrowIfNull(ciphertext);
         ArgumentNullException.ThrowIfNull(privateKey);
@@ -144,7 +186,7 @@ public static class SM2
         {
             throw new ArgumentException("ciphertext too short");
         }
-        if ((ciphertext.Length & 1) != 0)
+        if ((ciphertext.Length & 1) != 0 || !HexUtils.IsLowerCaseOnly(ciphertext))
         {
             throw new ArgumentException("invalid ciphertext");
         }
@@ -171,31 +213,11 @@ public static class SM2
             throw new InvalidOperationException(DecryptionFailed);
         }
 
-        try
-        {
-            bool keystreamUsable = KdfXor(p2, c2);
-
-            Span<byte> computedC3 = stackalloc byte[HashSize];
-            HashWithPoint(p2, c2, computedC3);
-            bool hashMatches = CryptographicOperations.FixedTimeEquals(computedC3, c3);
-            if (!keystreamUsable || !hashMatches)
-            {
-                throw new InvalidOperationException(DecryptionFailed);
-            }
-
-            try
-            {
-                return StrictUtf8.GetString(c2);
-            }
-            catch (DecoderFallbackException)
-            {
-                throw new InvalidOperationException(DecryptionFailed);
-            }
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(c2);
-        }
+        bool keystreamUsable = KdfXor(p2, c2);
+        Span<byte> computedC3 = stackalloc byte[HashSize];
+        HashWithPoint(p2, c2, computedC3);
+        verified = CryptographicOperations.FixedTimeEquals(computedC3, c3) & keystreamUsable;
+        return c2;
     }
 
     /// <summary>Signs and returns r and s in lowercase hex, joined by "h". The user ID may be up to 8191 UTF-8 bytes.</summary>
@@ -265,9 +287,9 @@ public static class SM2
     }
 
     /// <summary>
-    /// True only for a signature of exactly 64 hex digits for each of r and s, joined by "h", that is valid for the exact
-    /// encoding of a valid public key. Every kind of invalid input, null included, gives false; this never throws for
-    /// them. Uppercase digits are accepted for interoperability.
+    /// True only for a signature of exactly 64 lowercase hex digits for each of r and s, joined by "h", as
+    /// <see cref="Sign"/> writes it, so that a signature has one string form, and valid for the exact encoding of a valid
+    /// public key. Every kind of invalid input, null included, gives false; this never throws for them.
     /// </summary>
     public static bool Verify(string userID, string signature, string message, string publicKey)
     {
@@ -282,6 +304,10 @@ public static class SM2
         }
 
         ReadOnlySpan<char> text = signature;
+        if (!HexUtils.IsLowerCaseOnly(text))
+        {
+            return false;
+        }
         if (!BigInt256.TryParseExact(text[..ScalarHexLength], out var r)
             || !BigInt256.TryParseExact(text[(ScalarHexLength + 1)..], out var s))
         {
@@ -651,17 +677,27 @@ public static class SM2
         CryptographicOperations.ZeroMemory(coordinates);
     }
 
+    /// <summary>
+    /// Hashes the text's UTF-8 form piece by piece, so that text of any length needs no large buffer and cannot run out of
+    /// memory here. The stateful encoder keeps surrogate pairs that straddle two pieces together and rejects lone ones.
+    /// </summary>
     private static void UpdateUtf8(ref Sm3Hasher h, string text)
     {
-        if (text.Length <= StackUtf8Chars)
+        Span<byte> bytes = stackalloc byte[Utf8ChunkBytes];
+        if (text.Length <= Utf8ChunkChars)
         {
-            Span<byte> bytes = stackalloc byte[StackUtf8Chars * 3];
-            int written = StrictUtf8.GetBytes(text, bytes);
-            h.Update(bytes[..written]);
+            h.Update(bytes[..StrictUtf8.GetBytes(text, bytes)]);
+            return;
         }
-        else
+
+        var encoder = StrictUtf8.GetEncoder();
+        ReadOnlySpan<char> rest = text;
+        while (!rest.IsEmpty)
         {
-            h.Update(StrictUtf8.GetBytes(text));
+            var piece = rest[..Math.Min(rest.Length, Utf8ChunkChars)];
+            rest = rest[piece.Length..];
+            int written = encoder.GetBytes(piece, bytes, flush: rest.IsEmpty);
+            h.Update(bytes[..written]);
         }
     }
 

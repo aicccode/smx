@@ -86,6 +86,8 @@ public static class HexUtils
 
     private static void Encode(ReadOnlySpan<byte> bytes, Span<char> chars, byte caseBit)
     {
+        // The vector path writes through unchecked references.
+        ArgumentOutOfRangeException.ThrowIfLessThan(chars.Length, bytes.Length * 2);
         int i = 0;
         if (Ssse3.IsSupported && !ForceScalar)
         {
@@ -128,6 +130,12 @@ public static class HexUtils
     /// <summary>'0' + n, plus the gap to the letters when n exceeds 9, computed without a branch.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static char NibbleToChar(int n, int letterOffset) => (char)('0' + n + (((9 - n) >> 31) & letterOffset));
+
+    /// <summary>
+    /// False when the input holds an uppercase hex digit. Signatures and ciphertexts are public and have one canonical
+    /// form, the lowercase this library writes; otherwise one value would have many strings, defeating replay caches.
+    /// </summary>
+    internal static bool IsLowerCaseOnly(ReadOnlySpan<char> hex) => hex.IndexOfAnyInRange('A', 'F') < 0;
 
     /// <summary>
     /// Decodes exactly bytes.Length * 2 hex digits of either case with no prefix. Every digit is processed whether or not

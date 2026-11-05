@@ -79,7 +79,7 @@ public class BaselineKatTests
             case "fpfromhex": return Attempt(() => FpElement.FromHex(a[0]).Value.ToHex());
             case "frombe": return BigInt256.FromBEBytes(Convert.FromHexString(a[0])).ToHex();
             case "sm3": return Sm3(a[0], a[1]);
-            case "sm3again": { var h = new SM3(); h.Update(Convert.FromHexString(a[0])); h.Finish(); h.Finish(); return h.HashHexUpper(); }
+            case "sm3again": { var h = new SM3(); h.Update(Convert.FromHexString(a[0])); h.Finish(); h.Update([]); h.Finish(); return h.HashHexUpper(); }
             case "sm4": { var c = Sm4(a[0], a[1]); return c.Encrypt(a[2]); }
             case "sm4dec": { var c = Sm4(a[0], a[1]); return c.Decrypt(a[2]); }
             case "sm4nokey": return new SM4().Encrypt("no key set");

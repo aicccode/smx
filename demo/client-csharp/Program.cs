@@ -8,12 +8,16 @@ using SMX;
 const string serverUrl = "http://localhost:8080";
 const string ida = "csharp-client@demo.aicc";
 const int MaxResponseBytes = 1024 * 1024;
+const string PinnedKeyVariable = "SM2_DEMO_SERVER_PUBKEY";
+
+// One deadline for the whole run, however slowly a server sends its bytes.
+using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
 try
 {
     return await RunDemo();
 }
-catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or ArgumentException or InvalidOperationException)
+catch (Exception ex)
 {
     // Only the exception's type: its text can quote server data.
     Console.Error.WriteLine($"Demo failed: {ex.GetType().Name}");
@@ -37,7 +41,7 @@ async Task<int> RunDemo()
 
     int keyLen = 16;
 
-    using var http = new HttpClient(new HttpClientHandler { UseProxy = false })
+    using var http = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
     {
         MaxResponseContentBufferSize = MaxResponseBytes,
         Timeout = TimeSpan.FromSeconds(30),
@@ -47,10 +51,10 @@ async Task<int> RunDemo()
     {
         var json = JsonSerializer.Serialize(req);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
-        using var response = await http.PostAsync(url, content);
+        using var response = await http.PostAsync(url, content, deadline.Token);
         response.EnsureSuccessStatusCode();
-        var respJson = await response.Content.ReadAsStringAsync();
-        Console.WriteLine($"Response: {respJson}");
+        var respJson = await response.Content.ReadAsStringAsync(deadline.Token);
+        Console.WriteLine($"Response: {Printable(respJson)}");
         return JsonSerializer.Deserialize<T>(respJson) ?? throw new JsonException("empty response");
     }
 
@@ -73,6 +77,19 @@ async Task<int> RunDemo()
 
     // Step 2: Calculate Sa and Ka
     Console.WriteLine("\n--- Step 2: Calculate Sa and Ka ---");
+
+    // Key confirmation only proves the peer holds the private key for the pB it sent, and anyone can make a key pair. Without
+    // a pinned key an impostor passes every check below.
+    var pinnedKey = Environment.GetEnvironmentVariable(PinnedKeyVariable);
+    if (string.IsNullOrEmpty(pinnedKey))
+    {
+        Console.WriteLine($"WARNING: the server is UNAUTHENTICATED. Set {PinnedKeyVariable} to its public key to pin it.");
+    }
+    else if (!SMX.ECPoint.FromHexEncoded(pinnedKey).Equal(SMX.ECPoint.FromHexEncoded(initResp.PB)))
+    {
+        Console.Error.WriteLine("Server public key does not match the pinned key");
+        return 1;
+    }
 
     var pB = SMX.ECPoint.FromHexEncoded(initResp.PB);
     var rB = SMX.ECPoint.FromHexEncoded(initResp.RB);
@@ -143,8 +160,8 @@ async Task<int> RunDemo()
     Console.WriteLine(clientDecryptOk
         ? "[Client decrypted server message]: PASS"
         : "[Client decrypted server message]: FAIL");
-    Console.WriteLine($"  Server plaintext: {cryptoResp.ServerPlaintext}");
-    Console.WriteLine($"  Client decrypted: {serverDecrypted}");
+    Console.WriteLine($"  Server plaintext: {Printable(cryptoResp.ServerPlaintext)}");
+    Console.WriteLine($"  Client decrypted: {Printable(serverDecrypted)}");
 
     if (serverDecryptOk && clientDecryptOk)
     {
@@ -159,6 +176,13 @@ async Task<int> RunDemo()
     Console.WriteLine("\n=== Demo Complete ===");
     return 0;
 }
+
+// Server text may hold terminal escape sequences or direction overrides; show none of them raw.
+static string Printable(string text) => string.Concat(text.Select(c =>
+    char.IsControl(c) || char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Format
+        or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator
+        ? '?'
+        : c));
 
 // --- DTO classes with explicit JSON property names ---
 

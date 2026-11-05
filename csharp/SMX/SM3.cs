@@ -7,17 +7,29 @@ namespace SMX;
 
 /// <summary>
 /// Streaming SM3 hash; the working state lives in <see cref="Sm3Hasher"/> so internal callers need no heap. An instance
-/// holds mutable state and is not safe for concurrent use. Finish resets it for a new message.
+/// holds mutable state and is not safe for concurrent use.
+/// <para>
+/// Finish completes a message and makes its digest readable. Updating after that starts a new message and the old digest
+/// stops being readable. Finish straight after Finish, and reading a digest that does not currently exist, throw
+/// <see cref="InvalidOperationException"/> rather than give the hash of an empty message or a stale digest. To hash an
+/// empty message on a reused instance, call Update with an empty array first.
+/// </para>
 /// </summary>
 public class SM3
 {
+    private const string NoDigest = "No digest: call Finish after the last Update";
+
     private Sm3Hasher _hasher = Sm3Hasher.Create();
-    private byte[] _hashBytes = [];
-    private BigInt256 _digest;
+    private bool _finished;
     private bool _hasDigest;
+    private BigInt256 _digest;
 
     /// <exception cref="ArgumentException">The message would exceed the SM3 limit of 2^61 - 1 bytes.</exception>
-    public void UpdateByte(byte b) => _hasher.UpdateByte(b);
+    public void UpdateByte(byte b)
+    {
+        _hasher.UpdateByte(b);
+        StartMessage();
+    }
 
     /// <exception cref="ArgumentNullException"><paramref name="data"/> is null.</exception>
     /// <exception cref="ArgumentException">The message would exceed the SM3 limit of 2^61 - 1 bytes.</exception>
@@ -25,21 +37,36 @@ public class SM3
     {
         ArgumentNullException.ThrowIfNull(data);
         _hasher.Update(data);
+        StartMessage();
     }
 
+    private void StartMessage()
+    {
+        _finished = false;
+        _hasDigest = false;
+    }
+
+    /// <exception cref="InvalidOperationException">The previous call was also Finish, with no Update between.</exception>
     public void Finish()
     {
-        var digest = new byte[Sm3Hasher.DigestSize];
+        if (_finished)
+        {
+            throw new InvalidOperationException("Finish was already called for this message");
+        }
+        Span<byte> digest = stackalloc byte[Sm3Hasher.DigestSize];
         _hasher.Finish(digest);
-        _hashBytes = digest;
         _digest = BigInt256.FromBigEndian(digest);
         _hasDigest = true;
+        _finished = true;
         _hasher = Sm3Hasher.Create();
     }
 
-    public byte[] HashBytes() => _hashBytes;
+    /// <summary>A new copy of the digest of the message just finished.</summary>
+    /// <exception cref="InvalidOperationException">There is no finished message.</exception>
+    public byte[] HashBytes() => _hasDigest ? _digest.ToBEBytes() : throw new InvalidOperationException(NoDigest);
 
-    public string HashHexUpper() => _hasDigest ? _digest.ToHex() : "";
+    /// <exception cref="InvalidOperationException">There is no finished message.</exception>
+    public string HashHexUpper() => _hasDigest ? _digest.ToHex() : throw new InvalidOperationException(NoDigest);
 }
 
 /// <summary>SM3 hashing state as a plain struct; copying it forks the hash, which the KDFs use to reuse a shared prefix.</summary>

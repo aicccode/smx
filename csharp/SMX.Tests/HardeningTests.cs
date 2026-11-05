@@ -384,14 +384,182 @@ public class HardeningTests
     }
 
     [Fact]
-    public void Sm4DecryptCannotBeTrickedByEncodingVariants()
+    public void Sm4AcceptsOnlyTheCanonicalCiphertextString()
     {
         var c = new SM4();
         c.SetKey(new byte[16], new byte[16]);
-        var cipher = c.Encrypt("text");
-        Assert.Equal("text", c.Decrypt(cipher.ToUpperInvariant()));
+        var cipher = c.Encrypt("text with hex letters");
+        Assert.Equal("text with hex letters", c.Decrypt(cipher));
+        Assert.Throws<ArgumentException>(() => c.Decrypt(cipher.ToUpperInvariant()));
+        Assert.Throws<ArgumentException>(() => c.DecryptToBytes(cipher.ToUpperInvariant()));
         Assert.Throws<ArgumentException>(() => c.Decrypt("0x" + cipher));
         Assert.Throws<ArgumentException>(() => c.Decrypt(" " + cipher));
         Assert.Throws<ArgumentException>(() => c.Decrypt(cipher + "\n"));
+    }
+
+    [Fact]
+    public void Sm2AcceptsOnlyTheCanonicalSignatureAndCiphertextStrings()
+    {
+        // Retried so that the value holds a hex letter: all-digit strings have no other case.
+        string signature;
+        do
+        {
+            signature = SM2.Sign("id", "m", PrivateKey);
+        }
+        while (!signature.Any(char.IsLetter));
+        Assert.True(SM2.Verify("id", signature, "m", PublicKey));
+        Assert.False(SM2.Verify("id", signature.ToUpperInvariant().Replace('H', 'h'), "m", PublicKey));
+        char[] oneUpper = signature.ToCharArray();
+        int letter = Array.FindIndex(oneUpper, ch => ch is >= 'a' and <= 'f');
+        oneUpper[letter] = char.ToUpperInvariant(oneUpper[letter]);
+        Assert.False(SM2.Verify("id", new string(oneUpper), "m", PublicKey));
+
+        var cipher = SM2.Encrypt("plain", PublicKey);
+        Assert.Equal("plain", SM2.Decrypt(cipher, PrivateKey));
+        Assert.Throws<ArgumentException>(() => SM2.Decrypt(cipher.ToUpperInvariant(), PrivateKey));
+        Assert.Throws<ArgumentException>(() => SM2.DecryptToBytes(cipher.ToUpperInvariant(), PrivateKey));
+
+        // Keys stay case-insensitive, because key generation writes the private key in uppercase.
+        Assert.Equal("plain", SM2.Decrypt(cipher, PrivateKey.ToLowerInvariant()));
+        Assert.True(SM2.Verify("id", signature, "m", PublicKey.ToUpperInvariant()));
+    }
+
+    /// <summary>The padding check result must not decide whether the UTF-8 pass runs, or over how much.</summary>
+    [Fact]
+    public void Sm4RunsTheSameValidationForValidAndInvalidPadding()
+    {
+        byte[] Padded(int fill, byte last)
+        {
+            var b = new byte[48];
+            b.AsSpan().Fill((byte)fill);
+            b[^1] = last;
+            return b;
+        }
+
+        var goodPadding = SM4.CheckPlaintext(Padded('a', 1));
+        var badPadding = SM4.CheckPlaintext(Padded('a', 0x20));
+        var badPaddingBadUtf8 = SM4.CheckPlaintext(Padded(0xFF, 0x20));
+        var goodPaddingBadUtf8 = SM4.CheckPlaintext(Padded(0xFF, 1));
+
+        Assert.True(goodPadding.PaddingValid);
+        Assert.False(badPadding.PaddingValid);
+        Assert.False(badPaddingBadUtf8.PaddingValid);
+        Assert.True(goodPaddingBadUtf8.PaddingValid);
+
+        // Validation really ran in the invalid-padding cases: it reports on the data, not on the padding.
+        Assert.True(badPadding.Utf8Valid);
+        Assert.False(badPaddingBadUtf8.Utf8Valid);
+        Assert.False(goodPaddingBadUtf8.Utf8Valid);
+        Assert.All(new[] { goodPadding, badPadding, badPaddingBadUtf8, goodPaddingBadUtf8 }, r => Assert.Equal(48, r.BytesValidated));
+    }
+
+    [Fact]
+    public void BytesDecryptReturnsBinaryData()
+    {
+        // Bytes that are not UTF-8, enciphered directly with the core.
+        var key = new byte[16];
+        var rk = new uint[Sm4Core.RoundCount];
+        Sm4Core.ExpandKey(key, rk);
+        var block = new byte[32];
+        block[0] = 0xFF;
+        block[1] = 0xFE;
+        block.AsSpan(16).Fill(16);
+        var plain = block[..16];
+        Sm4Core.EncryptCbc(rk, new byte[16], block);
+        var c = new SM4();
+        c.SetKey(key, new byte[16]);
+        Assert.Equal(plain, c.DecryptToBytes(HexUtils.BytesToHex(block)));
+        Assert.Throws<ArgumentException>(() => c.Decrypt(HexUtils.BytesToHex(block)));
+
+        var cipher = SM2.Encrypt("text", PublicKey);
+        Assert.Equal(Encoding.UTF8.GetBytes("text"), SM2.DecryptToBytes(cipher, PrivateKey));
+    }
+
+    [Fact]
+    public void Sm2RejectsFlippedC3WithNoPlaintext()
+    {
+        var cipher = SM2.Encrypt("text", PublicKey);
+        char flipped = cipher[140] == '0' ? '1' : '0';
+        var bad = cipher[..140] + flipped + cipher[141..];
+        Assert.Throws<InvalidOperationException>(() => SM2.Decrypt(bad, PrivateKey));
+        Assert.Throws<InvalidOperationException>(() => SM2.DecryptToBytes(bad, PrivateKey));
+    }
+
+    /// <summary>Long text is hashed in pieces; a surrogate pair at any piece boundary must hash as one character.</summary>
+    [Fact]
+    public void LongTextHashesTheSameAsItsUtf8Bytes()
+    {
+        var point = Point();
+        foreach (var padding in Enumerable.Range(165, 12).Concat(Enumerable.Range(335, 12)))
+        {
+            string text = new string('x', padding) + "😀" + new string('国', 400);
+            var expectedHash = Sm3Of([.. Sm3Of(ZInput("id", point)), .. Encoding.UTF8.GetBytes(text)]);
+            Assert.Equal(expectedHash, SM2.MessageDigest("id", text, point).ToBEBytes());
+        }
+
+        // A lone surrogate is caught at the very end of a long text, and at a boundary.
+        var pri = PrivateKey;
+        Assert.Throws<EncoderFallbackException>(() => SM2.Sign("id", new string('x', 500) + "\uD800", pri));
+        Assert.Throws<EncoderFallbackException>(() => SM2.Sign("id", new string('x', 169) + "\uD800" + new string('y', 500), pri));
+        Assert.False(SM2.Verify("id", new string('1', 64) + "h" + new string('1', 64), new string('x', 500) + "\uD800", PublicKey));
+    }
+
+    private static byte[] Sm3Of(byte[] data)
+    {
+        var h = new SM3();
+        h.Update(data);
+        h.Finish();
+        return h.HashBytes();
+    }
+
+    private static byte[] ZInput(string id, ECPoint point)
+    {
+        var idBytes = Encoding.UTF8.GetBytes(id);
+        return
+        [
+            (byte)(idBytes.Length * 8 >> 8),
+            (byte)(idBytes.Length * 8),
+            .. idBytes,
+            .. ECPoint.SM2_A.Value.ToBEBytes(),
+            .. ECPoint.SM2_B.Value.ToBEBytes(),
+            .. ECPoint.SM2_GX.Value.ToBEBytes(),
+            .. ECPoint.SM2_GY.Value.ToBEBytes(),
+            .. point.X.Value.ToBEBytes(),
+            .. point.Y.Value.ToBEBytes(),
+        ];
+    }
+
+    /// <summary>A secret-holding value must not reveal itself through the common formatters.</summary>
+    [Fact]
+    public void SecretsDoNotAppearInFormattersOrSerializers()
+    {
+        var secret = BigInt256.FromHex(PrivateKey);
+        var hex = PrivateKey.ToLowerInvariant();
+        foreach (var text in new[]
+        {
+            secret.ToString()!,
+            $"{secret}",
+            System.Text.Json.JsonSerializer.Serialize(secret),
+            new FpElement(secret).ToString()!,
+            System.Text.Json.JsonSerializer.Serialize(new FpElement(secret)),
+            new ECPoint { X = new FpElement(secret), Y = new FpElement(secret) }.ToString()!,
+            System.Text.Json.JsonSerializer.Serialize(new ECPoint { X = new FpElement(secret), Y = new FpElement(secret) }),
+            new SM2KeySwapParams { Ka = hex }.ToString()!,
+        })
+        {
+            Assert.DoesNotContain(hex, text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(secret.L0.ToString(), text);
+        }
+    }
+
+    [Fact]
+    public void InternalBufferGatesRejectWrongSizes()
+    {
+        var rk = new uint[Sm4Core.RoundCount];
+        Assert.Throws<ArgumentException>(() => Sm4Core.EncryptCbc(rk, new byte[16], new byte[15]));
+        Assert.Throws<ArgumentException>(() => Sm4Core.DecryptCbc(rk, new byte[16], new byte[17]));
+        Assert.Throws<ArgumentException>(() => Sm4Core.EncryptCbc(rk, new byte[15], new byte[16]));
+        Assert.Throws<ArgumentException>(() => Sm4Core.DecryptCbc(new uint[31], new byte[16], new byte[16]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => HexUtils.EncodeLower(new byte[16], new char[31]));
     }
 }

@@ -248,8 +248,43 @@ var table = new List<(string Name, Type[] Allowed, Action<Random> Run)>
         var h = new SM3();
         h.Update(MaybeBytes(r, 300)!);
         h.Finish();
-        h.Finish();
         h.HashBytes();
+    }),
+    ("SM3.CallOrder", argumentOrState, r =>
+    {
+        var h = new SM3();
+        byte[]? last = null;
+        for (int i = r.Next(1, 12); i > 0; i--)
+        {
+            switch (r.Next(4))
+            {
+                case 0:
+                    h.Update(Bytes(r, 100));
+                    last = null;
+                    break;
+                case 1:
+                    h.Finish();
+                    last = h.HashBytes();
+                    break;
+                case 2:
+                    Require(last == null || last.AsSpan().SequenceEqual(h.HashBytes()));
+                    h.HashBytes();
+                    break;
+                default:
+                    h.HashHexUpper();
+                    break;
+            }
+        }
+    }),
+    ("SM2.DecryptToBytes", argumentOrState, r => SM2.DecryptToBytes(HexInput(r, validCipher)!, r.Next(3) == 0 ? HexInput(r, validPri)! : validPri)),
+    ("SM4.DecryptToBytes", argumentOrState, r =>
+    {
+        var c = new SM4();
+        if (r.Next(10) != 0)
+        {
+            c.SetKey(new byte[16], new byte[16]);
+        }
+        c.DecryptToBytes(HexInput(r, validSm4)!);
     }),
     ("SM4.SetKey", argumentOnly, r => new SM4().SetKey(MaybeBytes(r, 20)!, r.Next(2) == 0 ? new byte[16] : MaybeBytes(r, 20)!)),
     ("SM4.Encrypt", argumentOrState, r =>
@@ -287,12 +322,16 @@ var table = new List<(string Name, Type[] Allowed, Action<Random> Run)>
         var c = new SM4();
         c.SetKey(key, iv);
         var text = new string((char)r.Next(0x21, 0x7E), r.Next(0, 200));
-        Require(c.Decrypt(c.Encrypt(text)) == text);
+        var cipher = c.Encrypt(text);
+        Require(c.Decrypt(cipher) == text);
+        Require(c.DecryptToBytes(cipher).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(text)));
     }),
     ("RoundTrip.Sm2Encrypt", nothing, r =>
     {
         var text = new string((char)r.Next(0x21, 0x7E), r.Next(1, 200));
-        Require(SM2.Decrypt(SM2.Encrypt(text, validPub), validPri) == text);
+        var cipher = SM2.Encrypt(text, validPub);
+        Require(SM2.Decrypt(cipher, validPri) == text);
+        Require(SM2.DecryptToBytes(cipher, validPri).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(text)));
     }),
     ("RoundTrip.Sm2Sign", nothing, r =>
     {
