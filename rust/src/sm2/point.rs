@@ -120,25 +120,43 @@ impl JacobianPoint {
         // beta = X1 * gamma
         let beta = self.x.multiply(&gamma);
         // alpha = 3*(X1-delta)*(X1+delta)  (利用 a=-3: 3*X1²+a*Z1⁴ = 3*(X1²-Z1⁴) = 3*(X1-Z1²)*(X1+Z1²))
-        let alpha = self.x.subtract(&delta).multiply(&self.x.add(&delta)).triple();
+        let alpha = self
+            .x
+            .subtract(&delta)
+            .multiply(&self.x.add(&delta))
+            .triple();
         // X3 = alpha² - 8*beta
         let beta8 = beta.double().double().double();
         let x3 = alpha.square().subtract(&beta8);
         // Z3 = (Y1+Z1)² - gamma - delta
-        let z3 = self.y.add(&self.z).square().subtract(&gamma).subtract(&delta);
+        let z3 = self
+            .y
+            .add(&self.z)
+            .square()
+            .subtract(&gamma)
+            .subtract(&delta);
         // Y3 = alpha*(4*beta - X3) - 8*gamma²
         let gamma_sq = gamma.square();
-        let y3 = alpha.multiply(&beta.double().double().subtract(&x3))
+        let y3 = alpha
+            .multiply(&beta.double().double().subtract(&x3))
             .subtract(&gamma_sq.double().double().double());
 
-        JacobianPoint { x: x3, y: y3, z: z3 }
+        JacobianPoint {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
 
     /// Jacobian点加法 (mixed addition: other.Z = 1)
     /// 参考: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-madd-2007-bl
     fn add_affine(&self, other: &ECPoint) -> JacobianPoint {
         if other.infinity {
-            return JacobianPoint { x: self.x, y: self.y, z: self.z };
+            return JacobianPoint {
+                x: self.x,
+                y: self.y,
+                z: self.z,
+            };
         }
         if self.z.is_zero() {
             return JacobianPoint::from_affine(other);
@@ -165,15 +183,23 @@ impl JacobianPoint {
         let hh = h.square();
         let hhh = hh.multiply(&h);
         // X3 = r² - H³ - 2*X1*H²
-        let x3 = r.square().subtract(&hhh).subtract(&self.x.multiply(&hh).double());
+        let x3 = r
+            .square()
+            .subtract(&hhh)
+            .subtract(&self.x.multiply(&hh).double());
         // Y3 = r*(X1*H² - X3) - Y1*H³
-        let y3 = r.multiply(&self.x.multiply(&hh).subtract(&x3)).subtract(&self.y.multiply(&hhh));
+        let y3 = r
+            .multiply(&self.x.multiply(&hh).subtract(&x3))
+            .subtract(&self.y.multiply(&hhh));
         // Z3 = Z1*H
         let z3 = self.z.multiply(&h);
 
-        JacobianPoint { x: x3, y: y3, z: z3 }
+        JacobianPoint {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
     }
-
 }
 
 /// 椭圆曲线点（仿射坐标）

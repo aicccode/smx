@@ -8,8 +8,12 @@ pub struct BigInt256 {
 }
 
 impl BigInt256 {
-    pub const ZERO: BigInt256 = BigInt256 { limbs: [0, 0, 0, 0] };
-    pub const ONE: BigInt256 = BigInt256 { limbs: [1, 0, 0, 0] };
+    pub const ZERO: BigInt256 = BigInt256 {
+        limbs: [0, 0, 0, 0],
+    };
+    pub const ONE: BigInt256 = BigInt256 {
+        limbs: [1, 0, 0, 0],
+    };
 
     pub fn new(limbs: [u64; 4]) -> Self {
         BigInt256 { limbs }
@@ -237,14 +241,14 @@ impl BigInt256 {
         // R_14: [2, 2, -1, 1, 2, 1, 1, 2]
         // R_15: [2, 2,  0, 1, 1, 2, 1, 3]
         static R: [[i64; 8]; 8] = [
-            [ 1, 0, -1,  1, 0, 0, 0, 1],  // R_8
-            [ 1, 1, -1,  0, 1, 0, 0, 1],  // R_9
-            [ 1, 1,  0,  0, 0, 1, 0, 1],  // R_10
-            [ 1, 1,  0,  1, 0, 0, 1, 1],  // R_11
-            [ 1, 1,  0,  1, 1, 0, 0, 2],  // R_12
-            [ 2, 1, -1,  2, 1, 1, 0, 2],  // R_13
-            [ 2, 2, -1,  1, 2, 1, 1, 2],  // R_14
-            [ 2, 2,  0,  1, 1, 2, 1, 3],  // R_15
+            [1, 0, -1, 1, 0, 0, 0, 1], // R_8
+            [1, 1, -1, 0, 1, 0, 0, 1], // R_9
+            [1, 1, 0, 0, 0, 1, 0, 1],  // R_10
+            [1, 1, 0, 1, 0, 0, 1, 1],  // R_11
+            [1, 1, 0, 1, 1, 0, 0, 2],  // R_12
+            [2, 1, -1, 2, 1, 1, 0, 2], // R_13
+            [2, 2, -1, 1, 2, 1, 1, 2], // R_14
+            [2, 2, 0, 1, 1, 2, 1, 3],  // R_15
         ];
 
         // 累加: result[j] = w[j] + Σ(w[i+8] * R[i][j], i=0..7)
@@ -323,7 +327,12 @@ impl BigInt256 {
 
         // 最终约减
         let sm2_p = BigInt256 {
-            limbs: [0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF00000000, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFEFFFFFFFF],
+            limbs: [
+                0xFFFFFFFFFFFFFFFF,
+                0xFFFFFFFF00000000,
+                0xFFFFFFFFFFFFFFFF,
+                0xFFFFFFFEFFFFFFFF,
+            ],
         };
         loop {
             if result.compare(&sm2_p) != Ordering::Less {
@@ -570,8 +579,12 @@ mod tests {
 
     #[test]
     fn test_from_hex() {
-        let n = BigInt256::from_hex("FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF");
-        assert_eq!(n.to_hex(), "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF");
+        let n =
+            BigInt256::from_hex("FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF");
+        assert_eq!(
+            n.to_hex(),
+            "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF"
+        );
     }
 
     #[test]
@@ -579,7 +592,10 @@ mod tests {
         let a = BigInt256::from_hex("1");
         let b = BigInt256::from_hex("2");
         let (c, _) = a.add(&b);
-        assert_eq!(c.to_hex(), "0000000000000000000000000000000000000000000000000000000000000003");
+        assert_eq!(
+            c.to_hex(),
+            "0000000000000000000000000000000000000000000000000000000000000003"
+        );
     }
 
     #[test]
@@ -587,16 +603,23 @@ mod tests {
         let a = BigInt256::from_hex("5");
         let b = BigInt256::from_hex("3");
         let (c, _) = a.sub(&b);
-        assert_eq!(c.to_hex(), "0000000000000000000000000000000000000000000000000000000000000002");
+        assert_eq!(
+            c.to_hex(),
+            "0000000000000000000000000000000000000000000000000000000000000002"
+        );
     }
 
     #[test]
     fn test_mul() {
         let a = BigInt256::from_hex("3");
         let b = BigInt256::from_hex("4");
-        let p = BigInt256::from_hex("FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF");
+        let p =
+            BigInt256::from_hex("FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF");
         let c = a.mod_mul(&b, &p);
-        assert_eq!(c.to_hex(), "000000000000000000000000000000000000000000000000000000000000000C");
+        assert_eq!(
+            c.to_hex(),
+            "000000000000000000000000000000000000000000000000000000000000000C"
+        );
     }
 
     #[test]
@@ -608,4 +631,3 @@ mod tests {
         assert!(product.is_one());
     }
 }
-

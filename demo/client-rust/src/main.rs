@@ -1,7 +1,7 @@
 //! SM2 密钥交换Demo客户端 - Rust版
 //! 作为A侧与Java服务端(B侧)进行密钥交换
 
-use gm_rust::sm2::{SM2, bigint256::BigInt256, point::ECPoint};
+use gm_rust::sm2::{bigint256::BigInt256, point::ECPoint, SM2};
 use gm_rust::sm4::SM4;
 use serde::{Deserialize, Serialize};
 
@@ -101,7 +101,10 @@ fn main() {
         r_a: ra_pub_hex.clone(),
         key_len,
     };
-    println!("Request: {:?}", serde_json::to_string(&init_request).unwrap());
+    println!(
+        "Request: {:?}",
+        serde_json::to_string(&init_request).unwrap()
+    );
 
     let init_response: InitResponse = match ureq::post(&format!("{}/api/keyswap/init", SERVER_URL))
         .set("Content-Type", "application/json")
@@ -156,7 +159,10 @@ fn main() {
         session_id: init_response.session_id.clone(),
         sa: sa.clone(),
     };
-    println!("Request: {:?}", serde_json::to_string(&confirm_request).unwrap());
+    println!(
+        "Request: {:?}",
+        serde_json::to_string(&confirm_request).unwrap()
+    );
 
     let confirm_response: ConfirmResponse =
         ureq::post(&format!("{}/api/keyswap/confirm", SERVER_URL))
@@ -196,7 +202,10 @@ fn main() {
         client_ciphertext: client_ciphertext.clone(),
         client_plaintext: client_plaintext.to_string(),
     };
-    println!("\nRequest: {:?}", serde_json::to_string(&crypto_request).unwrap());
+    println!(
+        "\nRequest: {:?}",
+        serde_json::to_string(&crypto_request).unwrap()
+    );
 
     let crypto_response: CryptoTestResponse =
         ureq::post(&format!("{}/api/crypto/test", SERVER_URL))
@@ -209,12 +218,20 @@ fn main() {
 
     // 验证服务端是否正确解密了客户端的消息
     let server_decrypt_ok = crypto_response.client_decrypt_match;
-    println!("\n[Server decrypted client message]: {}", if server_decrypt_ok { "PASS" } else { "FAIL" });
+    println!(
+        "\n[Server decrypted client message]: {}",
+        if server_decrypt_ok { "PASS" } else { "FAIL" }
+    );
 
     // 客户端解密服务端的消息
-    let server_decrypted = sm4.decrypt(&crypto_response.server_ciphertext).expect("Failed to decrypt");
+    let server_decrypted = sm4
+        .decrypt(&crypto_response.server_ciphertext)
+        .expect("Failed to decrypt");
     let client_decrypt_ok = server_decrypted == crypto_response.server_plaintext;
-    println!("[Client decrypted server message]: {}", if client_decrypt_ok { "PASS" } else { "FAIL" });
+    println!(
+        "[Client decrypted server message]: {}",
+        if client_decrypt_ok { "PASS" } else { "FAIL" }
+    );
     println!("  Server plaintext: {}", crypto_response.server_plaintext);
     println!("  Client decrypted: {}", server_decrypted);
 

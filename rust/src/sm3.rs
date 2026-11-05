@@ -142,10 +142,10 @@ impl Sm3 {
         let mut w = [0u32; 68];
         let mut offset = 0;
         for j in 0..16 {
-            w[j] = ((block[offset] as u32) << 24) |
-                   ((block[offset + 1] as u32) << 16) |
-                   ((block[offset + 2] as u32) << 8) |
-                   (block[offset + 3] as u32);
+            w[j] = ((block[offset] as u32) << 24)
+                | ((block[offset + 1] as u32) << 16)
+                | ((block[offset + 2] as u32) << 8)
+                | (block[offset + 3] as u32);
             offset += 4;
         }
         for j in 16..68 {
@@ -181,14 +181,26 @@ impl Sm3 {
             let ss1 = s_s.rotate_left(7);
             let ss2 = ss1 ^ a12;
             let tt1 = if j < 16 {
-                (a ^ b ^ c).wrapping_add(d).wrapping_add(ss2).wrapping_add(w2[j])
+                (a ^ b ^ c)
+                    .wrapping_add(d)
+                    .wrapping_add(ss2)
+                    .wrapping_add(w2[j])
             } else {
-                Self::ff1(a, b, c).wrapping_add(d).wrapping_add(ss2).wrapping_add(w2[j])
+                Self::ff1(a, b, c)
+                    .wrapping_add(d)
+                    .wrapping_add(ss2)
+                    .wrapping_add(w2[j])
             };
             let tt2 = if j < 16 {
-                (e ^ f ^ g).wrapping_add(h).wrapping_add(ss1).wrapping_add(w[j])
+                (e ^ f ^ g)
+                    .wrapping_add(h)
+                    .wrapping_add(ss1)
+                    .wrapping_add(w[j])
             } else {
-                Self::gg1(e, f, g).wrapping_add(h).wrapping_add(ss1).wrapping_add(w[j])
+                Self::gg1(e, f, g)
+                    .wrapping_add(h)
+                    .wrapping_add(ss1)
+                    .wrapping_add(w[j])
             };
             d = c;
             c = b.rotate_left(9);

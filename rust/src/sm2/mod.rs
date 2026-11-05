@@ -4,9 +4,9 @@ pub mod bigint256;
 pub mod fp;
 pub mod point;
 
+use crate::sm3::Sm3;
 use bigint256::BigInt256;
 use point::{ECPoint, SM2_N};
-use crate::sm3::Sm3;
 
 /// SM2密钥交换协议参数
 #[derive(Clone, Debug)]
@@ -542,7 +542,14 @@ impl SM2 {
     }
 
     /// 创建验证值S
-    fn create_s(tag: u8, vu: &ECPoint, za: &[u8], zb: &[u8], ra: &ECPoint, rb: &ECPoint) -> Vec<u8> {
+    fn create_s(
+        tag: u8,
+        vu: &ECPoint,
+        za: &[u8],
+        zb: &[u8],
+        ra: &ECPoint,
+        rb: &ECPoint,
+    ) -> Vec<u8> {
         // 第一个哈希
         let mut sm3 = Sm3::new();
         sm3.update(&vu.x.to_be_bytes());
@@ -581,8 +588,8 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     for i in 0..hex.len() / 2 {
-        let byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|_| "Invalid hex character")?;
+        let byte =
+            u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|_| "Invalid hex character")?;
         bytes.push(byte);
     }
     Ok(bytes)
@@ -693,19 +700,23 @@ mod tests {
         let id_b = "BILL456@YAHOO.COM";
 
         // A的密钥对
-        let d_a = BigInt256::from_hex("6FCBA2EF9AE0AB902BC3BDE3FF915D44BA4CC78F88E2F8E7F8996D3B8CCEEDEE");
+        let d_a =
+            BigInt256::from_hex("6FCBA2EF9AE0AB902BC3BDE3FF915D44BA4CC78F88E2F8E7F8996D3B8CCEEDEE");
         let p_a = SM2::get_public_key(&d_a);
 
         // A的随机密钥对
-        let ra = BigInt256::from_hex("83A2C9C8B96E5AF70BD480B472409A9A327257F1EBB73F5B073354B248668563");
+        let ra =
+            BigInt256::from_hex("83A2C9C8B96E5AF70BD480B472409A9A327257F1EBB73F5B073354B248668563");
         let r_a = SM2::get_public_key(&ra);
 
         // B的密钥对
-        let d_b = BigInt256::from_hex("5E35D7D3F3C54DBAC72E61819E730B019A84208CA3A35E4C2E353DFCCB2A3B53");
+        let d_b =
+            BigInt256::from_hex("5E35D7D3F3C54DBAC72E61819E730B019A84208CA3A35E4C2E353DFCCB2A3B53");
         let p_b = SM2::get_public_key(&d_b);
 
         // B的随机密钥对
-        let rb = BigInt256::from_hex("33FE21940342161C55619C4A0C060293D543C80AF19748CE176D83477DE71C80");
+        let rb =
+            BigInt256::from_hex("33FE21940342161C55619C4A0C060293D543C80AF19748CE176D83477DE71C80");
         let r_b = SM2::get_public_key(&rb);
 
         // B计算Sb和Kb
