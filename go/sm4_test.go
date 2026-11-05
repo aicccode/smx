@@ -3,8 +3,11 @@ package smx
 import "testing"
 
 func TestSM4EncryptDecrypt(t *testing.T) {
-	key := "this is the key"
-	iv := "this is the iv"
+	// These 16-byte values are what the 15-byte key "this is the key" and the 14-byte
+	// IV "this is the iv" used to be hashed into. That derivation is gone, because it left
+	// about 64 bits of entropy; the expected ciphertext below is unchanged.
+	key := "157224F19FD4C080"
+	iv := "65B06A99625C008A"
 
 	sm4 := NewSM4()
 	sm4.SetKey([]byte(key), []byte(iv))

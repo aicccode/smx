@@ -41,6 +41,7 @@ func TestSM4PathsAllVectors(t *testing.T) {
 		TestSM4CapturedVectors(t)
 		TestSM4DecryptErrors(t)
 		TestSM4EncryptDecrypt(t)
+		TestVectorsSM4(t)
 	})
 }
 

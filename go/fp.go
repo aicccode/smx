@@ -1,7 +1,13 @@
 package smx
 
 // SM2_P is the prime for the SM2 curve: p = 2^256 - 2^224 - 2^96 + 2^64 - 1.
+//
+// The exported curve variables are for reading only. The library itself never reads
+// them, so changing one cannot alter its behavior.
 var SM2_P = BigInt256{limbs: [4]uint64{p0, p1, p2, p3}}
+
+// curveP is the private copy of the prime used internally.
+var curveP = [4]uint64{p0, p1, p2, p3}
 
 // FpElement represents a field element modulo SM2_P. The value is held in plain form,
 // fully reduced; curve operations convert to the faster internal Montgomery form.
@@ -9,15 +15,14 @@ type FpElement struct {
 	value BigInt256
 }
 
-// NewFpElement reduces v modulo p. Any 256-bit value is below 2p.
+// NewFpElement reduces v modulo p. Any 256-bit value is below 2p. Point decoders do not
+// use it: they reject coordinates at or above p rather than reduce them.
 func NewFpElement(v BigInt256) FpElement {
-	if v.Compare(&SM2_P) >= 0 {
-		v = v.ModSub(&SM2_P, &SM2_P)
-	}
-	return FpElement{value: v}
+	return FpElement{value: BigInt256{limbs: feReduce(&v.limbs)}}
 }
 
-// FpFromHex parses a big-endian hex string and reduces it modulo p.
+// FpFromHex parses a big-endian hex string and reduces it modulo p. It returns zero for
+// input BigInt256FromHex does not accept.
 func FpFromHex(s string) FpElement {
 	return NewFpElement(BigInt256FromHex(s))
 }
@@ -73,18 +78,15 @@ func (a FpElement) Negate() FpElement {
 	return FpElement{value: BigInt256{limbs: z}}
 }
 
-// Invert returns a^-1 mod p. It panics if a is 0.
+// Invert returns a^-1 mod p, or 0 if a is 0.
 func (a FpElement) Invert() FpElement {
-	if a.IsZero() {
-		panic("cannot invert zero")
-	}
 	var m, inv fe
 	feToMont(&m, &a.value.limbs)
 	feInvert(&inv, &m)
 	return FpElement{value: BigInt256{limbs: feFromMont(&inv)}}
 }
 
-// Div returns a / b mod p. It panics if b is 0.
+// Div returns a / b mod p, or 0 if b is 0.
 func (a FpElement) Div(b FpElement) FpElement {
 	return a.Mul(b.Invert())
 }
@@ -116,5 +118,5 @@ func (a FpElement) ToHex() string {
 
 // Equal reports whether a and b are equal.
 func (a FpElement) Equal(b FpElement) bool {
-	return a.value == b.value
+	return limbsEqual(&a.value.limbs, &b.value.limbs)
 }

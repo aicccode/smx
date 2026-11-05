@@ -83,6 +83,7 @@ func sm4CBCEncrypt(rk *[32]uint32, iv *[16]byte, buf []byte) {
 		binary.LittleEndian.PutUint64(buf[0:], chain0)
 		binary.LittleEndian.PutUint64(buf[8:], chain1)
 	}
+	wipeBytes(lanes[:])
 }
 
 // sm4CBCDecrypt decrypts whole blocks of buf in place, in parallel where possible.
@@ -113,6 +114,7 @@ func sm4CBCDecrypt(drk *[32]uint32, iv *[16]byte, buf []byte) {
 		subtle.XORBytes(lanes[:16], lanes[:16], prev[:])
 		subtle.XORBytes(lanes[16:48], lanes[16:48], saved[:32])
 		copy(buf, lanes[:])
+		wipeBytes(lanes[:])
 	}
 }
 

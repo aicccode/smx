@@ -71,7 +71,7 @@ func checkPoint(t *testing.T, op string, got ECPoint, want refPoint) {
 	if !got.Equal(refToEC(want)) {
 		t.Fatalf("%s = %s, want %s", op, got.ToHexEncoded(), refToEC(want).ToHexEncoded())
 	}
-	if !got.IsOnCurve() {
+	if !got.Infinity && !got.IsOnCurve() {
 		t.Fatalf("%s is off the curve", op)
 	}
 }
@@ -112,7 +112,11 @@ func TestMultiplyDifferential(t *testing.T) {
 		reduced := new(big.Int).Mod(k, bigN)
 		checkPoint(t, "[k]G", g.Multiply(&scalar), refMul(refG, reduced))
 		checkPoint(t, "[k]P", p.Multiply(&scalar), refMul(refP, reduced))
-		checkPoint(t, "SM2GetPublicKey", SM2GetPublicKey(&scalar), refMul(refG, reduced))
+		wantPub := refMul(refG, reduced)
+		if k.Sign() == 0 || k.Cmp(new(big.Int).Sub(bigN, big.NewInt(1))) >= 0 {
+			wantPub = refPoint{} // not a valid private key
+		}
+		checkPoint(t, "SM2GetPublicKey", SM2GetPublicKey(&scalar), wantPub)
 	}
 }
 
@@ -166,7 +170,7 @@ func TestPointAdditionCases(t *testing.T) {
 	if !g.Subtract(g).Infinity {
 		t.Fatal("P - P")
 	}
-	if !inf.Twice().Infinity || !inf.Negate().Infinity || !inf.IsOnCurve() {
+	if !inf.Twice().Infinity || !inf.Negate().Infinity || inf.IsOnCurve() {
 		t.Fatal("infinity identities")
 	}
 	if got := inf.ToHexEncoded(); got != "00" {
@@ -334,7 +338,7 @@ func TestVerifyCheckR(t *testing.T) {
 	rng := rand.New(rand.NewSource(17))
 	affine := func(p *jacPoint, e, r *BigInt256) bool {
 		a := p.toAffinePoint()
-		computed := e.ModAdd(&a.X.value, &SM2_N)
+		computed := sm2ComputeR(e, &a.X.value)
 		return *r == computed
 	}
 	for i := 0; i < 300; i++ {
@@ -350,23 +354,21 @@ func TestVerifyCheckR(t *testing.T) {
 		feMul(&jp.y, &jp.y, &scale3)
 		feMul(&jp.z, &jp.z, &scale)
 
-		x := jp.toAffinePoint().X.value
+		a := jp.toAffinePoint()
 		es := []BigInt256{
 			{limbs: bigToLimbs(new(big.Int).Rand(rng, bigN))},
 			{limbs: bigToLimbs(new(big.Int).Sub(bigN, big.NewInt(1)))},
-			SM2_N,
+			{limbs: curveN},
 			{limbs: [4]uint64{^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0)}},
 			{limbs: [4]uint64{1}},
-			verifyFastLimit,
-			{limbs: bigToLimbs(new(big.Int).Sub(limbsToBig(verifyFastLimit.limbs), big.NewInt(1)))},
 		}
 		for _, e := range es {
 			e := e
-			good := e.ModAdd(&x, &SM2_N)
-			others := []BigInt256{good, SM2_N, {limbs: [4]uint64{1}}, {limbs: bigToLimbs(new(big.Int).Rand(rng, bigN))}}
+			good := sm2ComputeR(&e, &a.X.value)
+			others := []BigInt256{good, {limbs: [4]uint64{1}}, {limbs: bigToLimbs(new(big.Int).Rand(rng, bigN))}}
 			for _, r := range others {
 				r := r
-				if r.IsZero() || r.Compare(&SM2_N) >= 0 {
+				if !scalarInRange(&r.limbs) {
 					continue
 				}
 				if got, want := verifyCheckR(&jp, &e, &r), affine(&jp, &e, &r); got != want {
@@ -374,5 +376,19 @@ func TestVerifyCheckR(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// r and x are both reduced before they are added, so r stays below n even when e and x
+// are both at least n.
+func TestComputeRFullyReduced(t *testing.T) {
+	rng := rand.New(rand.NewSource(18))
+	for i := 0; i < 2000; i++ {
+		e := new(big.Int).Add(bigN, new(big.Int).Rand(rng, new(big.Int).Sub(bigR, bigN)))
+		x := new(big.Int).Add(bigN, new(big.Int).Rand(rng, new(big.Int).Sub(bigP, bigN)))
+		eb, xb := BigInt256{limbs: bigToLimbs(e)}, BigInt256{limbs: bigToLimbs(x)}
+		got := sm2ComputeR(&eb, &xb)
+		want := new(big.Int).Add(e, x)
+		checkLimbs(t, "sm2ComputeR", got.limbs, want.Mod(want, bigN), e, x)
 	}
 }

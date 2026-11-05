@@ -1,13 +1,34 @@
 // Package smx implements the Chinese national cryptographic algorithms SM2 (public
 // key), SM3 (hash) and SM4 (block cipher) with no dependencies outside the standard
 // library.
+//
+// # Invalid input
+//
+// No function panics on any input. Functions that return an error or a bool report
+// invalid input that way. Functions whose signature cannot report failure return a
+// value that later checks reject: the point at infinity for a point, zero for a number,
+// and empty strings for a key pair. Prefer SM2ParsePublicKey, BigInt256ParseHex,
+// SM2GenerateKeyPair and (*SM4).TrySetKey, which return errors.
+//
+// # Security limits
+//
+// SM4 here is CBC with no integrity; see the SM4 type. Secret-dependent branches and
+// memory accesses are avoided by construction and checked in the compiled output, but
+// the Go compiler gives no constant-time guarantee. Secrets are overwritten on a
+// best-effort basis only: the runtime may copy stacks, and strings cannot be erased.
 package smx
 
 import (
 	"encoding/binary"
-	"encoding/hex"
-	"strings"
+	"errors"
+	"runtime"
 	"unsafe"
+)
+
+// Alphabet offsets for hexSpread.
+const (
+	lowerHex = 0x27
+	upperHex = 0x07
 )
 
 // hexSpread turns the four bytes of x into eight ASCII hex digits, most significant
@@ -54,9 +75,11 @@ func stringAsBytes(s string) []byte {
 // bytesToHex converts a byte slice to a lowercase hex string.
 func bytesToHex(b []byte) string {
 	out := make([]byte, 2*len(b))
-	encodeHexTo(out, b, 0x27)
+	encodeHexTo(out, b, lowerHex)
 	return bytesAsString(out)
 }
+
+var errInvalidHex = errors.New("smx: invalid hex")
 
 // hexDigits8 converts eight ASCII hex digits, the first in the low byte, to four bytes,
 // with arithmetic instead of table lookups. The second result has bits set if any
@@ -106,15 +129,24 @@ func decodeHexInto(dst []byte, s string) bool {
 	return invalid == 0
 }
 
-// hexToBytes converts a hex string, with an optional 0x prefix, to a byte slice.
+// hexToBytes converts canonical hex to bytes: an even number of hex digits in either
+// case, and nothing else. All digits are always examined, so an invalid position does
+// not show in the timing.
 func hexToBytes(s string) ([]byte, error) {
-	s = strings.TrimPrefix(s, "0x")
-	s = strings.TrimPrefix(s, "0X")
-	if len(s)%2 == 0 {
-		out := make([]byte, len(s)/2)
-		if decodeHexInto(out, s) {
-			return out, nil
-		}
+	if len(s)%2 != 0 {
+		return nil, errInvalidHex
 	}
-	return hex.DecodeString(s)
+	out := make([]byte, len(s)/2)
+	if !decodeHexInto(out, s) {
+		clear(out)
+		return nil, errInvalidHex
+	}
+	return out, nil
+}
+
+// wipeBytes overwrites b. Go gives no guarantee about copies made by the runtime, so
+// this reduces how long secrets stay in memory but cannot eliminate it.
+func wipeBytes(b []byte) {
+	clear(b)
+	runtime.KeepAlive(b)
 }

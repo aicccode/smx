@@ -119,7 +119,6 @@ func TestFieldConstants(t *testing.T) {
 	checkLimbs(t, "p", SM2_P.limbs, bigP)
 	checkLimbs(t, "n", SM2_N.limbs, bigN)
 	checkLimbs(t, "n", [4]uint64{n0, n1, n2, n3}, bigN)
-	checkLimbs(t, "2n-p", verifyFastLimit.limbs, new(big.Int).Sub(new(big.Int).Lsh(bigN, 1), bigP))
 	b := limbsToBig(SM2_B.value.limbs)
 	checkLimbs(t, "b*R", feB, new(big.Int).Mod(new(big.Int).Mul(b, bigR), bigP))
 
@@ -322,15 +321,14 @@ func TestBigIntModDifferential(t *testing.T) {
 		}
 	}
 
-	func() {
-		defer func() {
-			if r := recover(); r != "division by zero" {
-				t.Fatalf("zero modulus: recovered %v", r)
-			}
-		}()
-		var zero BigInt256
-		bigOne.ModMul(&bigOne, &zero)
-	}()
+	// A zero or nil modulus gives zero rather than a crash.
+	var zero BigInt256
+	for _, m := range []*BigInt256{&zero, nil} {
+		if !bigOne.ModMul(&bigOne, m).IsZero() || !bigOne.ModPow(&bigOne, m).IsZero() ||
+			!bigOne.ModInverse(m).IsZero() || !bigOne.ModSquare(m).IsZero() {
+			t.Fatal("zero modulus should give zero")
+		}
+	}
 }
 
 // ModAdd and ModSub keep their exact single-correction semantics even on unreduced
@@ -375,6 +373,13 @@ func TestBigIntHelpersDifferential(t *testing.T) {
 	mask := new(big.Int).Sub(bigR, one)
 	for _, a := range diffValues(rng, 200) {
 		x := BigInt256{limbs: bigToLimbs(a)}
+		other := diffValues(rng, 1)
+		for _, b := range append(other, a) {
+			y := BigInt256{limbs: bigToLimbs(b)}
+			if got := x.Compare(&y); got != a.Cmp(b) {
+				t.Fatalf("Compare(%x, %x) = %d", a, b, got)
+			}
+		}
 		checkLimbs(t, "ShiftRight1", x.ShiftRight1().limbs, new(big.Int).Rsh(a, 1), a)
 		checkLimbs(t, "ShiftLeft1", x.ShiftLeft1().limbs, new(big.Int).And(new(big.Int).Lsh(a, 1), mask), a)
 		if x.BitLength() != a.BitLen() {
@@ -388,8 +393,8 @@ func TestBigIntHelpersDifferential(t *testing.T) {
 				t.Fatalf("GetBit(%x, %d)", a, i)
 			}
 		}
-		if x.GetBit(256) {
-			t.Fatal("GetBit(256) should be false")
+		if x.GetBit(256) || x.GetBit(-1) || x.GetBit(-64) || x.GetBit(-1<<30) {
+			t.Fatal("GetBit out of range should be false")
 		}
 		be := x.ToBEBytes()
 		if BigInt256FromBEBytes(be[:]) != x {
@@ -432,10 +437,7 @@ func TestFpElementDifferential(t *testing.T) {
 			}
 		}
 	}
-	defer func() {
-		if r := recover(); r != "cannot invert zero" {
-			t.Fatalf("Invert(0): recovered %v", r)
-		}
-	}()
-	FpZero().Invert()
+	if !FpZero().Invert().IsZero() || !FpOne().Div(FpZero()).IsZero() {
+		t.Fatal("inverting zero should give zero")
+	}
 }

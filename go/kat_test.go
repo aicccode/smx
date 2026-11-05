@@ -150,10 +150,21 @@ func TestSM4StandardVectors(t *testing.T) {
 	}
 }
 
+// legacyKey reproduces the removed derivation of keys of other sizes, so the captured
+// vectors keep testing the cipher with the same effective 16-byte keys.
+func legacyKey(input string) []byte {
+	if len(input) == 16 {
+		return []byte(input)
+	}
+	return []byte(sm3Upper([]byte(input))[:16])
+}
+
 func TestSM4CapturedVectors(t *testing.T) {
 	for _, tc := range katSM4 {
 		s := NewSM4()
-		s.SetKey([]byte(tc.key), []byte(tc.iv))
+		if err := s.TrySetKey(legacyKey(tc.key), legacyKey(tc.iv)); err != nil {
+			t.Fatal(err)
+		}
 		plain := string(kattern(tc.n))
 		ct, err := s.Encrypt(plain)
 		if err != nil {
@@ -175,27 +186,21 @@ func TestSM4CapturedVectors(t *testing.T) {
 func TestSM4DecryptErrors(t *testing.T) {
 	s := NewSM4()
 	s.SetKey([]byte("0123456789abcdef"), []byte("fedcba9876543210"))
-	if got, err := s.Decrypt(""); err != nil || got != "" {
-		t.Errorf("empty ciphertext = %q, %v", got, err)
-	}
-	tests := []struct{ in, want string }{
-		{"abc", "encoding/hex: odd length hex string"},
-		{"zz", "encoding/hex: invalid byte: U+007A 'z'"},
-		{"00", "invalid ciphertext length"},
-		{strings.Repeat("00", 16), "invalid padding"},
-	}
-	for _, tc := range tests {
-		_, err := s.Decrypt(tc.in)
-		if err == nil || err.Error() != tc.want {
-			t.Errorf("Decrypt(%q) error = %v, want %s", tc.in, err, tc.want)
-		}
-	}
-	// The hex decoder accepts upper case and an optional 0x prefix.
 	ct, _ := s.Encrypt("hello")
-	for _, in := range []string{strings.ToUpper(ct), "0x" + ct, "0X" + ct} {
-		if got, err := s.Decrypt(in); err != nil || got != "hello" {
-			t.Errorf("Decrypt(%q) = %q, %v", in, got, err)
+	// Every malformed ciphertext gets one indistinguishable error.
+	for _, in := range []string{
+		"", "abc", "zz", "00", strings.Repeat("00", 16), strings.Repeat("00", 17),
+		"0x" + ct, "0X" + ct, ct + "00", ct[:len(ct)-2],
+		strings.Repeat("\xff", 32), ct[:31] + "g",
+	} {
+		_, err := s.Decrypt(in)
+		if err != errSM4Decrypt {
+			t.Errorf("Decrypt(%q) error = %v", in, err)
 		}
+	}
+	// Either case of hex digit is accepted.
+	if got, err := s.Decrypt(strings.ToUpper(ct)); err != nil || got != "hello" {
+		t.Errorf("uppercase: %q, %v", got, err)
 	}
 }
 
@@ -338,22 +343,6 @@ func TestSM2RejectsTampering(t *testing.T) {
 	if _, err := SM2Decrypt(offCurve+strings.Repeat("00", 40), gbtPrivateKey); err == nil ||
 		err.Error() != "invalid C1 point" {
 		t.Errorf("off-curve decrypt: %v", err)
-	}
-}
-
-// Only the low 32 bits of the bit length enter the padding. Fixing this would change
-// outputs for messages of 512 MiB or more, so the existing behavior is pinned here.
-func TestSM3LengthFieldTruncation(t *testing.T) {
-	h := NewSM3()
-	h.dataBitsLen = 1<<32 + 24 // as if 2^29 + 3 bytes had been hashed before this point
-	h.buffLen = 3
-	copy(h.buff[:], "abc")
-	h.Finish()
-	want := NewSM3()
-	want.Update([]byte("abc"))
-	want.Finish()
-	if h.HashHexUpper() != want.HashHexUpper() {
-		t.Errorf("high length bits changed the padding: %s", h.HashHexUpper())
 	}
 }
 

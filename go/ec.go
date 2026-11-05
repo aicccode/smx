@@ -319,8 +319,8 @@ func newBaseTables() *sm2BaseTables {
 	points := make([]jacPoint, total)
 
 	var gx, gy fe
-	feToMont(&gx, &SM2_GX.value.limbs)
-	feToMont(&gy, &SM2_GY.value.limbs)
+	feToMont(&gx, &curveGX)
+	feToMont(&gy, &curveGY)
 	g := jacPoint{gx, gy, feOne}
 
 	// Comb entries.

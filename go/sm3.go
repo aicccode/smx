@@ -2,6 +2,8 @@ package smx
 
 import (
 	"encoding/binary"
+	"fmt"
+	"io"
 	"math/bits"
 )
 
@@ -24,27 +26,60 @@ var sm3T = func() (t [64]uint32) {
 	return t
 }()
 
+// sm3MaxBytes is the longest message SM3 defines: its length field holds 2^64 - 1 bits.
+const sm3MaxBytes = 1<<61 - 1
+
 // SM3 implements the SM3 cryptographic hash function. An instance is reusable: Finish
-// stores the digest and resets the state for the next message.
+// stores the digest and resets the state for the next message. The zero value is ready
+// to use. An instance must not be shared between goroutines without synchronization.
 type SM3 struct {
 	v           [8]uint32
 	buff        [sm3BlockSize]byte
 	buffLen     int
 	dataBitsLen uint64
 	hashBytes   [32]byte
-	finished    bool
+	ready       bool // v holds a valid chaining state
+	finished    bool // hashBytes holds a digest
+	tooLong     bool // the current message passed the 2^61 - 1 byte limit
 }
 
 // NewSM3 creates a new SM3 hash instance.
 func NewSM3() *SM3 {
-	return &SM3{v: sm3IV}
+	return &SM3{v: sm3IV, ready: true}
+}
+
+// newSM3State returns an initialized instance by value, for use on the stack.
+func newSM3State() SM3 {
+	return SM3{v: sm3IV, ready: true}
+}
+
+// Format keeps hashed data, which can be secret, out of logs: every fmt verb prints a
+// placeholder.
+func (s SM3) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, "SM3{redacted}")
+}
+
+// prepare makes the zero value usable and counts n more bytes of message.
+func (s *SM3) prepare(n uint64) {
+	if !s.ready {
+		s.v = sm3IV
+		s.ready = true
+	}
+	if n > sm3MaxBytes-s.dataBitsLen/8 {
+		s.tooLong = true
+		return
+	}
+	s.dataBitsLen += n * 8
 }
 
 // UpdateByte feeds a single byte into the hash.
 func (s *SM3) UpdateByte(b byte) {
+	if s == nil {
+		return
+	}
+	s.prepare(1)
 	s.buff[s.buffLen] = b
 	s.buffLen++
-	s.dataBitsLen += 8
 	if s.buffLen == sm3BlockSize {
 		sm3Blocks(&s.v, s.buff[:])
 		s.buffLen = 0
@@ -53,7 +88,10 @@ func (s *SM3) UpdateByte(b byte) {
 
 // Update feeds a byte slice into the hash.
 func (s *SM3) Update(data []byte) {
-	s.dataBitsLen += uint64(len(data)) * 8
+	if s == nil {
+		return
+	}
+	s.prepare(uint64(len(data)))
 	if s.buffLen > 0 {
 		n := copy(s.buff[s.buffLen:], data)
 		s.buffLen += n
@@ -72,17 +110,25 @@ func (s *SM3) Update(data []byte) {
 	s.buffLen = copy(s.buff[:], data)
 }
 
-// Finish finalizes the hash computation and resets the instance for reuse.
-//
-// Only the low 32 bits of the message bit length enter the padding, so digests of
-// messages of 512 MiB or more differ from standard SM3. Fixing that would change
-// outputs, so it is kept for compatibility with earlier versions of this library.
+// Finish finalizes the hash computation and resets the instance for reuse. A message
+// over 2^61 - 1 bytes has no digest: afterwards HashBytes returns zeros and
+// HashHexUpper returns an empty string, rather than a digest of a wrapped length.
 func (s *SM3) Finish() {
+	if s == nil {
+		return
+	}
+	s.prepare(0)
+	failed := s.tooLong
 	s.sum(&s.hashBytes)
-	s.finished = true
+	if failed {
+		s.hashBytes = [32]byte{}
+	}
+	s.finished = !failed
 	s.v = sm3IV
 	s.buffLen = 0
 	s.dataBitsLen = 0
+	s.tooLong = false
+	clear(s.buff[:])
 }
 
 // sum pads the buffered data and writes the digest to out. The chaining value is
@@ -96,8 +142,8 @@ func (s *SM3) sum(out *[32]byte) {
 		sm3Blocks(&s.v, s.buff[:])
 		n = 0
 	}
-	clear(s.buff[n : sm3BlockSize-4])
-	binary.BigEndian.PutUint32(s.buff[sm3BlockSize-4:], uint32(s.dataBitsLen))
+	clear(s.buff[n : sm3BlockSize-8])
+	binary.BigEndian.PutUint64(s.buff[sm3BlockSize-8:], s.dataBitsLen)
 	sm3Blocks(&s.v, s.buff[:])
 
 	for i, v := range s.v {
@@ -108,17 +154,20 @@ func (s *SM3) sum(out *[32]byte) {
 // HashBytes returns the 32-byte digest computed by the last Finish, or all zeros if
 // Finish has not been called.
 func (s *SM3) HashBytes() [32]byte {
+	if s == nil {
+		return [32]byte{}
+	}
 	return s.hashBytes
 }
 
 // HashHexUpper returns the digest computed by the last Finish as an uppercase hex
 // string, or an empty string if Finish has not been called.
 func (s *SM3) HashHexUpper() string {
-	if !s.finished {
+	if s == nil || !s.finished {
 		return ""
 	}
 	out := make([]byte, 64)
-	encodeHexTo(out, s.hashBytes[:], 0x07)
+	encodeHexTo(out, s.hashBytes[:], upperHex)
 	return bytesAsString(out)
 }
 

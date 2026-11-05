@@ -64,39 +64,36 @@ func hexInputs(rng *rand.Rand) []string {
 
 func TestHexToBytesDifferential(t *testing.T) {
 	rng := rand.New(rand.NewSource(22))
-	reference := func(s string) ([]byte, error) {
-		s = strings.TrimPrefix(s, "0x")
-		s = strings.TrimPrefix(s, "0X")
-		return hex.DecodeString(s)
-	}
 	for _, s := range hexInputs(rng) {
 		got, gotErr := hexToBytes(s)
-		want, wantErr := reference(s)
-		if (gotErr == nil) != (wantErr == nil) || (gotErr != nil && gotErr.Error() != wantErr.Error()) {
+		want, wantErr := hex.DecodeString(s)
+		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("hexToBytes(%q) error = %v, want %v", s, gotErr, wantErr)
 		}
-		if string(got) != string(want) {
+		if gotErr == nil && string(got) != string(want) {
 			t.Fatalf("hexToBytes(%q) = %x, want %x", s, got, want)
 		}
 	}
 }
 
-// BigInt256FromHex keeps its lenient parsing rules. This reference is the earlier code.
+// BigInt256FromHex accepts 1 to 64 digits and an optional 0x, and gives zero otherwise.
 func TestBigIntFromHexDifferential(t *testing.T) {
-	reference := func(s string) BigInt256 {
-		s = strings.TrimPrefix(s, "0x")
-		s = strings.TrimPrefix(s, "0X")
+	reference := func(s string) (BigInt256, bool) {
+		if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+			s = s[2:]
+		}
+		if len(s) == 0 || len(s) > 64 {
+			return BigInt256{}, false
+		}
 		if len(s)%2 == 1 {
 			s = "0" + s
 		}
-		b, _ := hex.DecodeString(s)
-		padded := make([]byte, 32)
-		start := 32 - len(b)
-		if start < 0 {
-			start = 0
-			b = b[len(b)-32:]
+		b, err := hex.DecodeString(s)
+		if err != nil {
+			return BigInt256{}, false
 		}
-		copy(padded[start:], b)
+		var padded [32]byte
+		copy(padded[32-len(b):], b)
 		var r BigInt256
 		for i := 0; i < 4; i++ {
 			off := (3 - i) * 8
@@ -104,12 +101,17 @@ func TestBigIntFromHexDifferential(t *testing.T) {
 				r.limbs[i] = r.limbs[i]<<8 | uint64(padded[off+j])
 			}
 		}
-		return r
+		return r, true
 	}
 	rng := rand.New(rand.NewSource(23))
 	for _, s := range hexInputs(rng) {
-		if got, want := BigInt256FromHex(s), reference(s); got != want {
-			t.Fatalf("BigInt256FromHex(%q) = %x, want %x", s, got.limbs, want.limbs)
+		want, ok := reference(s)
+		got, err := BigInt256ParseHex(s)
+		if (err == nil) != ok || got != want {
+			t.Fatalf("BigInt256ParseHex(%q) = %x, %v", s, got.limbs, err)
+		}
+		if lenient := BigInt256FromHex(s); lenient != want {
+			t.Fatalf("BigInt256FromHex(%q) = %x", s, lenient.limbs)
 		}
 	}
 	x := BigInt256FromHex("0123456789ABCDEFFEDCBA98765432100123456789ABCDEFFEDCBA9876543210")
@@ -121,33 +123,20 @@ func TestBigIntFromHexDifferential(t *testing.T) {
 	}
 }
 
-// Decoding must panic and tolerate exactly as before.
+// Point decoding accepts exactly the valid encoding, and no longer panics on anything.
 func TestPointHexDecoding(t *testing.T) {
-	reference := func(s string) (p ECPoint, panicked bool) {
-		defer func() {
-			if recover() != nil {
-				panicked = true
-			}
-		}()
-		b, _ := hex.DecodeString(s)
-		return ECPointFromEncoded(b), false
-	}
-	actual := func(s string) (p ECPoint, panicked bool) {
-		defer func() {
-			if recover() != nil {
-				panicked = true
-			}
-		}()
-		return ECPointFromHexEncoded(s), false
-	}
 	g := ECPointGenerator().ToHexEncoded()
+	if p := ECPointFromHexEncoded(g); !p.Equal(ECPointGenerator()) {
+		t.Fatalf("generator did not decode: %+v", p.ToHexEncoded())
+	}
 	rng := rand.New(rand.NewSource(24))
-	inputs := append(hexInputs(rng), g, g+"z", g+"0", g+"00", "z"+g, g[:129], g[:128], "05"+g[2:], g[:129]+"z")
+	inputs := append(hexInputs(rng), g+"z", g+"0", g+"00", "z"+g, g[:129], g[:128], "05"+g[2:], g[:129]+"z", "00", "")
 	for _, s := range inputs {
-		gotP, gotPanic := actual(s)
-		wantP, wantPanic := reference(s)
-		if gotPanic != wantPanic || gotP != wantP {
-			t.Fatalf("ECPointFromHexEncoded(%q) = %+v, panic %v; want %+v, panic %v", s, gotP, gotPanic, wantP, wantPanic)
+		if p := ECPointFromHexEncoded(s); !p.Infinity {
+			t.Fatalf("ECPointFromHexEncoded(%q) accepted", s)
+		}
+		if _, err := SM2ParsePublicKey(s); err == nil {
+			t.Fatalf("SM2ParsePublicKey(%q) accepted", s)
 		}
 	}
 }

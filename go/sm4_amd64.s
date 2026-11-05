@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-// SM4 in parallel using the AES instructions. The S-box is an affine transform of
+// SM4 in parallel using the AES or GFNI instructions. The S-box is an affine transform of
 // the AES S-box, so SubBytes does the non-linear work, and there are no secret-indexed
 // memory accesses: this code is constant time with respect to the key and the data.
 // S(x) = post(AES_SubBytes(pre(x))), with pre and post linear plus a constant, each

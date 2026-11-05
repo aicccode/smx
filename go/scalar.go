@@ -147,6 +147,18 @@ func scalarInRange(k *[4]uint64) bool {
 	return b&nonZero == 1
 }
 
+// privateKeyInRange reports, in constant time, whether k is in [1, n-2], the range of
+// valid SM2 private keys. At n-1 the signing formula would need the inverse of d+1 = n.
+func privateKeyInRange(k *[4]uint64) bool {
+	_, b := bits.Sub64(k[0], n0-1, 0)
+	_, b = bits.Sub64(k[1], n1, b)
+	_, b = bits.Sub64(k[2], n2, b)
+	_, b = bits.Sub64(k[3], n3, b)
+	v := k[0] | k[1] | k[2] | k[3]
+	nonZero := (v | -v) >> 63
+	return b&nonZero == 1
+}
+
 // limbsEqual reports, in constant time, whether a == b.
 func limbsEqual(a, b *[4]uint64) bool {
 	v := (a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3])

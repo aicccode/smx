@@ -1,17 +1,34 @@
+// Command client-go demonstrates SM2 key exchange and SM4 encryption against the demo
+// server.
+//
+// DEMO ONLY: it talks plain HTTP with no server authentication beyond the protocol, uses
+// a fixed all-zero IV as the protocol defines, and SM4-CBC gives no integrity. A real
+// deployment needs TLS, a fresh random IV per message and authenticated ciphertexts.
 package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"smx"
+	"time"
 )
 
-const serverURL = "http://localhost:8080"
-const ida = "go-client@demo.aicc"
+const (
+	serverURL = "http://localhost:8080"
+	ida       = "go-client@demo.aicc"
+
+	// maxResponseBytes bounds what a misbehaving server can make the client read.
+	maxResponseBytes = 1 << 20
+	requestTimeout   = 30 * time.Second
+)
+
+var httpClient = &http.Client{Timeout: requestTimeout}
 
 type initRequest struct {
 	IDa    string `json:"IDa"`
@@ -53,38 +70,34 @@ type cryptoTestResponse struct {
 func postJSON(url string, req any, resp any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode request: %w", err)
 	}
-	httpResp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	httpResp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("send request: %w", err)
 	}
 	defer httpResp.Body.Close()
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return err
+	if httpResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned status %d", httpResp.StatusCode)
 	}
-	return json.Unmarshal(data, resp)
+	// One byte over the limit tells a truncated body from a complete one.
+	data, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if len(data) > maxResponseBytes {
+		return errors.New("response too large")
+	}
+	if err := json.Unmarshal(data, resp); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
 }
 
-func hexToBytes(s string) []byte {
-	b := make([]byte, len(s)/2)
-	for i := 0; i < len(s); i += 2 {
-		var v byte
-		for j := 0; j < 2; j++ {
-			c := s[i+j]
-			switch {
-			case c >= '0' && c <= '9':
-				v = v*16 + (c - '0')
-			case c >= 'a' && c <= 'f':
-				v = v*16 + (c - 'a' + 10)
-			case c >= 'A' && c <= 'F':
-				v = v*16 + (c - 'A' + 10)
-			}
-		}
-		b[i/2] = v
-	}
-	return b
+// fail prints a message that must not contain secrets and exits.
+func fail(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
 }
 
 func main() {
@@ -92,15 +105,19 @@ func main() {
 	fmt.Println()
 
 	// Generate A-side certificate keypair
-	daHex, paHex := smx.SM2GenKeyPair()
+	daHex, paHex, err := smx.SM2GenerateKeyPair()
+	if err != nil {
+		fail("Failed to generate keypair: %v", err)
+	}
 	fmt.Println("Generated A certificate keypair:")
-	fmt.Printf("  Private key (dA): %s\n", daHex)
 	fmt.Printf("  Public key (pA): %s\n", paHex)
 
 	// Generate A-side random keypair
-	raHex, raPubHex := smx.SM2GenKeyPair()
+	raHex, raPubHex, err := smx.SM2GenerateKeyPair()
+	if err != nil {
+		fail("Failed to generate keypair: %v", err)
+	}
 	fmt.Println("\nGenerated A random keypair:")
-	fmt.Printf("  Private key (ra): %s\n", raHex)
 	fmt.Printf("  Public key (Ra): %s\n", raPubHex)
 
 	keyLen := 16
@@ -118,9 +135,7 @@ func main() {
 
 	var initResp initResponse
 	if err := postJSON(serverURL+"/api/keyswap/init", initReq, &initResp); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to server: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Make sure the Java server is running on port 8080")
-		os.Exit(1)
+		fail("Failed to connect to server: %v\nMake sure the Java server is running on port 8080", err)
 	}
 	respJSON, _ := json.Marshal(initResp)
 	fmt.Printf("Response: %s\n", respJSON)
@@ -128,22 +143,30 @@ func main() {
 	// Step 2: Calculate Sa and Ka
 	fmt.Println("\n--- Step 2: Calculate Sa and Ka ---")
 
-	pB := smx.SM2DecodePoint(initResp.PB)
-	rB := smx.SM2DecodePoint(initResp.RB)
+	pB, err := smx.SM2ParsePublicKey(initResp.PB)
+	if err != nil {
+		fail("Server sent an invalid pB: %v", err)
+	}
+	rB, err := smx.SM2ParsePublicKey(initResp.RB)
+	if err != nil {
+		fail("Server sent an invalid Rb: %v", err)
+	}
 	pA := smx.SM2DecodePoint(paHex)
 	rA := smx.SM2DecodePoint(raPubHex)
 	dA := smx.BigInt256FromHex(daHex)
 	ra := smx.BigInt256FromHex(raHex)
-	sbBytes := hexToBytes(initResp.Sb)
+	sbBytes, err := hex.DecodeString(initResp.Sb)
+	if err != nil {
+		fail("Server sent an invalid Sb")
+	}
 
 	result := smx.SM2GetSa(keyLen, pB, rB, pA, &dA, rA, &ra, ida, initResp.IDb, sbBytes)
 	if !result.Success {
-		fmt.Fprintf(os.Stderr, "getSa failed: %s\n", result.Message)
-		os.Exit(1)
+		fail("getSa failed: %s", result.Message)
 	}
 
 	fmt.Printf("Sa: %s\n", result.Sa)
-	fmt.Printf("Ka (negotiated key): %s\n", result.Ka)
+	fmt.Println("Ka negotiated (not printed: it is a secret)")
 
 	// Step 3: Key Exchange Confirm
 	fmt.Println("\n--- Step 3: Key Exchange Confirm ---")
@@ -156,35 +179,36 @@ func main() {
 
 	var confirmResp confirmResponse
 	if err := postJSON(serverURL+"/api/keyswap/confirm", confirmReq, &confirmResp); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to send confirm request: %v\n", err)
-		os.Exit(1)
+		fail("Failed to send confirm request: %v", err)
 	}
 	cRespJSON, _ := json.Marshal(confirmResp)
 	fmt.Printf("Response: %s\n", cRespJSON)
 
 	if !confirmResp.Success {
-		fmt.Fprintln(os.Stderr, "Key exchange confirmation failed")
-		os.Exit(1)
+		fail("Key exchange confirmation failed")
 	}
 
 	fmt.Println("\nKey exchange completed successfully!")
-	fmt.Printf("Negotiated key (Ka): %s\n", result.Ka)
 
 	// Step 4: Bidirectional Crypto Test
 	fmt.Println("\n--- Step 4: Bidirectional Crypto Test ---")
 
 	// Initialize SM4 with negotiated key and zero IV
-	kaBytes := hexToBytes(result.Ka)
-	ivBytes := make([]byte, 16) // all zeros
+	kaBytes, err := hex.DecodeString(result.Ka)
+	if err != nil {
+		fail("Invalid negotiated key")
+	}
+	ivBytes := make([]byte, 16) // all zeros: acceptable only because the demo's key is per-session
 	sm4 := smx.NewSM4()
-	sm4.SetKey(kaBytes, ivBytes)
+	if err := sm4.TrySetKey(kaBytes, ivBytes); err != nil {
+		fail("Failed to set key: %v", err)
+	}
 
 	// Client encrypts a message
 	clientPlaintext := "Hello from Go Client!"
 	clientCiphertext, err := sm4.Encrypt(clientPlaintext)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to encrypt: %v\n", err)
-		os.Exit(1)
+		fail("Failed to encrypt: %v", err)
 	}
 	fmt.Printf("Client plaintext: %s\n", clientPlaintext)
 	fmt.Printf("Client ciphertext: %s\n", clientCiphertext)
@@ -200,8 +224,7 @@ func main() {
 
 	var cryptoResp cryptoTestResponse
 	if err := postJSON(serverURL+"/api/crypto/test", cryptoReq, &cryptoResp); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to send crypto request: %v\n", err)
-		os.Exit(1)
+		fail("Failed to send crypto request: %v", err)
 	}
 	crRespJSON, _ := json.Marshal(cryptoResp)
 	fmt.Printf("Response: %s\n", crRespJSON)
@@ -217,8 +240,7 @@ func main() {
 	// Client decrypts server's message
 	serverDecrypted, err := sm4.Decrypt(cryptoResp.ServerCiphertext)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to decrypt: %v\n", err)
-		os.Exit(1)
+		fail("Failed to decrypt: %v", err)
 	}
 	clientDecryptOk := serverDecrypted == cryptoResp.ServerPlaintext
 	if clientDecryptOk {
@@ -232,8 +254,7 @@ func main() {
 	if serverDecryptOk && clientDecryptOk {
 		fmt.Println("\nBidirectional Crypto test PASSED!")
 	} else {
-		fmt.Fprintln(os.Stderr, "\nBidirectional Crypto test FAILED!")
-		os.Exit(1)
+		fail("\nBidirectional Crypto test FAILED!")
 	}
 
 	fmt.Println("\n=== Demo Complete ===")
