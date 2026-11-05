@@ -6,25 +6,37 @@ namespace SMX;
 /// </summary>
 public struct ECPoint
 {
-    public static readonly FpElement SM2_A = new() { Value = new BigInt256(
+    public static readonly FpElement SM2_A = new()
+    {
+        Value = new BigInt256(
         0xFFFFFFFFFFFFFFFC, 0xFFFFFFFF00000000,
         0xFFFFFFFFFFFFFFFF, 0xFFFFFFFEFFFFFFFF
-    )};
+    )
+    };
 
-    public static readonly FpElement SM2_B = new() { Value = new BigInt256(
+    public static readonly FpElement SM2_B = new()
+    {
+        Value = new BigInt256(
         0xDDBCBD414D940E93, 0xF39789F515AB8F92,
         0x4D5A9E4BCF6509A7, 0x28E9FA9E9D9F5E34
-    )};
+    )
+    };
 
-    public static readonly FpElement SM2_GX = new() { Value = new BigInt256(
+    public static readonly FpElement SM2_GX = new()
+    {
+        Value = new BigInt256(
         0x715A4589334C74C7, 0x8FE30BBFF2660BE1,
         0x5F9904466A39C994, 0x32C4AE2C1F198119
-    )};
+    )
+    };
 
-    public static readonly FpElement SM2_GY = new() { Value = new BigInt256(
+    public static readonly FpElement SM2_GY = new()
+    {
+        Value = new BigInt256(
         0x02DF32E52139F0A0, 0xD0A9877CC62A4740,
         0x59BDCEE36B692153, 0xBC3736A2F4F6779C
-    )};
+    )
+    };
 
     public static readonly BigInt256 SM2_N = new(
         0x53BBF40939D54123, 0x7203DF6B21C6052B,

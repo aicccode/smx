@@ -6,8 +6,14 @@ public class SM3
 {
     private static readonly uint[] IV =
     [
-        0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600,
-        0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E,
+        0x7380166F,
+        0x4914B2B9,
+        0x172442D7,
+        0xDA8A0600,
+        0xA96F30BC,
+        0x163138AA,
+        0xE38DEE4D,
+        0xB0FB0E4E,
     ];
 
     private uint[] _v = new uint[8];
