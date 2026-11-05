@@ -324,6 +324,53 @@ fn invalid_signatures_are_rejected() {
     }
 }
 
+/// One signature or ciphertext has one spelling, so caches keyed on the text cannot be bypassed.
+/// Keys stay case-insensitive, because key generation emits upper case.
+#[test]
+fn hex_case_is_canonical_for_signatures_and_ciphertexts() {
+    let all = vectors();
+    let v = all.get("sm2");
+    let (id, message, public, d) = (
+        v.text("user_id"),
+        v.text("message"),
+        v.text("public_key"),
+        v.text("private_key"),
+    );
+    let signature = format!("{}h{}", v.text("r"), v.text("s"));
+    assert!(SM2::verify(id, &signature, message, public));
+    assert!(SM2::verify(id, &signature, message, &public.to_uppercase()));
+    let upper_r = format!("{}h{}", v.text("r").to_uppercase(), v.text("s"));
+    let upper_s = format!("{}h{}", v.text("r"), v.text("s").to_uppercase());
+    let upper_all = format!(
+        "{}h{}",
+        v.text("r").to_uppercase(),
+        v.text("s").to_uppercase()
+    );
+    let mut mixed = signature.clone();
+    let at = mixed
+        .find(|c: char| c.is_ascii_lowercase() && c != 'h')
+        .unwrap();
+    mixed.replace_range(at..at + 1, &mixed[at..at + 1].to_uppercase());
+    for variant in [&upper_r, &upper_s, &upper_all, &mixed] {
+        assert!(!SM2::verify(id, variant, message, public), "{variant}");
+    }
+
+    let ciphertext = v.text("ciphertext");
+    assert!(SM2::decrypt(ciphertext, d).is_ok());
+    assert!(SM2::decrypt(ciphertext, &d.to_uppercase()).is_ok());
+    assert!(SM2::decrypt(&ciphertext.to_uppercase(), d).is_err());
+    assert!(SM2::decrypt_bytes(&ciphertext.to_uppercase(), d).is_err());
+    assert_eq!(
+        SM2::decrypt_bytes(ciphertext, d).unwrap(),
+        v.text("plaintext").as_bytes()
+    );
+    // Library output is lower case, which is what makes this safe to require.
+    let fresh = SM2::sign(id, message, d).unwrap();
+    assert_eq!(fresh, fresh.to_lowercase());
+    let fresh = SM2::encrypt("x", public).unwrap();
+    assert_eq!(fresh, fresh.to_lowercase());
+}
+
 #[test]
 fn invalid_ciphertexts_are_rejected() {
     let all = vectors();

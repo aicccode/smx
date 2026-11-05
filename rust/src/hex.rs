@@ -4,24 +4,28 @@
 //! lookup table indexed by the data and no branch on the value of a valid digit. Only whether the
 //! text is valid hex is branched on, possibly at the first invalid digit, which reveals no key.
 
+use crate::ct::ct_barrier;
+
 /// ASCII digit for a nibble; `letter_offset` is 7 for upper case and 39 for lower case.
+///
+/// The barrier matters: without it LLVM compiled this to a compare and branch on the nibble.
 #[inline(always)]
-const fn nibble_to_ascii(nibble: u8, letter_offset: u8) -> u8 {
+fn nibble_to_ascii(nibble: u8, letter_offset: u8) -> u8 {
     let n = nibble as i32;
     // All ones when the nibble is above 9.
-    let is_letter = (9 - n) >> 31;
+    let is_letter = ct_barrier(((9 - n) >> 31) as u64) as i32;
     (n + b'0' as i32 + (is_letter & letter_offset as i32)) as u8
 }
 
 /// Value of an ASCII hex digit in the low nibble, and all ones in the second result when the
 /// byte is not a hex digit (the value is then 0).
 #[inline(always)]
-pub(crate) const fn ascii_to_nibble(c: u8) -> (u8, i32) {
+pub(crate) fn ascii_to_nibble(c: u8) -> (u8, i32) {
     let c = c as i32;
     let digit = c - b'0' as i32;
     let alpha = (c | 0x20) - b'a' as i32;
-    let not_digit = (digit | (9 - digit)) >> 31;
-    let not_alpha = (alpha | (5 - alpha)) >> 31;
+    let not_digit = ct_barrier(((digit | (9 - digit)) >> 31) as u64) as i32;
+    let not_alpha = ct_barrier(((alpha | (5 - alpha)) >> 31) as u64) as i32;
     let value = (digit & !not_digit) | ((alpha + 10) & !not_alpha);
     (value as u8, not_digit & not_alpha)
 }
@@ -32,12 +36,81 @@ fn encode(bytes: &[u8], letter_offset: u8) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// Encodes with SIMD where every build has it (compare instructions, nothing to turn into
+/// branches), and the barriered scalar code for the rest.
 #[inline]
 fn encode_into(bytes: &[u8], out: &mut [u8], letter_offset: u8) {
+    #[cfg(target_arch = "x86_64")]
+    let done = encode_sse2(bytes, out, letter_offset);
+    #[cfg(target_arch = "aarch64")]
+    let done = encode_neon(bytes, out, letter_offset);
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let done = 0;
+    encode_scalar(&bytes[done..], &mut out[done * 2..], letter_offset);
+}
+
+#[inline(never)]
+fn encode_scalar(bytes: &[u8], out: &mut [u8], letter_offset: u8) {
     for (pair, &b) in out.chunks_exact_mut(2).zip(bytes) {
         pair[0] = nibble_to_ascii(b >> 4, letter_offset);
         pair[1] = nibble_to_ascii(b & 0x0f, letter_offset);
     }
+}
+
+/// Encodes whole groups of 16 bytes; returns how many input bytes were done.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn encode_sse2(bytes: &[u8], out: &mut [u8], letter_offset: u8) -> usize {
+    use core::arch::x86_64::*;
+    let mut done = 0;
+    for (input, output) in bytes.chunks_exact(16).zip(out.chunks_exact_mut(32)) {
+        // SAFETY: SSE2 is part of the x86-64 baseline; the slices hold exactly 16 and 32 bytes
+        // and the loads and stores are unaligned.
+        #[allow(unused_unsafe)]
+        unsafe {
+            let x = _mm_loadu_si128(input.as_ptr().cast());
+            let mask = _mm_set1_epi8(0x0f);
+            let high = _mm_and_si128(_mm_srli_epi16::<4>(x), mask);
+            let low = _mm_and_si128(x, mask);
+            let ascii = |n: __m128i| {
+                let letters = _mm_cmpgt_epi8(n, _mm_set1_epi8(9));
+                let offset = _mm_and_si128(letters, _mm_set1_epi8(letter_offset as i8));
+                _mm_add_epi8(_mm_add_epi8(n, _mm_set1_epi8(b'0' as i8)), offset)
+            };
+            let first = ascii(_mm_unpacklo_epi8(high, low));
+            let second = ascii(_mm_unpackhi_epi8(high, low));
+            let target: *mut __m128i = output.as_mut_ptr().cast();
+            _mm_storeu_si128(target, first);
+            _mm_storeu_si128(target.add(1), second);
+        }
+        done += 16;
+    }
+    done
+}
+
+/// The same on NEON, which every AArch64 CPU has.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn encode_neon(bytes: &[u8], out: &mut [u8], letter_offset: u8) -> usize {
+    use core::arch::aarch64::*;
+    let mut done = 0;
+    for (input, output) in bytes.chunks_exact(16).zip(out.chunks_exact_mut(32)) {
+        // SAFETY: NEON is part of the AArch64 baseline; the slices hold exactly 16 and 32 bytes.
+        #[allow(unused_unsafe)]
+        unsafe {
+            let x = vld1q_u8(input.as_ptr());
+            let ascii = |n: uint8x16_t| {
+                let letters = vcgtq_u8(n, vdupq_n_u8(9));
+                let offset = vandq_u8(letters, vdupq_n_u8(letter_offset));
+                vaddq_u8(vaddq_u8(n, vdupq_n_u8(b'0')), offset)
+            };
+            let high = ascii(vshrq_n_u8::<4>(x));
+            let low = ascii(vandq_u8(x, vdupq_n_u8(0x0f)));
+            vst2q_u8(output.as_mut_ptr(), uint8x16x2_t(high, low));
+        }
+        done += 16;
+    }
+    done
 }
 
 pub(crate) fn encode_lower(bytes: &[u8]) -> String {
@@ -82,6 +155,7 @@ pub(crate) fn decode_into(hex: &[u8], out: &mut [u8]) -> bool {
 }
 
 /// Portable decoder, also the tail of the SIMD one.
+#[inline(never)]
 fn decode_scalar(hex: &[u8], out: &mut [u8]) -> bool {
     let mut invalid = 0i32;
     for (byte, pair) in out.iter_mut().zip(hex.chunks_exact(2)) {
@@ -174,6 +248,17 @@ pub(crate) fn decode_plain(hex: &str) -> Option<Vec<u8>> {
     decode_into(hex.as_bytes(), &mut out).then_some(out)
 }
 
+/// True when no digit is an upper-case letter. Library output is lower case, and accepting other
+/// spellings of one signature or ciphertext would defeat replay caches keyed on the text. This
+/// looks at public values only.
+pub(crate) fn has_no_upper_case(hex: &[u8]) -> bool {
+    // Without an early exit this vectorizes, which matters for megabytes of ciphertext.
+    let found = hex
+        .iter()
+        .fold(0u8, |acc, &c| acc | u8::from(c.wrapping_sub(b'A') < 26));
+    found == 0
+}
+
 /// Like `encode_lower`, returning `None` instead of aborting when memory runs out.
 pub(crate) fn try_encode_lower(bytes: &[u8]) -> Option<String> {
     let len = bytes.len().checked_mul(2)?;
@@ -204,6 +289,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The SIMD encoders against the scalar one, at every length around the group size.
+    #[test]
+    fn encoders_agree() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        for offset in [7u8, 39] {
+            for len in [0usize, 1, 7, 15, 16, 17, 31, 32, 33, 48, 255, 256] {
+                let mut full = vec![0u8; len * 2];
+                let mut scalar = vec![0u8; len * 2];
+                encode_into(&bytes[..len], &mut full, offset);
+                encode_scalar(&bytes[..len], &mut scalar, offset);
+                assert_eq!(full, scalar, "len {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn upper_case_detection() {
+        assert!(has_no_upper_case(b"0123456789abcdef"));
+        assert!(!has_no_upper_case(b"0123456789abcdeF"));
     }
 
     /// The SIMD decoder against the scalar one on every byte in every lane.

@@ -13,6 +13,10 @@ Repeat with CARGO_PROFILE_BENCH_LTO=fat CARGO_PROFILE_BENCH_CODEGEN_UNITS=1. Exi
 - the functions that must be branch-free have no conditional branch other than allowed ones.
 Branches elsewhere in the scalar multiplications are listed by `--list` for reading; they must
 only depend on public data (window index, scalar bit position, table building).
+
+The scan and `modinv` rules describe the code shapes of opt-level 3 and LTO. At opt-level s, z, 1
+and 2 the shapes differ (nested limb loops, helper calls), so a FAIL there means: read `--list` and
+the loop bodies. The other functions are checked at every level.
 """
 import re
 import sys
@@ -27,6 +31,8 @@ BRANCH_FREE = {
     r"Jacobian>?::add_mixed_raw": 0,
     r"sm4::pkcs7_unpadded_len": 1,  # the public length check
     r"modinv::invert": 2,  # the fixed 59- and 10-iteration counters
+    r"hex::encode_scalar": 2,  # the loop over the public length
+    r"hex::decode_scalar": 2,  # the loop over the public length
 }
 SCAN_HOSTS = r"scalar_mul::mul_(base|ct)\b|ECPoint>?::multiply\b"
 

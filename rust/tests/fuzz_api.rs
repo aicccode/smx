@@ -319,8 +319,8 @@ fn fuzz_sm2_verify() {
     run("SM2::verify", 9, |rng| {
         let (sig, key) = (rng.mutated(&signature), rng.mutated(PUBLIC));
         let accepted = SM2::verify("id", &sig, "message", &key);
-        let same = sig.eq_ignore_ascii_case(&signature) && key.eq_ignore_ascii_case(PUBLIC);
-        assert!(!accepted || same, "accepted {sig} {key}");
+        let same = sig == signature && key.eq_ignore_ascii_case(PUBLIC);
+        assert_eq!(accepted, same, "{sig} {key}");
         assert!(!SM2::verify(
             &rng.text(),
             &rng.text(),
@@ -354,8 +354,9 @@ fn fuzz_sm2_decrypt() {
     run("SM2::decrypt", 12, |rng| {
         let (text, key) = (rng.mutated(&ciphertext), rng.mutated(D));
         let result = SM2::decrypt(&text, &key);
-        let same = text.eq_ignore_ascii_case(&ciphertext) && key.eq_ignore_ascii_case(D);
-        assert!(result.is_err() != same || !same, "{text}");
+        let same = text == ciphertext && key.eq_ignore_ascii_case(D);
+        assert_eq!(result.is_ok(), same, "{text}");
+        assert_eq!(SM2::decrypt_bytes(&text, &key).is_ok(), same, "{text}");
         if let Ok(plain) = &result {
             assert_eq!(plain, "attack at dawn");
         }
@@ -455,7 +456,10 @@ fn fuzz_sm3() {
         assert_eq!(h.hash_bytes(), other.hash_bytes());
         assert_eq!(h.hash_hex_upper(), other.hash_hex_upper());
         other.update_str(&rng.text());
-        let _ = other.clone();
+        let reread = other.clone();
+        assert_eq!(reread.hash_bytes(), other.hash_bytes());
+        other.finish().finish();
+        assert_eq!(reread.hash_bytes(), other.hash_bytes());
     });
 }
 
@@ -475,7 +479,7 @@ fn fuzz_sm4() {
         let ciphertext = keyed.encrypt(&text).unwrap();
         assert_eq!(ciphertext.len() % 32, 0);
         assert_eq!(keyed.decrypt(&ciphertext).unwrap(), text);
-        assert_eq!(keyed.decrypt(&ciphertext.to_uppercase()).unwrap(), text);
+        assert_eq!(keyed.decrypt_bytes(&ciphertext).unwrap(), text.as_bytes());
     });
     let sample = keyed
         .encrypt("attack at dawn, attack at dawn, attack")
@@ -499,6 +503,9 @@ fn fuzz_sm4() {
             );
         }
         let _ = SM4::new().decrypt(&text).unwrap_err();
+        if let Ok(bytes) = keyed.decrypt_bytes(&text) {
+            assert!(bytes.len() < text.len());
+        }
     });
 }
 

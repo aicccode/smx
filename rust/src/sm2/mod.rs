@@ -285,8 +285,22 @@ impl SM2 {
 
     /// 私钥解密
     ///
-    /// The ciphertext is `C1 || C3 || C2` in hex of either case, with a non-empty C2.
+    /// The ciphertext is `C1 || C3 || C2` in the lower-case hex that `encrypt` produces, with a
+    /// non-empty C2. Plaintext that is not UTF-8 fails here; use `decrypt_bytes` for it.
+    ///
+    /// Copies this code makes of the key are wiped as far as possible. The caller's `&str` and
+    /// registers or spills the compiler made are out of reach.
     pub fn decrypt(ciphertext: &str, private_key: &str) -> Result<String, String> {
+        // C3 was verified by then, so this failure says nothing an attacker could not compute.
+        String::from_utf8(Self::decrypt_bytes(ciphertext, private_key)?).map_err(|invalid| {
+            let mut bytes = invalid.into_bytes();
+            wipe_bytes(&mut bytes);
+            "UTF-8 decode error".to_string()
+        })
+    }
+
+    /// `decrypt` returning the plaintext bytes, which need not be text.
+    pub fn decrypt_bytes(ciphertext: &str, private_key: &str) -> Result<Vec<u8>, String> {
         // 解析 C1 || C3 || C2. Working on bytes: this text need not be ASCII.
         let text = ciphertext.as_bytes();
         if text.len() <= 130 + 64 {
@@ -294,6 +308,9 @@ impl SM2 {
         }
         if text.len() % 2 != 0 {
             return Err("Invalid hex string length".to_string());
+        }
+        if !hex::has_no_upper_case(text) {
+            return Err("Invalid hex character".to_string());
         }
         let (c1_hex, rest) = text.split_at(130);
         let (c3_hex, c2_hex) = rest.split_at(64);
@@ -336,11 +353,7 @@ impl SM2 {
             return Err(DECRYPT_ERROR.to_string());
         }
 
-        String::from_utf8(c2).map_err(|invalid| {
-            let mut bytes = invalid.into_bytes();
-            wipe_bytes(&mut bytes);
-            "UTF-8 decode error".to_string()
-        })
+        Ok(c2)
     }
 
     /// 签名
@@ -412,13 +425,14 @@ impl SM2 {
 
     /// 验签
     ///
-    /// The signature is `r h s` with r and s exactly 64 hex digits each, in [1, n-1].
+    /// The signature is `r h s` as `sign` produces it: r and s exactly 64 lower-case hex digits
+    /// each, in [1, n-1]. Other spellings of a signature would defeat replay caches on the text.
     pub fn verify(user_id: &str, signature: &str, message: &str, public_key: &str) -> bool {
         if user_id.len() > MAX_USER_ID_BYTES || message.len() as u64 > MAX_MESSAGE_BYTES - 32 {
             return false;
         }
         let text = signature.as_bytes();
-        if text.len() != 129 || text[64] != b'h' {
+        if text.len() != 129 || text[64] != b'h' || !hex::has_no_upper_case(text) {
             return false;
         }
         let (Some(r), Some(s)) = (

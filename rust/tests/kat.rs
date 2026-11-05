@@ -138,8 +138,11 @@ fn sm3_streaming_is_split_invariant() {
 #[test]
 fn sm3_finish_resets_state() {
     let mut h = Sm3::new();
-    assert_eq!(h.hash_hex_upper(), "");
-    assert_eq!(h.hash_bytes(), &[0u8; 32]);
+    // Before anything is fed, the digest is that of the empty message.
+    assert_eq!(
+        h.hash_hex_upper(),
+        "1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B"
+    );
     h.update_str("abc").finish();
     let first = h.hash_hex_upper().to_string();
     h.update_str("abc").finish();
@@ -298,6 +301,7 @@ fn sm4_error_behaviour() {
     assert_eq!(msg(""), "Invalid padding");
     assert_eq!(msg("00"), "Invalid padding");
     assert_eq!(msg("00000000000000000000000000000000"), "Invalid padding");
+    assert_eq!(msg("AA"), "Invalid hex string");
 }
 
 /// Scalar multiples of G, including 0, n-1, n, n+1 and 2^256-1.

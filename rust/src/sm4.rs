@@ -425,30 +425,46 @@ impl SM4 {
 
     /// 解密字符串
     ///
-    /// Bad ciphertext length, bad padding and a result that is not UTF-8 all return the same
-    /// `SM4Error::InvalidPadding`, because telling them apart is a decryption oracle. This does
-    /// not make unauthenticated CBC safe; see the module documentation.
+    /// Takes the lower-case hex that `encrypt` produces. Bad ciphertext length, bad padding and a
+    /// result that is not UTF-8 all return the same `SM4Error::InvalidPadding`, because telling
+    /// them apart is a decryption oracle. For the same reason the same UTF-8 validation runs over
+    /// the same bytes whether the padding was good or not.
+    ///
+    /// Limit: that validation stops at the first invalid byte, so its time still depends on the
+    /// decrypted content, and success itself is visible to a caller. Neither makes
+    /// unauthenticated CBC safe; see the module documentation.
     pub fn decrypt(&self, ciphertext: &str) -> Result<String, Box<dyn Error>> {
+        let buf = self.decrypt_blocks(ciphertext)?;
+        Ok(text_result(buf)?)
+    }
+
+    /// `decrypt` returning the plaintext bytes, which need not be text. No UTF-8 step runs here.
+    pub fn decrypt_bytes(&self, ciphertext: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut buf = self.decrypt_blocks(ciphertext)?;
+        let (padding_ok, plain_len) = pkcs7_check(&buf);
+        if ct_barrier(padding_ok) == 0 {
+            wipe_bytes(&mut buf);
+            return Err(Box::new(SM4Error::InvalidPadding));
+        }
+        wipe_bytes(&mut buf[plain_len..]);
+        buf.truncate(plain_len);
+        Ok(buf)
+    }
+
+    /// CBC decrypts a non-empty whole number of blocks, padding still attached.
+    fn decrypt_blocks(&self, ciphertext: &str) -> Result<Vec<u8>, SM4Error> {
         if !self.keyed {
-            return Err(Box::new(SM4Error::InvalidKeyLength));
+            return Err(SM4Error::InvalidKeyLength);
+        }
+        if !hex::has_no_upper_case(ciphertext.as_bytes()) {
+            return Err(SM4Error::InvalidHexString);
         }
         let mut buf = hex::decode_plain(ciphertext).ok_or(SM4Error::InvalidHexString)?;
         if buf.is_empty() || buf.len() % BLOCK_LEN != 0 {
-            return Err(Box::new(SM4Error::InvalidPadding));
+            return Err(SM4Error::InvalidPadding);
         }
         Backend::detect().cbc_decrypt(&self.rk, &self.iv, &mut buf);
-        let plain_len = pkcs7_unpadded_len(&buf);
-        let Some(plain_len) = plain_len else {
-            wipe_bytes(&mut buf);
-            return Err(Box::new(SM4Error::InvalidPadding));
-        };
-        wipe_bytes(&mut buf[plain_len..]);
-        buf.truncate(plain_len);
-        String::from_utf8(buf).map_err(|invalid| {
-            let mut bytes = invalid.into_bytes();
-            wipe_bytes(&mut bytes);
-            Box::new(SM4Error::InvalidPadding) as Box<dyn Error>
-        })
+        Ok(buf)
     }
 
     /// PKCS#7 pad and CBC encrypt into a fresh buffer; `None` when out of memory.
@@ -464,10 +480,34 @@ impl SM4 {
     }
 }
 
-/// Length of the data before the PKCS#7 padding, for a non-empty whole number of blocks. The last
-/// block is always scanned completely and only the final result is branched on.
+/// Removes the padding from decrypted blocks and returns the text, or the one error.
+///
+/// The UTF-8 validation runs on the whole buffer, unconditionally and before anything depends on
+/// the padding verdict, so a padding failure costs the same validation as a success. Padding bytes
+/// are ASCII, which makes this the same answer as validating the text alone when the padding is
+/// good. `black_box` keeps the optimizer from moving the work behind the verdict or removing it.
 #[inline(never)]
-fn pkcs7_unpadded_len(input: &[u8]) -> Option<usize> {
+fn text_result(mut buf: Vec<u8>) -> Result<String, SM4Error> {
+    let (padding_ok, plain_len) = pkcs7_check(&buf);
+    #[cfg(test)]
+    tests::VALIDATED_BYTES.with(|count| count.set(buf.len()));
+    let utf8_ok =
+        core::hint::black_box(core::str::from_utf8(core::hint::black_box(&buf[..])).is_ok());
+    if ct_barrier(padding_ok & u64::from(utf8_ok)) == 0 {
+        wipe_bytes(&mut buf);
+        return Err(SM4Error::InvalidPadding);
+    }
+    wipe_bytes(&mut buf[plain_len..]);
+    buf.truncate(plain_len);
+    // SAFETY: the whole buffer was just validated as UTF-8, and the removed bytes were padding
+    // bytes below 0x80, each a complete character, so the rest is valid UTF-8 too.
+    Ok(unsafe { String::from_utf8_unchecked(buf) })
+}
+
+/// Checks PKCS#7 padding of a non-empty whole number of blocks without branching on it. Returns 1
+/// or 0 for the verdict, and the length before the padding, which only means anything with a 1.
+#[inline(never)]
+fn pkcs7_check(input: &[u8]) -> (u64, usize) {
     let block = &input[input.len() - BLOCK_LEN..];
     let pad = u64::from(block[BLOCK_LEN - 1]);
     // Non-zero unless 1 <= pad <= 16: the subtractions wrap into the top bit otherwise.
@@ -478,12 +518,20 @@ fn pkcs7_unpadded_len(input: &[u8]) -> Option<usize> {
         let in_padding = ct_barrier(((distance as u64).wrapping_sub(pad) >> 63).wrapping_neg());
         bad |= (u64::from(byte) ^ pad) & in_padding;
     }
-    (ct_barrier(bad) == 0).then(|| input.len() - pad as usize)
+    let bad = ct_barrier(bad);
+    // 1 when `bad` is zero.
+    let ok = ((bad | bad.wrapping_neg()) >> 63) ^ 1;
+    (ok, input.len().wrapping_sub(pad as usize))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// How many bytes the last `text_result` validated.
+        pub(super) static VALIDATED_BYTES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    }
 
     #[test]
     fn test_encrypt_decrypt_round_trip() {
@@ -578,6 +626,63 @@ mod tests {
                 assert_eq!(buf, plain, "{backend:?} decrypt {blocks}");
             }
         }
+    }
+
+    /// The UTF-8 oracle: bad padding must cost the same validation as good padding.
+    #[test]
+    fn validation_runs_over_the_whole_buffer_whatever_the_padding() {
+        let mut good = b"hello world".to_vec();
+        good.extend_from_slice(&[5; 5]);
+        let mut bad_value = good.clone();
+        bad_value[15] = 0x41;
+        let mut bad_run = good.clone();
+        bad_run[12] = 0;
+        for (buf, expect_ok) in [(good, true), (bad_value, false), (bad_run, false)] {
+            VALIDATED_BYTES.with(|count| count.set(0));
+            let result = text_result(buf);
+            assert_eq!(VALIDATED_BYTES.with(|count| count.get()), 16);
+            assert_eq!(result.is_ok(), expect_ok);
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_under_good_padding_is_the_padding_error() {
+        let mut buf = vec![0xff; 11];
+        buf.extend_from_slice(&[5; 5]);
+        assert!(matches!(text_result(buf), Err(SM4Error::InvalidPadding)));
+        // A truncated sequence right before the padding stays invalid with it attached.
+        let mut buf = vec![b'a'; 10];
+        buf.push(0xe4);
+        buf.extend_from_slice(&[5; 5]);
+        assert!(text_result(buf).is_err());
+    }
+
+    #[test]
+    fn bytes_decrypt_takes_any_plaintext_and_upper_case_is_rejected() {
+        let (key, iv) = ([3u8; 16], [5u8; 16]);
+        let mut sm4 = SM4::new();
+        sm4.set_key(&key, &iv).unwrap();
+        // Not UTF-8, with its padding appended by hand.
+        let mut block = vec![0xffu8; 12];
+        block.extend_from_slice(&[4; 4]);
+        Backend::detect().cbc_encrypt(&sm4.rk, &iv, &mut block);
+        let text = hex::encode_lower(&block);
+        assert_eq!(sm4.decrypt_bytes(&text).unwrap(), vec![0xffu8; 12]);
+        assert_eq!(
+            sm4.decrypt(&text).unwrap_err().to_string(),
+            "Invalid padding"
+        );
+
+        let ciphertext = sm4.encrypt("hello").unwrap();
+        assert_eq!(sm4.decrypt(&ciphertext).unwrap(), "hello");
+        assert_eq!(sm4.decrypt_bytes(&ciphertext).unwrap(), b"hello");
+        let upper = ciphertext.to_uppercase();
+        assert_ne!(upper, ciphertext);
+        assert_eq!(
+            sm4.decrypt(&upper).unwrap_err().to_string(),
+            "Invalid hex string"
+        );
+        assert!(sm4.decrypt_bytes(&upper).is_err());
     }
 
     /// Every kind of padding failure and length error gives one and the same error.

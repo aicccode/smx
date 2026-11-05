@@ -113,7 +113,13 @@ mod imp {
 #[cfg(all(unix, not(target_vendor = "apple")))]
 fn read_device(dest: &mut [u8]) -> Result<(), RngError> {
     use std::io::Read;
+    use std::os::unix::fs::FileTypeExt;
     let mut device = std::fs::File::open("/dev/urandom").map_err(|_| RngError)?;
+    // A regular file planted in a chroot or container must not become the key source.
+    let metadata = device.metadata().map_err(|_| RngError)?;
+    if !metadata.file_type().is_char_device() {
+        return Err(RngError);
+    }
     device.read_exact(dest).map_err(|_| RngError)
 }
 

@@ -2,6 +2,7 @@
 
 use crate::ct::wipe;
 use crate::hex;
+use std::sync::OnceLock;
 
 const BLOCK_LEN: usize = 64;
 
@@ -166,10 +167,30 @@ fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
     *state = [s0, s1, s2, s3, s4, s5, s6, s7];
 }
 
+/// A completed result, kept until the next message starts.
+#[derive(Clone)]
+struct Digest {
+    bytes: [u8; 32],
+    hex: [u8; 64],
+    valid: bool,
+}
+
+impl Drop for Digest {
+    fn drop(&mut self) {
+        wipe(&mut self.bytes, [0; 32]);
+        wipe(&mut self.hex, [0; 64]);
+    }
+}
+
 /// Incremental SM3.
 ///
-/// A message may have at most 2^61 - 1 bytes. Going beyond that makes `finish` produce no result:
-/// `hash_hex_upper` returns "" and `hash_bytes` all zeros, until the next message.
+/// Reading never returns a stale or empty value: `hash_bytes` and `hash_hex_upper` give the digest
+/// of the current message, whether `finish` was called or not, and reading does not disturb it.
+/// `finish` ends the message; calling it again keeps the same result, and the next update starts
+/// a new message.
+///
+/// A message may have at most 2^61 - 1 bytes. Beyond that there is no digest: `hash_hex_upper`
+/// returns "", `hash_bytes` all zeros and `checked_hash_bytes` `None`, until the next message.
 #[derive(Clone)]
 pub struct Sm3 {
     v: [u32; 8],
@@ -177,9 +198,8 @@ pub struct Sm3 {
     buff_len: usize, // 已写入字节数
     data_len: u64,
     too_long: bool,
-    hash_bytes: [u8; 32],
-    hash_value_hex: [u8; 64],
     finished: bool,
+    result: OnceLock<Digest>,
 }
 
 impl Default for Sm3 {
@@ -193,8 +213,6 @@ impl Drop for Sm3 {
     fn drop(&mut self) {
         wipe(&mut self.v, [0; 8]);
         wipe(&mut self.buff, [0; BLOCK_LEN]);
-        wipe(&mut self.hash_bytes, [0; 32]);
-        wipe(&mut self.hash_value_hex, [0; 64]);
     }
 }
 
@@ -206,9 +224,19 @@ impl Sm3 {
             buff_len: 0,
             data_len: 0,
             too_long: false,
-            hash_bytes: [0u8; 32],
-            hash_value_hex: [0u8; 64],
             finished: false,
+            result: OnceLock::new(),
+        }
+    }
+
+    /// Whatever was read or finished before is out of date once more data comes.
+    #[inline]
+    fn begin_update(&mut self) {
+        if self.finished {
+            self.finished = false;
+        }
+        if self.result.get().is_some() {
+            self.result = OnceLock::new();
         }
     }
 
@@ -230,6 +258,7 @@ impl Sm3 {
     /// 更新单字节
     #[inline]
     pub fn update_byte(&mut self, b: u8) -> &mut Self {
+        self.begin_update();
         if !self.account(1) {
             return self;
         }
@@ -245,6 +274,7 @@ impl Sm3 {
     /// 更新字节数组
     #[inline]
     pub fn update(&mut self, data: &[u8]) -> &mut Self {
+        self.begin_update();
         if !self.account(data.len() as u64) {
             return self;
         }
@@ -277,24 +307,53 @@ impl Sm3 {
         self.update(s.as_bytes())
     }
 
-    /// Completes the message and resets for the next one. See the type documentation for what
-    /// happens to messages over the length limit.
+    /// Completes the message; the next update starts a new one. Calling this again keeps the
+    /// result. See the type documentation for messages over the length limit.
     pub fn finish(&mut self) -> &mut Self {
-        let valid = !self.too_long;
-        let digest = self.finalize_digest();
-        self.hash_bytes = digest;
-        hex::encode_upper_into(&digest, &mut self.hash_value_hex);
-        self.finished = valid;
+        if self.finished {
+            return self;
+        }
+        let digest = Self::seal(self.too_long, self.finalize_digest());
+        self.result = OnceLock::from(digest);
+        self.finished = true;
         self
     }
 
-    pub fn hash_bytes(&self) -> &[u8; 32] {
-        &self.hash_bytes
+    fn seal(too_long: bool, bytes: [u8; 32]) -> Digest {
+        let mut hex_digits = [0u8; 64];
+        hex::encode_upper_into(&bytes, &mut hex_digits);
+        Digest {
+            bytes,
+            hex: hex_digits,
+            valid: !too_long,
+        }
     }
 
+    /// The digest of the current message, computed from a copy of the state if not yet finished.
+    fn digest(&self) -> &Digest {
+        self.result.get_or_init(|| {
+            let mut copy = self.clone();
+            let too_long = copy.too_long;
+            Self::seal(too_long, copy.finalize_digest())
+        })
+    }
+
+    /// The digest of the current message; all zeros if it went over the length limit.
+    pub fn hash_bytes(&self) -> &[u8; 32] {
+        &self.digest().bytes
+    }
+
+    /// `hash_bytes` that reports a message over the length limit.
+    pub fn checked_hash_bytes(&self) -> Option<&[u8; 32]> {
+        let digest = self.digest();
+        digest.valid.then_some(&digest.bytes)
+    }
+
+    /// The digest of the current message in hex; "" if it went over the length limit.
     pub fn hash_hex_upper(&self) -> &str {
-        if self.finished {
-            core::str::from_utf8(&self.hash_value_hex).unwrap_or("")
+        let digest = self.digest();
+        if digest.valid {
+            core::str::from_utf8(&digest.hex).unwrap_or("")
         } else {
             ""
         }
@@ -358,6 +417,63 @@ mod tests {
         );
     }
 
+    const ABC: &str = "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0";
+    const EMPTY: &str = "1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B";
+
+    #[test]
+    fn reading_without_finish_gives_the_current_digest() {
+        let mut sm3 = Sm3::new();
+        assert_eq!(sm3.hash_hex_upper(), EMPTY);
+        sm3.update_str("a");
+        let partial = sm3.hash_hex_upper().to_string();
+        assert_ne!(partial, EMPTY);
+        // Reading did not disturb the message.
+        sm3.update_str("bc");
+        assert_eq!(sm3.hash_hex_upper(), ABC);
+        assert_eq!(hex_of(sm3.hash_bytes()), ABC);
+        sm3.finish();
+        assert_eq!(sm3.hash_hex_upper(), ABC);
+    }
+
+    #[test]
+    fn finish_twice_keeps_the_result_and_update_starts_a_new_message() {
+        let mut sm3 = Sm3::new();
+        sm3.update_str("abc").finish().finish();
+        assert_eq!(sm3.hash_hex_upper(), ABC);
+        assert_eq!(sm3.checked_hash_bytes().map(hex_of).as_deref(), Some(ABC));
+
+        // Not stale: the old digest is gone as soon as new data arrives.
+        sm3.update_str("x");
+        assert_ne!(sm3.hash_hex_upper(), ABC);
+        sm3.finish();
+        let x = sm3.hash_hex_upper().to_string();
+        let mut fresh = Sm3::new();
+        fresh.update_str("x").finish();
+        assert_eq!(x, fresh.hash_hex_upper());
+
+        // A byte update also starts over, and an empty update begins an empty message.
+        sm3.update_byte(b'x');
+        assert_eq!(sm3.hash_hex_upper(), x);
+        sm3.finish();
+        sm3.update(b"");
+        assert_eq!(sm3.hash_hex_upper(), EMPTY);
+    }
+
+    #[test]
+    fn clones_are_independent() {
+        let mut sm3 = Sm3::new();
+        sm3.update_str("a");
+        let _ = sm3.hash_bytes();
+        let mut copy = sm3.clone();
+        copy.update_str("bc");
+        assert_eq!(copy.hash_hex_upper(), ABC);
+        assert_ne!(sm3.hash_hex_upper(), ABC);
+    }
+
+    fn hex_of(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|b| format!("{b:02X}")).collect()
+    }
+
     /// The limit is checked without having to hash 2^61 bytes.
     #[test]
     fn length_limit_is_enforced_and_clears_on_finish() {
@@ -368,9 +484,11 @@ mod tests {
         sm3.update_byte(1);
         assert!(sm3.too_long);
         sm3.update(b"more"); // stays failed, does not wrap
+        assert_eq!(sm3.hash_hex_upper(), "");
         sm3.finish();
         assert_eq!(sm3.hash_hex_upper(), "");
         assert_eq!(sm3.hash_bytes(), &[0u8; 32]);
+        assert!(sm3.checked_hash_bytes().is_none());
 
         sm3.data_len = u64::MAX - 1;
         sm3.update(&[0u8; 5]); // overflow of the counter itself

@@ -15,6 +15,7 @@ use super::field::{Limbs, ct_barrier, fe_add, fe_mul, fe_neg, fe_sqr, fe_sub, se
 use super::order::reduce_scalar;
 use super::point::SM2_B;
 use super::precomp::{COMB_ENTRIES, COMB_WIDTH, COMB_WINDOWS, G_COMB, G_ODD, G_ODD_WIDTH};
+use crate::ct::wipe;
 
 /// Width of the windows for variable bases.
 const WIDTH: usize = 5;
@@ -97,7 +98,7 @@ fn lookup_jacobian(table: &[Jacobian; ENTRIES], magnitude: u64) -> Jacobian {
 
 /// [k]G, constant time in k, for any 256-bit k.
 pub(crate) fn mul_base(k: &Limbs) -> Jacobian {
-    let k = reduce_scalar(k);
+    let mut k = reduce_scalar(k);
     let mut acc = Jacobian::INFINITY;
     for index in (0..COMB_WINDOWS).rev() {
         let (magnitude, negative) = booth_digit(&k, index, COMB_WIDTH as u32);
@@ -105,6 +106,7 @@ pub(crate) fn mul_base(k: &Limbs) -> Jacobian {
         entry.y = select(negative, &fe_neg(&entry.y), &entry.y);
         acc = acc.add_mixed_ct(&entry, eq_mask(magnitude, 0), index == 0);
     }
+    wipe(&mut k, [0; 4]);
     acc
 }
 
@@ -118,7 +120,7 @@ pub(crate) fn is_on_curve(point: &Affine) -> bool {
 
 /// [k]P, constant time in k, for any 256-bit k and a valid finite point (of order n).
 pub(crate) fn mul_ct(point: &Affine, k: &Limbs) -> Jacobian {
-    let scalar = reduce_scalar(k);
+    let mut scalar = reduce_scalar(k);
 
     // The table only depends on the public point.
     let mut table = [point.to_jacobian(); ENTRIES];
@@ -142,6 +144,7 @@ pub(crate) fn mul_ct(point: &Affine, k: &Limbs) -> Jacobian {
         entry.y = select(negative, &fe_neg(&entry.y), &entry.y);
         acc = acc.add_ct(&entry, index == 0);
     }
+    wipe(&mut scalar, [0; 4]);
     acc
 }
 
