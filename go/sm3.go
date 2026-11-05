@@ -27,6 +27,8 @@ var sm3T = func() (t [64]uint32) {
 	return t
 }()
 
+//go:generate go run sm3_block_gen.go
+
 // sm3MaxBytes is the longest message SM3 defines: its length field holds 2^64 - 1 bits.
 const sm3MaxBytes = 1<<61 - 1
 
@@ -201,105 +203,4 @@ func (s *SM3) HashHexUpper() string {
 	out := make([]byte, 64)
 	encodeHexTo(out, s.hashBytes[:], upperHex)
 	return bytesAsString(out)
-}
-
-// sm3Blocks runs the compression function over whole 64-byte blocks. Rounds are written
-// out four at a time with the working variables renamed instead of moved.
-func sm3Blocks(v *[8]uint32, p []byte) {
-	h0, h1, h2, h3, h4, h5, h6, h7 := v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]
-	var w [68]uint32
-
-	for ; len(p) >= sm3BlockSize; p = p[sm3BlockSize:] {
-		block := p[:sm3BlockSize]
-		for j := 0; j < 16; j++ {
-			w[j] = binary.BigEndian.Uint32(block[j*4:])
-		}
-		for j := 16; j < 68; j++ {
-			x := w[j-16] ^ w[j-9] ^ bits.RotateLeft32(w[j-3], 15)
-			w[j] = x ^ bits.RotateLeft32(x, 15) ^ bits.RotateLeft32(x, 23) ^
-				bits.RotateLeft32(w[j-13], 7) ^ w[j-6]
-		}
-
-		a, b, c, d, e, f, g, h := h0, h1, h2, h3, h4, h5, h6, h7
-		var r, ss1, tt uint32
-
-		for j := 0; j < 16; j += 4 {
-			r = bits.RotateLeft32(a, 12)
-			ss1 = bits.RotateLeft32(r+e+sm3T[j], 7)
-			d += (a ^ b ^ c) + (ss1 ^ r) + (w[j] ^ w[j+4])
-			tt = (e ^ f ^ g) + h + ss1 + w[j]
-			b = bits.RotateLeft32(b, 9)
-			f = bits.RotateLeft32(f, 19)
-			h = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(d, 12)
-			ss1 = bits.RotateLeft32(r+h+sm3T[j+1], 7)
-			c += (d ^ a ^ b) + (ss1 ^ r) + (w[j+1] ^ w[j+5])
-			tt = (h ^ e ^ f) + g + ss1 + w[j+1]
-			a = bits.RotateLeft32(a, 9)
-			e = bits.RotateLeft32(e, 19)
-			g = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(c, 12)
-			ss1 = bits.RotateLeft32(r+g+sm3T[j+2], 7)
-			b += (c ^ d ^ a) + (ss1 ^ r) + (w[j+2] ^ w[j+6])
-			tt = (g ^ h ^ e) + f + ss1 + w[j+2]
-			d = bits.RotateLeft32(d, 9)
-			h = bits.RotateLeft32(h, 19)
-			f = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(b, 12)
-			ss1 = bits.RotateLeft32(r+f+sm3T[j+3], 7)
-			a += (b ^ c ^ d) + (ss1 ^ r) + (w[j+3] ^ w[j+7])
-			tt = (f ^ g ^ h) + e + ss1 + w[j+3]
-			c = bits.RotateLeft32(c, 9)
-			g = bits.RotateLeft32(g, 19)
-			e = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-		}
-
-		for j := 16; j < 64; j += 4 {
-			r = bits.RotateLeft32(a, 12)
-			ss1 = bits.RotateLeft32(r+e+sm3T[j], 7)
-			d += (a&b | c&(a|b)) + (ss1 ^ r) + (w[j] ^ w[j+4])
-			tt = (g ^ e&(f^g)) + h + ss1 + w[j]
-			b = bits.RotateLeft32(b, 9)
-			f = bits.RotateLeft32(f, 19)
-			h = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(d, 12)
-			ss1 = bits.RotateLeft32(r+h+sm3T[j+1], 7)
-			c += (d&a | b&(d|a)) + (ss1 ^ r) + (w[j+1] ^ w[j+5])
-			tt = (f ^ h&(e^f)) + g + ss1 + w[j+1]
-			a = bits.RotateLeft32(a, 9)
-			e = bits.RotateLeft32(e, 19)
-			g = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(c, 12)
-			ss1 = bits.RotateLeft32(r+g+sm3T[j+2], 7)
-			b += (c&d | a&(c|d)) + (ss1 ^ r) + (w[j+2] ^ w[j+6])
-			tt = (e ^ g&(h^e)) + f + ss1 + w[j+2]
-			d = bits.RotateLeft32(d, 9)
-			h = bits.RotateLeft32(h, 19)
-			f = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-
-			r = bits.RotateLeft32(b, 12)
-			ss1 = bits.RotateLeft32(r+f+sm3T[j+3], 7)
-			a += (b&c | d&(b|c)) + (ss1 ^ r) + (w[j+3] ^ w[j+7])
-			tt = (h ^ f&(g^h)) + e + ss1 + w[j+3]
-			c = bits.RotateLeft32(c, 9)
-			g = bits.RotateLeft32(g, 19)
-			e = tt ^ bits.RotateLeft32(tt, 9) ^ bits.RotateLeft32(tt, 17)
-		}
-
-		h0 ^= a
-		h1 ^= b
-		h2 ^= c
-		h3 ^= d
-		h4 ^= e
-		h5 ^= f
-		h6 ^= g
-		h7 ^= h
-	}
-
-	v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7] = h0, h1, h2, h3, h4, h5, h6, h7
 }
