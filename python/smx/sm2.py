@@ -6,14 +6,18 @@ both as lowercase hex, the same wire formats as the other languages here.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from functools import lru_cache
+from typing import Optional
 
+from . import _ec
 from .hexutil import bytes_to_hex, hex_to_bytes, hex_to_int
 from .point import SM2_A, SM2_B, SM2_GX, SM2_GY, SM2_N, ECPoint
-from .sm3 import SM3
+from .sm3 import _BLOCK_SIZE, _IV, _digest, _finish_digest, compress_blocks
 
 _C1_HEX_LEN = 130
 _C3_HEX_LEN = 64
@@ -22,6 +26,15 @@ _TWO_POW_W = 1 << 127
 _W_MASK = _TWO_POW_W - 1
 _TAG_SB = 0x02
 _TAG_SA = 0x03
+_Z_CURVE_PARAMETERS = b"".join(
+    value.to_bytes(_HASH_SIZE, "big") for value in (SM2_A, SM2_B, SM2_GX, SM2_GY)
+)
+# Identities longer than this are hashed every time rather than kept in the cache.
+_Z_CACHE_MAX_ID_LENGTH = 1024
+_PUBLIC_KEY_CACHE_SIZE = 64
+# Private key digest -> public key. Only public keys and one-way digests are kept,
+# so the cache does not extend the lifetime of any secret value.
+_public_key_cache: dict[bytes, ECPoint] = {}
 
 
 @dataclass(frozen=True)
@@ -32,7 +45,8 @@ class SM2KeySwapParams:
     sb: str = ""
     ka: str = ""
     kb: str = ""
-    v: Optional[ECPoint] = None
+    # typing.get_type_hints() cannot evaluate "X | None" on Python 3.9.
+    v: Optional[ECPoint] = None  # noqa: UP045
     za: bytes = b""
     zb: bytes = b""
     success: bool = False
@@ -45,10 +59,20 @@ def _random_scalar() -> int:
 
 
 def _sm3(*parts: bytes) -> bytes:
-    hasher = SM3()
-    for part in parts:
-        hasher.update(part)
-    return hasher.finish().hash_bytes()
+    return _digest(b"".join(parts))
+
+
+def _xor(left: bytes, right: bytes) -> bytes:
+    """XOR two byte strings of equal length."""
+    value = int.from_bytes(left, "big") ^ int.from_bytes(right, "big")
+    return value.to_bytes(len(left), "big")
+
+
+def _clear_caches() -> None:
+    """Forget per-key cached values: Z values, public keys and point tables."""
+    _cached_z.cache_clear()
+    _public_key_cache.clear()
+    _ec.clear_caches()
 
 
 def _parse_private_key(text: str) -> int:
@@ -66,25 +90,53 @@ def _kdf(key_length: int, seed_parts: Iterable[bytes]) -> bytes:
     """GB/T 32918.4 KDF: concatenate SM3(seed || counter) for counters 1, 2, ..."""
     seed = b"".join(seed_parts)
     blocks = (key_length + _HASH_SIZE - 1) // _HASH_SIZE
+    # Only the block holding the counter changes, so absorb the whole blocks once.
+    full = len(seed) - len(seed) % _BLOCK_SIZE
+    state = compress_blocks(_IV, seed[:full])
+    tail = seed[full:]
+    total = len(seed) + 4
     output = b"".join(
-        _sm3(seed, counter.to_bytes(4, "big")) for counter in range(1, blocks + 1)
+        [
+            _finish_digest(state, tail + counter.to_bytes(4, "big"), total)
+            for counter in range(1, blocks + 1)
+        ]
     )
     return output[:key_length]
 
 
 def user_sm3_z(user_id: bytes, public_key: ECPoint) -> bytes:
     """Compute Z = SM3(ENTL || ID || a || b || Gx || Gy || x || y)."""
+    identity = bytes(user_id)
+    if len(identity) > _Z_CACHE_MAX_ID_LENGTH:
+        return _compute_z(identity, public_key.x, public_key.y)
+    return _cached_z(identity, public_key.x, public_key.y)
+
+
+def _compute_z(user_id: bytes, x: int, y: int) -> bytes:
     entl = (len(user_id) * 8) & 0xFFFF
     return _sm3(
         entl.to_bytes(2, "big"),
         user_id,
-        SM2_A.to_bytes(_HASH_SIZE, "big"),
-        SM2_B.to_bytes(_HASH_SIZE, "big"),
-        SM2_GX.to_bytes(_HASH_SIZE, "big"),
-        SM2_GY.to_bytes(_HASH_SIZE, "big"),
-        public_key.x_bytes(),
-        public_key.y_bytes(),
+        _Z_CURVE_PARAMETERS,
+        x.to_bytes(_HASH_SIZE, "big"),
+        y.to_bytes(_HASH_SIZE, "big"),
     )
+
+
+# Z takes four SM3 blocks and depends only on public values.
+_cached_z = lru_cache(maxsize=256)(_compute_z)
+
+
+def _public_key_of(d: int) -> ECPoint:
+    """Return [d]G, remembering it under a digest of the private key."""
+    key = hashlib.sha256(d.to_bytes(_HASH_SIZE, "big")).digest()
+    public_key = _public_key_cache.get(key)
+    if public_key is None:
+        public_key = ECPoint.generator().multiply(d)
+        if len(_public_key_cache) >= _PUBLIC_KEY_CACHE_SIZE:
+            _public_key_cache.clear()
+        _public_key_cache[key] = public_key
+    return public_key
 
 
 def _message_digest(user_id: str, message: str, public_key: ECPoint) -> int:
@@ -92,7 +144,7 @@ def _message_digest(user_id: str, message: str, public_key: ECPoint) -> int:
     return int.from_bytes(_sm3(z, message.encode("utf-8")), "big")
 
 
-def sm2_gen_key_pair() -> Tuple[str, str]:
+def sm2_gen_key_pair() -> tuple[str, str]:
     """Return ``(private_key_hex, public_key_hex)``; d is in [1, n-2]."""
     while True:
         d = _random_scalar()
@@ -113,7 +165,7 @@ def sm2_encrypt(plaintext: str, public_key: str) -> str:
     while True:
         k = _random_scalar()
         c1 = ECPoint.generator().multiply(k)
-        p2 = point.multiply(k)
+        p2 = point._multiply_cached(k)
         if p2.infinity:
             continue
 
@@ -121,7 +173,7 @@ def sm2_encrypt(plaintext: str, public_key: str) -> str:
         if not any(key):
             continue
 
-        c2 = bytes(m ^ b for m, b in zip(message, key))
+        c2 = _xor(message, key)
         c3 = _sm3(p2.x_bytes(), message, p2.y_bytes())
         return c1.to_hex_encoded() + bytes_to_hex(c3) + bytes_to_hex(c2)
 
@@ -143,7 +195,7 @@ def sm2_decrypt(ciphertext: str, private_key: str) -> str:
         raise ValueError("invalid decryption")
 
     key = _kdf(len(c2), (p2.x_bytes(), p2.y_bytes()))
-    message = bytes(c ^ b for c, b in zip(c2, key))
+    message = _xor(c2, key)
     if not hmac.compare_digest(_sm3(p2.x_bytes(), message, p2.y_bytes()), c3):
         raise ValueError("decryption verification failed")
     return message.decode("utf-8")
@@ -152,9 +204,8 @@ def sm2_decrypt(ciphertext: str, private_key: str) -> str:
 def sm2_sign(user_id: str, message: str, private_key: str) -> str:
     """Sign a message and return ``r + "h" + s`` as lowercase hex."""
     d = _parse_private_key(private_key)
-    public_key = ECPoint.generator().multiply(d)
-    e = _message_digest(user_id, message, public_key)
-    d_plus_1_inv = pow(d + 1, SM2_N - 2, SM2_N)
+    e = _message_digest(user_id, message, _public_key_of(d))
+    d_plus_1_inv = _ec.invert_blinded(d + 1, SM2_N)
 
     while True:
         k = _random_scalar()
@@ -168,7 +219,7 @@ def sm2_sign(user_id: str, message: str, private_key: str) -> str:
         return f"{r:064x}h{s:064x}"
 
 
-def _parse_signature(signature: str) -> Optional[Tuple[int, int]]:
+def _parse_signature(signature: str) -> tuple[int, int] | None:
     parts = signature.split("h")
     if len(parts) != 2:
         return None
@@ -198,10 +249,10 @@ def sm2_verify(user_id: str, signature: str, message: str, public_key: str) -> b
         return False
 
     e = _message_digest(user_id, message, point)
-    result = ECPoint.generator().multiply(s).add(point.multiply(t))
-    if result.infinity:
+    result = _ec.to_affine_public(_ec.mul_shamir(s, t, point.x, point.y))
+    if result is None:
         return False
-    return (e + result.x) % SM2_N == r
+    return (e + result[0]) % SM2_N == r
 
 
 def _calc_x(x: int) -> int:
@@ -213,7 +264,10 @@ def _calc_t(r: int, d: int, x_bar: int) -> int:
 
 
 def _calc_point(t: int, x_bar: int, p: ECPoint, r: ECPoint) -> ECPoint:
-    return p.add(r.multiply(x_bar)).multiply(t)
+    # x_bar and both points are public. Only t is secret.
+    scaled = _ec.mul_public(r.x, r.y, x_bar)
+    base = _ec.to_affine_public(_ec.add_affine(scaled, p.x, p.y))
+    return ECPoint._from_affine(base).multiply(t)
 
 
 def _create_s(

@@ -19,8 +19,6 @@ from .sm3 import SM3
 from .sm4 import SM4
 
 __all__ = [
-    "ECPoint",
-    "SM2KeySwapParams",
     "SM2_A",
     "SM2_B",
     "SM2_GX",
@@ -29,6 +27,8 @@ __all__ = [
     "SM2_P",
     "SM3",
     "SM4",
+    "ECPoint",
+    "SM2KeySwapParams",
     "bytes_to_hex",
     "hex_to_bytes",
     "sm2_check_sa",

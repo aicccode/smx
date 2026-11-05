@@ -8,7 +8,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
@@ -18,7 +18,7 @@ from smx import (
     sm2_decode_point,
     sm2_gen_key_pair,
     sm2_get_sa,
-)  # noqa: E402
+)
 
 SERVER_URL = "http://localhost:8080"
 ID_A = "python-client@demo.aicc"
@@ -29,7 +29,7 @@ HTTP_TIMEOUT_SECONDS = 10
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def post_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     print(f"Request: {body}")
     request = urllib.request.Request(
