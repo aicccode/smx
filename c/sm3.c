@@ -172,6 +172,8 @@ void smx_sm3_compress(uint32_t v[8], const uint8_t *p, size_t n) {
 
 /* buff_len value marking a context that received too much input, or was never set up. */
 #define SM3_FAILED (-1)
+/* buff_len value after a failed sm3_finish: the failure stands until new data or sm3_init. */
+#define SM3_FINISHED_FAILED (-2)
 
 void sm3_init(SM3 *ctx) {
     if (ctx == NULL) {
@@ -184,9 +186,21 @@ void sm3_init(SM3 *ctx) {
     memset(ctx->hash_hex, 0, sizeof(ctx->hash_hex));
 }
 
+/* A digest in the context describes earlier input, so any further use takes it away. */
+static void sm3_forget_digest(SM3 *ctx) {
+    if (ctx->hash_hex[0] != '\0') {
+        memset(ctx->hash_bytes, 0, sizeof(ctx->hash_bytes));
+        memset(ctx->hash_hex, 0, sizeof(ctx->hash_hex));
+    }
+}
+
 /* Accounts for len more bytes; marks the context failed if it cannot represent them. */
 static int sm3_reserve(SM3 *ctx, size_t len) {
     uint64_t used;
+    sm3_forget_digest(ctx);
+    if (ctx->buff_len == SM3_FINISHED_FAILED) {
+        ctx->buff_len = 0;
+    }
     if (ctx->buff_len < 0 || ctx->buff_len >= 64) {
         ctx->buff_len = SM3_FAILED;
         return 0;
@@ -214,7 +228,14 @@ void sm3_update_byte(SM3 *ctx, uint8_t b) {
 void sm3_update(SM3 *ctx, const uint8_t *data, size_t len) {
     size_t blocks;
 
-    if (ctx == NULL || len == 0) {
+    if (ctx == NULL) {
+        return;
+    }
+    if (len == 0) {
+        sm3_forget_digest(ctx);
+        if (ctx->buff_len == SM3_FINISHED_FAILED) {
+            ctx->buff_len = 0;
+        }
         return;
     }
     if (data == NULL) {
@@ -292,10 +313,16 @@ void sm3_finish(SM3 *ctx) {
     if (ctx == NULL) {
         return;
     }
+    /* a second finish with nothing in between keeps the result: the digest, or the failure */
+    if (ctx->buff_len == SM3_FINISHED_FAILED ||
+        (ctx->hash_hex[0] != '\0' && ctx->buff_len == 0 && ctx->data_bits_len == 0)) {
+        return;
+    }
     if (sm3_finalize(ctx, ctx->hash_bytes)) {
         smx_hex_encode(ctx->hash_bytes, 32, ctx->hash_hex, 'A');
         ctx->hash_hex[64] = '\0';
     } else {
         memset(ctx->hash_hex, 0, sizeof(ctx->hash_hex));
+        ctx->buff_len = SM3_FINISHED_FAILED;
     }
 }

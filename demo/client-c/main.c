@@ -25,50 +25,178 @@ static void check(const char *name, int cond) {
     }
 }
 
-/* ========== Simple JSON helpers (flat objects only) ========== */
+/* ========== A small strict JSON reader ========== */
 
-/* Extract a string value for a given key from JSON. Returns malloc'd string or
- * NULL. */
-static char *json_get_string(const char *json, const char *key) {
-    char pattern[256];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *p = strstr(json, pattern);
-    if (!p)
-        return NULL;
-    p += strlen(pattern);
-    while (*p == ' ' || *p == ':' || *p == '\t')
+/* Nesting beyond this is refused rather than followed, so a deep document cannot overflow. */
+#define JSON_MAX_DEPTH 32
+
+static const char *json_skip_space(const char *p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
         p++;
-    if (*p != '"')
-        return NULL;
+    return p;
+}
+
+/* p is at the opening quote. Returns the position after the closing quote, or NULL. */
+static const char *json_skip_string(const char *p) {
     p++;
-    const char *end = p;
-    while (*end && *end != '"') {
-        if (*end == '\\' && end[1] != '\0')
-            end++;
-        end++;
+    while (*p != '"') {
+        if ((unsigned char)*p < 0x20)
+            return NULL; /* the end of the text, or a raw control character */
+        if (*p == '\\') {
+            p++;
+            if (*p == '\0')
+                return NULL;
+        }
+        p++;
     }
-    if (*end != '"')
-        return NULL; /* unterminated string */
-    size_t len = (size_t)(end - p);
-    char *result = (char *)malloc(len + 1);
+    return p + 1;
+}
+
+/* Returns the position after the value at p, or NULL if it is malformed. */
+static const char *json_skip_value(const char *p, int depth) {
+    if (depth > JSON_MAX_DEPTH)
+        return NULL;
+    p = json_skip_space(p);
+    if (*p == '"')
+        return json_skip_string(p);
+    if (*p == '{' || *p == '[') {
+        char close = *p == '{' ? '}' : ']';
+        int is_object = *p == '{';
+        p = json_skip_space(p + 1);
+        if (*p == close)
+            return p + 1;
+        for (;;) {
+            if (is_object) {
+                p = json_skip_space(p);
+                if (*p != '"')
+                    return NULL;
+                p = json_skip_string(p);
+                if (!p)
+                    return NULL;
+                p = json_skip_space(p);
+                if (*p != ':')
+                    return NULL;
+                p++;
+            }
+            p = json_skip_value(p, depth + 1);
+            if (!p)
+                return NULL;
+            p = json_skip_space(p);
+            if (*p == close)
+                return p + 1;
+            if (*p != ',')
+                return NULL;
+            p++;
+        }
+    }
+    if (strncmp(p, "true", 4) == 0)
+        return p + 4;
+    if (strncmp(p, "false", 5) == 0)
+        return p + 5;
+    if (strncmp(p, "null", 4) == 0)
+        return p + 4;
+    {
+        char *end;
+        strtod(p, &end);
+        return end == p ? NULL : end;
+    }
+}
+
+/* A whole document, one object and nothing after it. */
+static int json_is_valid_object(const char *json) {
+    const char *p = json_skip_space(json);
+    if (*p != '{')
+        return 0;
+    p = json_skip_value(p, 0);
+    return p && *json_skip_space(p) == '\0';
+}
+
+/*
+ * The value of a top-level member of a document that passed json_is_valid_object, or NULL. It
+ * walks the members, so that text inside some other value can never be taken for the key.
+ */
+static const char *json_find(const char *json, const char *key) {
+    size_t key_len = strlen(key);
+    const char *p = json_skip_space(json_skip_space(json) + 1);
+    while (*p == '"') {
+        const char *name = p + 1;
+        const char *after = json_skip_string(p);
+        size_t name_len = (size_t)(after - name) - 1;
+        const char *value = json_skip_space(json_skip_space(after) + 1);
+        if (name_len == key_len && memcmp(name, key, key_len) == 0)
+            return value;
+        p = json_skip_space(json_skip_value(value, 1));
+        if (*p != ',')
+            return NULL;
+        p = json_skip_space(p + 1);
+    }
+    return NULL;
+}
+
+/* A string member, escapes decoded, as a malloc'd string. NULL if absent or another type. */
+static char *json_get_string(const char *json, const char *key) {
+    const char *p = json_find(json, key);
+    const char *end;
+    char *result, *q;
+    if (!p || *p != '"')
+        return NULL;
+    end = json_skip_string(p);
+    result = (char *)malloc((size_t)(end - p));
     if (!result)
         return NULL;
-    memcpy(result, p, len);
-    result[len] = '\0';
+    q = result;
+    for (p++; p < end - 1; p++) {
+        if (*p != '\\') {
+            *q++ = *p;
+            continue;
+        }
+        p++;
+        switch (*p) {
+        case 'n':
+            *q++ = '\n';
+            break;
+        case 't':
+            *q++ = '\t';
+            break;
+        case 'r':
+            *q++ = '\r';
+            break;
+        case 'b':
+            *q++ = '\b';
+            break;
+        case 'f':
+            *q++ = '\f';
+            break;
+        case 'u':
+            /* nothing in this protocol needs them, and a NUL must not end the string early */
+            free(result);
+            return NULL;
+        default:
+            *q++ = *p;
+            break;
+        }
+    }
+    *q = '\0';
     return result;
 }
 
-/* Extract a boolean value for a given key from JSON. */
+/* True only for the literal true: not "true", "false" as a string, 1, or anything else. */
 static int json_get_bool(const char *json, const char *key) {
-    char pattern[256];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *p = strstr(json, pattern);
-    if (!p)
+    const char *p = json_find(json, key);
+    const char *end;
+    if (!p || strncmp(p, "true", 4) != 0)
         return 0;
-    p += strlen(pattern);
-    while (*p == ' ' || *p == ':' || *p == '\t')
-        p++;
-    return strncmp(p, "true", 4) == 0;
+    end = json_skip_space(p + 4);
+    return *end == ',' || *end == '}';
+}
+
+/* Server text may hold anything: control characters reaching a terminal can drive it. */
+static void print_untrusted(const char *label, const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+    fputs(label, stdout);
+    for (; *p; p++)
+        fputc(*p < 0x20 || *p == 0x7F ? '?' : *p, stdout);
+    fputc('\n', stdout);
 }
 
 /* ========== libcurl response buffer ========== */
@@ -96,7 +224,11 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
     return total;
 }
 
-/* POST JSON to url, returns response body (malloc'd). Caller must free(). */
+/*
+ * POST JSON to url, returns the response body (malloc'd), or NULL for a network error, the
+ * deadline passing, too much data, or anything other than one valid JSON object. Caller must
+ * free().
+ */
 static char *post_json(const char *url, const char *json_body) {
     CURL *curl = curl_easy_init();
     if (!curl)
@@ -118,6 +250,7 @@ static char *post_json(const char *url, const char *json_body) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    /* a limit on the whole request, so a server dripping bytes cannot stall the client */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 #if LIBCURL_VERSION_NUM >= 0x075500
@@ -129,7 +262,7 @@ static char *post_json(const char *url, const char *json_body) {
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK) {
+    if (res != CURLE_OK || !json_is_valid_object(buf.data)) {
         free(buf.data);
         return NULL;
     }
@@ -191,8 +324,7 @@ int main(void) {
 
     char *init_resp = post_json(SERVER_URL "/api/keyswap/init", init_body);
     if (!init_resp) {
-        fprintf(stderr, "Failed to connect to server. Make sure Java server is "
-                        "running on port 8080\n");
+        fprintf(stderr, "No valid response from the server on port 8080. Is it running?\n");
         curl_global_cleanup();
         return 1;
     }
@@ -228,6 +360,28 @@ int main(void) {
         fprintf(stderr, "Invalid key material in init response\n");
         check("init response key material is valid", 0);
         goto cleanup;
+    }
+
+    /*
+     * pB and IDb arrive in the same unauthenticated response as everything else, so an impostor
+     * can send its own key and pass key confirmation. Only a key known in advance stops that.
+     */
+    {
+        const char *pinned_hex = getenv("SM2_DEMO_SERVER_PUBKEY");
+        if (pinned_hex && pinned_hex[0] != '\0') {
+            ECPoint pinned = ec_point_from_hex_encoded(pinned_hex);
+            int same = !pinned.infinity && bigint256_compare(&pinned.x.value, &pB.x.value) == 0 &&
+                       bigint256_compare(&pinned.y.value, &pB.y.value) == 0;
+            check("server key matches SM2_DEMO_SERVER_PUBKEY", same);
+            if (!same) {
+                fprintf(stderr, "Server public key does not match SM2_DEMO_SERVER_PUBKEY. "
+                                "Refusing to continue.\n");
+                goto cleanup;
+            }
+        } else {
+            printf("  WARNING: the server is UNAUTHENTICATED. Set SM2_DEMO_SERVER_PUBKEY to pin\n"
+                   "  its key; without that, an impostor can complete this exchange.\n");
+        }
     }
 
     SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra, IDA, IDb, sb_bytes, 32);
@@ -330,9 +484,9 @@ int main(void) {
         char *decrypted = sm4_decrypt(&sm4, serverCiphertext);
         int clientDecryptOk = decrypted && strcmp(decrypted, serverPlaintext) == 0;
         check("client decrypted server message", clientDecryptOk);
-        printf("  Server plaintext: %s\n", serverPlaintext);
+        print_untrusted("  Server plaintext: ", serverPlaintext);
         if (decrypted)
-            printf("  Client decrypted: %s\n", decrypted);
+            print_untrusted("  Client decrypted: ", decrypted);
 
         if (serverDecryptOk && clientDecryptOk)
             printf("\n  Bidirectional Crypto test PASSED!\n");

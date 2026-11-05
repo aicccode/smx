@@ -66,7 +66,11 @@ typedef struct {
 /*
  * Input beyond 2^61 - 1 bytes in total cannot be represented in SM3's 64-bit length, so
  * it is refused rather than wrapped: sm3_finish then leaves hash_hex empty and hash_bytes
- * zero. sm3_finish resets the context for reuse.
+ * zero. An empty hash_hex always means there is no digest: the context is not finished yet,
+ * or it failed.
+ *
+ * sm3_finish resets the context for reuse. Calling it again at once keeps the same result.
+ * Any update removes the digest of the previous message, so a stale one can never be read.
  */
 void sm3_init(SM3 *ctx);
 void sm3_update_byte(SM3 *ctx, uint8_t b);
@@ -104,7 +108,8 @@ void sm4_set_key(SM4 *ctx, const uint8_t *key, size_t key_len, const uint8_t *iv
 char *sm4_encrypt(SM4 *ctx, const char *plaintext);
 /*
  * Returns the malloc'd plaintext, terminated by a NUL, or NULL on any failure: no key set,
- * malformed hex, bad length or bad padding, all indistinguishable. Caller must free().
+ * malformed hex (lowercase only, as sm4_encrypt emits), bad length or bad padding, all
+ * indistinguishable. Caller must free(). The result is not checked as UTF-8.
  * Binary plaintext may hold NUL bytes that a C string cannot show; use sm4_decrypt_bytes
  * when it can.
  */
@@ -188,7 +193,7 @@ char *sm2_encrypt(const char *plaintext, const char *public_key_hex);
 char *sm2_decrypt(const char *ciphertext_hex, const char *private_key_hex);
 /* Returns malloc'd signature string "r_hex h s_hex". Caller must free(). NULL on error. */
 char *sm2_sign(const char *user_id, const char *message, const char *private_key_hex);
-/* 1 if valid, otherwise 0. r and s must be exactly 64 hex digits each. */
+/* 1 if valid, otherwise 0. r and s must be exactly 64 lowercase hex digits each. */
 int sm2_verify(const char *user_id, const char *signature, const char *message,
                const char *public_key_hex);
 

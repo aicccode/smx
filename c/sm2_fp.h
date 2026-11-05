@@ -50,7 +50,7 @@ static inline void fe_reduce_once(Fe r, const uint64_t v[4], uint64_t top) {
     uint64_t t2 = smx_subb(v[2], FE_P[2], b, &b);
     uint64_t t3 = smx_subb(v[3], FE_P[3], b, &b);
     /* keep v only when the subtraction borrowed past the top word */
-    uint64_t keep = smx_ct_barrier((uint64_t)0 - (b & (top ^ 1)));
+    uint64_t keep = smx_mask_from_bit(b & (top ^ 1));
     r[0] = t0 ^ (keep & (t0 ^ v[0]));
     r[1] = t1 ^ (keep & (t1 ^ v[1]));
     r[2] = t2 ^ (keep & (t2 ^ v[2]));
@@ -143,7 +143,7 @@ static inline void fe_sub(Fe r, const Fe a, const Fe b) {
     v[1] = smx_subb(a[1], b[1], c, &c);
     v[2] = smx_subb(a[2], b[2], c, &c);
     v[3] = smx_subb(a[3], b[3], c, &c);
-    mask = smx_ct_barrier((uint64_t)0 - c);
+    mask = smx_mask_from_bit(c);
     r[0] = smx_addc(v[0], FE_P[0] & mask, 0, &c);
     r[1] = smx_addc(v[1], FE_P[1] & mask, c, &c);
     r[2] = smx_addc(v[2], FE_P[2] & mask, c, &c);

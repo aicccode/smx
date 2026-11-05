@@ -158,7 +158,7 @@ uint8_t *sm2_decrypt_bytes(const char *ciphertext_hex, const char *private_key_h
                            size_t *out_len) {
     size_t ct_len, c2_len, off;
     char c1_hex[131];
-    uint8_t c3[32], computed[32], key[32], coord[32];
+    uint8_t c1_bytes[65], c3[32], computed[32], key[32], coord[32];
     uint8_t any_key_bit = 0;
     uint8_t *plain;
     ECPoint c1, p2;
@@ -183,17 +183,21 @@ uint8_t *sm2_decrypt_bytes(const char *ciphertext_hex, const char *private_key_h
     if ((uint64_t)c2_len > SM2_MAX_KDF_BYTES) {
         return NULL;
     }
+    /* one spelling per ciphertext: lowercase, as sm2_encrypt emits, all the way through */
+    if (!smx_hex_decode_lower(ciphertext_hex, 65, c1_bytes)) {
+        return NULL;
+    }
     memcpy(c1_hex, ciphertext_hex, 130);
     c1_hex[130] = '\0';
     c1 = ec_point_from_hex_encoded(c1_hex);
-    if (c1.infinity || !smx_hex_decode(ciphertext_hex + 130, 32, c3)) {
+    if (c1.infinity || !smx_hex_decode_lower(ciphertext_hex + 130, 32, c3)) {
         return NULL;
     }
     plain = (uint8_t *)malloc(c2_len + 1);
     if (plain == NULL) {
         return NULL;
     }
-    if (!smx_hex_decode(ciphertext_hex + 194, c2_len, plain) ||
+    if (!smx_hex_decode_lower(ciphertext_hex + 194, c2_len, plain) ||
         !parse_private_key(private_key_hex, &d)) {
         free(plain);
         return NULL;
@@ -357,10 +361,10 @@ char *sm2_sign(const char *user_id, const char *message, const char *private_key
     return sm2_sign_bytes(user_id, (const uint8_t *)message, strlen(message), private_key_hex);
 }
 
-/* Exactly 64 hex digits. */
+/* Exactly 64 lowercase hex digits: one signature must have one spelling. */
 static int parse_signature_scalar(const char *hex, BigInt256 *out) {
     uint8_t be[32];
-    if (!smx_hex_decode(hex, 32, be)) {
+    if (!smx_hex_decode_lower(hex, 32, be)) {
         return 0;
     }
     *out = bigint256_from_be_bytes(be, 32);

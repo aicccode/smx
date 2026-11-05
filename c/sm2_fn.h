@@ -25,7 +25,7 @@ static inline void fn_reduce_once(uint64_t r[4], const uint64_t v[4], uint64_t t
     uint64_t t1 = smx_subb(v[1], FN_N[1], b, &b);
     uint64_t t2 = smx_subb(v[2], FN_N[2], b, &b);
     uint64_t t3 = smx_subb(v[3], FN_N[3], b, &b);
-    uint64_t keep = smx_ct_barrier((uint64_t)0 - (b & (top ^ 1)));
+    uint64_t keep = smx_mask_from_bit(b & (top ^ 1));
     r[0] = t0 ^ (keep & (t0 ^ v[0]));
     r[1] = t1 ^ (keep & (t1 ^ v[1]));
     r[2] = t2 ^ (keep & (t2 ^ v[2]));

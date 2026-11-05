@@ -62,11 +62,14 @@ check-sanitizers:
 		-fno-sanitize-recover=all -o /tmp/smx_san_sec test_security.c bigint256.c sm3.c sm2.c; \
 	/tmp/smx_san_sec | tail -1
 
-# Secret-dependent branches and addresses, detected with MemorySanitizer. Capped at
+# Secret-dependent branches and addresses: the compiled code's branch shapes
+# (tools/check_ct_asm.py), a single-stepped instruction trace compared between secret inputs
+# (tools/check_ct_trace.sh; control flow only), then MemorySanitizer. Capped at
 # SM4 tier 2 because clang's MSan rejects the GFNI intrinsics outright. Tier 3 shares
 # all of its structure with tier 2 and differs only in the S-box instructions.
 check-ct:
 	python3 tools/check_ct_asm.py
+	tools/check_ct_trace.sh
 	@for tier in 2 1 0; do \
 		clang -std=gnu99 -O2 -g -DSMX_CT_TEST -DSMX_SM4_MAX_TIER=$$tier -fsanitize=memory \
 			-fno-sanitize-memory-param-retval -fno-sanitize-recover=all \

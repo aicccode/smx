@@ -603,16 +603,26 @@ void sm4_init(SM4 *ctx) {
 }
 
 void sm4_set_key(SM4 *ctx, const uint8_t *key, size_t key_len, const uint8_t *iv, size_t iv_len) {
+    uint8_t key_copy[16], iv_copy[16];
+    int valid;
     if (ctx == NULL) {
         return;
     }
+    /* key or iv may point into ctx itself, so they are read before it is cleared */
+    valid = key != NULL && iv != NULL && key_len == 16 && iv_len == 16;
+    if (valid) {
+        memmove(key_copy, key, 16);
+        memmove(iv_copy, iv, 16);
+    }
     smx_wipe(ctx, sizeof(SM4));
-    if (key == NULL || iv == NULL || key_len != 16 || iv_len != 16) {
+    if (!valid) {
         return; /* the context stays unset, and encrypt and decrypt return NULL */
     }
-    sm4_expand_key(ctx, key);
-    memcpy(ctx->iv, iv, 16);
+    sm4_expand_key(ctx, key_copy);
+    memcpy(ctx->iv, iv_copy, 16);
     ctx->key_state = SM4_KEY_SET;
+    smx_wipe(key_copy, sizeof(key_copy));
+    smx_wipe(iv_copy, sizeof(iv_copy));
 }
 
 char *sm4_encrypt_bytes(SM4 *ctx, const uint8_t *data, size_t input_len) {
@@ -720,11 +730,29 @@ static SMX_NOINLINE uint64_t pkcs7_check(const uint8_t *input, size_t len, size_
     uint64_t i;
     for (i = 0; i < 16; i++) {
         /* all ones when i < pad, that is, when this byte belongs to the padding */
-        uint64_t covered = smx_ct_barrier((uint64_t)0 - ((i - pad) >> 63));
+        uint64_t covered = smx_mask_from_bit((i - pad) >> 63);
         diff |= covered & (input[len - 1 - i] ^ pad);
     }
     *out_len = len - (size_t)pad;
     return ok & smx_mask_is_zero(diff);
+}
+
+/*
+ * Everything that follows the hex decode, with the same work whether the padding is valid or
+ * not: a timing difference here would be a padding oracle even for a caller that hides the
+ * error. There is no UTF-8 step in C, since the result is bytes. The buffer is erased with a
+ * mask, so a valid result passes through the same writes. Returns the validity mask.
+ */
+static SMX_NOINLINE uint64_t sm4_decrypt_core(const SM4 *ctx, uint8_t *buf, size_t byte_len,
+                                              size_t *plain_len) {
+    uint64_t valid;
+    size_t i;
+    sm4_cbc_decrypt_in_place(ctx, buf, byte_len / 16);
+    valid = pkcs7_check(buf, byte_len, plain_len);
+    for (i = 0; i < byte_len; i++) {
+        buf[i] = (uint8_t)(buf[i] & valid);
+    }
+    return valid;
 }
 
 uint8_t *sm4_decrypt_bytes(SM4 *ctx, const char *ciphertext_hex, size_t *out_len) {
@@ -747,17 +775,14 @@ uint8_t *sm4_decrypt_bytes(SM4 *ctx, const char *ciphertext_hex, size_t *out_len
     if (buf == NULL) {
         return NULL;
     }
-    if (!smx_hex_decode(ciphertext_hex, byte_len, buf)) {
+    if (!smx_hex_decode_lower(ciphertext_hex, byte_len, buf)) {
         free(buf);
         return NULL;
     }
 
-    sm4_cbc_decrypt_in_place(ctx, buf, byte_len / 16);
-
-    valid = pkcs7_check(buf, byte_len, &plain_len);
+    valid = sm4_decrypt_core(ctx, buf, byte_len, &plain_len);
     SMX_DECLASSIFY(&valid, sizeof(valid));
     if (!valid) {
-        smx_wipe(buf, byte_len);
         free(buf);
         return NULL;
     }

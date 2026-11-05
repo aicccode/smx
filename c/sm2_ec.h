@@ -211,7 +211,7 @@ static inline unsigned ec_booth_digit(const uint64_t k[4], int bits, int i, uint
         }
         w &= mask;
     }
-    sign = smx_ct_barrier((uint64_t)0 - (w >> bits));
+    sign = smx_mask_from_bit(w >> bits);
     d = ((uint64_t)1 << (bits + 1)) - w - 1;
     d = (d & sign) | (w & ~sign);
     *negative = sign;

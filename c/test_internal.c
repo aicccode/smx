@@ -707,7 +707,8 @@ static void test_generic(void) {
         be = to_big(e.v);
         bigint256_mod_pow(&r, &ba, &be, &bm);
         if (is_zero4(e.v)) {
-            CHECK("mod_pow exponent 0", bigint256_is_one(&r));
+            CHECK("mod_pow exponent 0",
+                  bigint256_is_one(&bm) ? bigint256_is_zero(&r) : bigint256_is_one(&r));
         } else {
             ref_powmod(want, a.v, e.v, m.v);
             CHECK("bigint256_mod_pow", ref_cmp(r.limbs, want, 4) == 0);
@@ -746,6 +747,31 @@ static void test_generic(void) {
             bigint256_mod_mul(&r, &ba, &bone, &bm);
             ref_mulmod(want, ba.limbs, bone.limbs, bm.limbs);
             CHECK("Knuth extreme digits", ref_cmp(r.limbs, want, 4) == 0);
+        }
+    }
+    /* inverses, against the definition: a * r = 1 mod m, or 0 only when none exists */
+    for (i = 0; i < 2000 * scale; i++) {
+        U256 a = interesting_operand(), m = interesting_modulus();
+        BigInt256 ba = to_big(a.v), bm = to_big(m.v), r, check, one = bigint256_one();
+        bigint256_mod_inverse(&r, &ba, &bm);
+        if (bigint256_is_one(&bm)) {
+            CHECK("inverse mod 1", bigint256_is_zero(&r));
+        } else if (bigint256_is_zero(&r)) {
+            /* no inverse: gcd > 1, shown by a shared factor or a zero residue */
+            uint64_t x[4], y[4];
+            ref_reduce(x, a.v, m.v);
+            memcpy(y, m.v, 32);
+            while (!is_zero4(x)) {
+                uint64_t t[4];
+                ref_reduce(t, y, x);
+                memcpy(y, x, 32);
+                memcpy(x, t, 32);
+            }
+            CHECK("zero means no inverse", ref_cmp(y, one.limbs, 4) != 0);
+        } else {
+            bigint256_mod_mul(&check, &ba, &r, &bm);
+            CHECK("a * inverse = 1", bigint256_is_one(&check));
+            CHECK("inverse is reduced", bigint256_compare(&r, &bm) < 0);
         }
     }
     {
@@ -830,6 +856,22 @@ static void test_hex(void) {
     CHECK("hex_to_bytes rejects 0x prefix", hex_to_bytes("0xAB", back, 1) == -1);
     CHECK("hex_to_bytes rejects odd length", hex_to_bytes("ABC", back, 2) == -1);
     CHECK("hex_to_bytes rejects non-hex", hex_to_bytes("zz", back, 1) == -1);
+    CHECK("lowercase decoder takes lowercase", smx_hex_decode_lower("ab09", 2, back) == 1);
+    CHECK("lowercase decoder refuses A", smx_hex_decode_lower("Ab09", 2, back) == 0);
+    {
+        /* both lane position and the scalar tail, and the SIMD path */
+        char text_lower[67];
+        int p2;
+        memset(text_lower, 'c', 66);
+        text_lower[66] = '\0';
+        CHECK("lowercase 33 bytes", smx_hex_decode_lower(text_lower, 33, data) == 1);
+        for (p2 = 0; p2 < 66; p2++) {
+            text_lower[p2] = 'C';
+            CHECK("uppercase anywhere", smx_hex_decode_lower(text_lower, 33, data) == 0);
+            CHECK("either case decoder", smx_hex_decode(text_lower, 33, data) == 1);
+            text_lower[p2] = 'c';
+        }
+    }
 }
 
 /* ---- group ---- */

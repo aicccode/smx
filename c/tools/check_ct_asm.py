@@ -8,6 +8,13 @@ function, and whatever it calls in the same binary:
 
   * no conditional jump goes forward. A forward jump is how a load gets skipped. The only
     conditional jumps left are the backward edges of loops over fixed counts.
+  * no unconditional jump goes backward. Loops compile to a conditional jump at the bottom,
+    so this appears when a block has been moved out of line: at commit 751d51f the scan in
+    ec_mul_g became "cmp selected, index; jne back" with the loads after it and a jmp back,
+    so that its conditional jump was backward, like a loop counter, and passed the first rule.
+
+This is a shape test and cannot follow data. tools/check_ct_trace.sh is the check that actually
+compares execution, on the platforms where it can run; this one also runs on arm64.
 
 The scans must also read the whole table, so ct_comb_select and ct_var_select must contain a
 loop, or enough loads to cover every entry when fully unrolled.
@@ -62,12 +69,22 @@ def target_of(args):
 # Tests of public loop counts, read by hand: the addition chains' n parameter when they stay
 # out of line, and the end of fn_inv's walk over the digits of the public exponent.
 PUBLIC_COUNT_GUARDS = {"fe_sqr_n": 1, "fn_mont_sqr_n": 1, "fn_inv": 1}
+PUBLIC_LOOP_JUMPS = {"fe_sqr_n": 1, "fn_mont_sqr_n": 1, "fn_inv": 1}
 
 
 def check_function(name, insns):
     problems = []
     allowed = PUBLIC_COUNT_GUARDS.get(strip_symbol(name).split(".")[0], 0)
+    back_jumps = PUBLIC_LOOP_JUMPS.get(strip_symbol(name).split(".")[0], 0)
     for addr, op, args in insns:
+        if op in ("jmp", "b"):
+            target = target_of(args)
+            start = insns[0][0]
+            if target is not None and start <= target < addr:
+                if back_jumps > 0:
+                    back_jumps -= 1
+                else:
+                    problems.append(f"{name}: backward unconditional jump at {addr:x}: {op} {args}")
         if CONDITIONAL.match(op):
             target = target_of(args)
             if target is None:
@@ -160,7 +177,7 @@ def main():
     if failed:
         print(f"check_ct_asm: {failed} problems")
         return 1
-    print("check_ct_asm: no forward conditional jump in any secret-handling function")
+    print("check_ct_asm: no suspect jump in any secret-handling function")
     return 0
 
 

@@ -130,7 +130,7 @@ static int private_key_in_range(const BigInt256 *d) {
     (void)smx_subb(d->limbs[1], SM2_N_MINUS_1.limbs[1], b, &b);
     (void)smx_subb(d->limbs[2], SM2_N_MINUS_1.limbs[2], b, &b);
     (void)smx_subb(d->limbs[3], SM2_N_MINUS_1.limbs[3], b, &b);
-    in_range &= smx_ct_barrier((uint64_t)0 - b);
+    in_range &= smx_mask_from_bit(b);
     SMX_DECLASSIFY(&in_range, sizeof(in_range));
     return in_range != 0;
 }

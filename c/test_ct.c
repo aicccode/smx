@@ -86,6 +86,7 @@ static void test_hex(void) {
         SECRET(secret, len);
         smx_hex_encode(secret, len, hex, 'a');
         smx_hex_decode(hex, len, back);
+        smx_hex_decode_lower(hex, len, back);
     }
 }
 
@@ -131,10 +132,10 @@ static void test_full_operations(void) {
     char pri[65] = "3945208F7B2144B13F36E38AC6D39F95889393692860B51A42FB81EF4DF7C5B8";
     static const char pub[] = "0409F9DF311E5421A150DD7D161E4BC5C672179FAD1833FC076BB08FF356F35020"
                               "CCEA490CE26775A52DC6EA718CC1AA600AED05FBF35E084A6632F6072DA9AD13";
-    static const char ct[] = "0404EBFC718E8D1798620432268E77FEB6415E2EDE0E073C0F4F640ECD2E149A73"
-                             "E858F9D81E5430A57B36DAAB8F950A3C64E6EE6A63094D99283AFF767E124DF0"
-                             "59983C18F809E262923C53AEC295D30383B54E39D609D160AFCB1908D0BD8766"
-                             "21886CA989CA9C7D58087307CA93092D651EFA";
+    static const char ct[] = "0404ebfc718e8d1798620432268e77feb6415e2ede0e073c0f4f640ecd2e149a73"
+                             "e858f9d81e5430a57b36daab8f950a3c64e6ee6a63094d99283aff767e124df0"
+                             "59983c18f809e262923c53aec295d30383b54e39d609d160afcb1908d0bd8766"
+                             "21886ca989ca9c7d58087307ca93092d651efa";
     char gen_pri[65], gen_pub[131];
     char *out;
     BigInt256 d, r;

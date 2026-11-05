@@ -64,9 +64,9 @@ static inline uint64_t smx_addc(uint64_t a, uint64_t b, uint64_t c, uint64_t *co
     *co = (uint64_t)(t >> 64);
     return (uint64_t)t;
 #else
-    uint64_t s = a + b;
-    uint64_t r = s + c;
-    *co = (uint64_t)(s < a) | (uint64_t)(r < s);
+    /* carry from the bits alone: comparisons could compile to branches */
+    uint64_t r = a + b + c;
+    *co = ((a & b) | ((a | b) & ~r)) >> 63;
     return r;
 #endif
 }
@@ -82,9 +82,8 @@ static inline uint64_t smx_subb(uint64_t a, uint64_t b, uint64_t c, uint64_t *bo
     *bo = (uint64_t)(t >> 64) & 1;
     return (uint64_t)t;
 #else
-    uint64_t d = a - b;
-    uint64_t r = d - c;
-    *bo = (uint64_t)(a < b) | (uint64_t)(d < c);
+    uint64_t r = a - b - c;
+    *bo = ((~a & b) | ((~a | b) & r)) >> 63;
     return r;
 #endif
 }
@@ -114,8 +113,14 @@ static inline uint64_t smx_mac(uint64_t a, uint64_t b, uint64_t t, uint64_t c, u
 /*
  * Hides a value from the optimizer. An optimizer that can see a mask is always 0 or all
  * ones may turn masked code back into a compare and a branch, which skips the very memory
- * accesses the mask exists to keep uniform. Emits no instructions. Every mask derived from
- * a secret goes through here; tools/check_ct_asm.py checks the compiled result.
+ * accesses the mask exists to keep uniform. This really happened: clang -O3 made the table
+ * scan in ec_mul_g skip the loads of every entry but the selected one.
+ *
+ * So a mask needs a barrier on both sides, as the smx_mask_* helpers below do. Without one on
+ * the finished mask, the compiler knows it is 0 or all ones, and can skip the masked work with
+ * a branch, as above. Without one on the value it is made from, the compiler can compute it
+ * with a branch, which is what happened in the hex tail. It emits no instructions.
+ * tools/check_ct_asm.py and test_ct_trace.c check the compiled result.
  *
  * Under SMX_CT_TEST it is the identity, because MemorySanitizer treats any uninitialized
  * operand of an asm statement as an error, and it must be able to track the value through.
@@ -134,7 +139,17 @@ static inline uint64_t smx_ct_barrier(uint64_t x) {
 
 /* All ones if x == 0, otherwise zero. No branches. */
 static inline uint64_t smx_mask_is_zero(uint64_t x) {
-    return smx_ct_barrier(((x | ((uint64_t)0 - x)) >> 63) - 1);
+    return smx_ct_barrier((smx_ct_barrier(x | ((uint64_t)0 - x)) >> 63) - 1);
+}
+
+/* All ones if bit is 1, zero if it is 0. */
+static inline uint64_t smx_mask_from_bit(uint64_t bit) {
+    return smx_ct_barrier((uint64_t)0 - smx_ct_barrier(bit));
+}
+
+/* All ones if the top bit of the 32-bit value v is set, otherwise zero. */
+static inline uint32_t smx_mask_from_sign32(uint32_t v) {
+    return (uint32_t)smx_ct_barrier((uint32_t)0 - ((uint32_t)smx_ct_barrier(v) >> 31));
 }
 
 /* Schoolbook 256x256 -> 512. r must not alias a or b. */
@@ -215,7 +230,7 @@ static inline void smx_mod_add(uint64_t r[4], const uint64_t a[4], const uint64_
     t[1] = smx_subb(v[1], m[1], bo, &bo);
     t[2] = smx_subb(v[2], m[2], bo, &bo);
     t[3] = smx_subb(v[3], m[3], bo, &bo);
-    keep = smx_ct_barrier((uint64_t)0 - (bo & (c ^ 1)));
+    keep = smx_mask_from_bit(bo & (c ^ 1));
     for (i = 0; i < 4; i++) {
         r[i] = t[i] ^ (keep & (t[i] ^ v[i]));
     }
@@ -229,7 +244,7 @@ static inline void smx_mod_sub(uint64_t r[4], const uint64_t a[4], const uint64_
     v[1] = smx_subb(a[1], b[1], c, &c);
     v[2] = smx_subb(a[2], b[2], c, &c);
     v[3] = smx_subb(a[3], b[3], c, &c);
-    mask = smx_ct_barrier((uint64_t)0 - c);
+    mask = smx_mask_from_bit(c);
     r[0] = smx_addc(v[0], m[0] & mask, 0, &c);
     r[1] = smx_addc(v[1], m[1] & mask, c, &c);
     r[2] = smx_addc(v[2], m[2] & mask, c, &c);
@@ -292,6 +307,12 @@ void smx_hex_encode(const uint8_t *data, size_t len, char *out, char alpha);
  * It reads everything either way, so the time does not depend on where a bad digit is.
  */
 int smx_hex_decode(const char *hex, size_t len, uint8_t *out);
+
+/*
+ * The same, accepting only lowercase, which is what this library emits. Signatures and
+ * ciphertexts must have one spelling, or a replay cache keyed on the string can be bypassed.
+ */
+int smx_hex_decode_lower(const char *hex, size_t len, uint8_t *out);
 
 /* ---- SM3 internals (sm3.c), for hashing that never needs hash_hex ---- */
 

@@ -83,7 +83,10 @@ CT char ct_hex_digit(unsigned n, unsigned delta) {
     return hex_digit(n, delta);
 }
 CT unsigned ct_hex_nibble(char c, unsigned *bad) {
-    return hex_nibble(c, bad);
+    return hex_nibble(c, bad, 0x20u);
+}
+CT unsigned ct_hex_nibble_lower(char c, unsigned *bad) {
+    return hex_nibble(c, bad, 0u);
 }
 #ifdef SMX_HAVE_SSE2
 CT void ct_hex_encode_block(const uint8_t *d, char *o) {
@@ -130,8 +133,9 @@ void (*volatile ct_keep[])(void) = {
     (void (*)(void))ct_jac_complete, (void (*)(void))ct_mod_add,
     (void (*)(void))ct_mod_sub,      (void (*)(void))ct_compare,
     (void (*)(void))ct_pkcs7,        (void (*)(void))ct_hex_digit,
-    (void (*)(void))ct_hex_nibble,   (void (*)(void))ct_sbox_circuit,
-    (void (*)(void))ct_sm4_scalar,   (void (*)(void))ct_bytes_equal,
+    (void (*)(void))ct_hex_nibble,   (void (*)(void))ct_hex_nibble_lower,
+    (void (*)(void))ct_sbox_circuit, (void (*)(void))ct_sm4_scalar,
+    (void (*)(void))ct_bytes_equal,
 };
 
 int main(void) {

@@ -18,7 +18,7 @@
 
 /* n in [0, 15] to its ASCII digit, without a branch or a table. */
 static inline char hex_digit(unsigned n, unsigned alpha_delta) {
-    unsigned letter = (unsigned)smx_ct_barrier(0u - ((9u - n) >> 31));
+    unsigned letter = smx_mask_from_sign32(9u - n);
     return (char)(n + '0' + (letter & alpha_delta));
 }
 
@@ -58,18 +58,21 @@ void smx_hex_encode(const uint8_t *data, size_t len, char *out, char alpha) {
     }
 }
 
-/* Hex digit to its value, with *bad accumulating an error flag. No branch or table. */
-static inline unsigned hex_nibble(char ch, unsigned *bad) {
+/*
+ * Hex digit to its value, with *bad accumulating an error flag. No branch or table. fold is
+ * 0x20 to accept both cases, and 0 for lowercase only.
+ */
+static inline unsigned hex_nibble(char ch, unsigned *bad, unsigned fold) {
     unsigned c = (unsigned char)ch;
     unsigned d = c - '0';
-    unsigned l = (c | 0x20u) - 'a';
-    unsigned is_digit = (unsigned)smx_ct_barrier(0u - (((d - 10u) & ~d) >> 31));
-    unsigned is_letter = (unsigned)smx_ct_barrier(0u - (((l - 6u) & ~l) >> 31));
+    unsigned l = (c | fold) - 'a';
+    unsigned is_digit = smx_mask_from_sign32((d - 10u) & ~d);
+    unsigned is_letter = smx_mask_from_sign32((l - 6u) & ~l);
     *bad |= ~(is_digit | is_letter);
     return (d & is_digit) | ((l + 10u) & is_letter);
 }
 
-int smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
+static inline int hex_decode(const char *hex, size_t len, uint8_t *out, unsigned fold) {
     unsigned bad = 0;
     size_t i = 0;
 
@@ -77,7 +80,7 @@ int smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
     /* Signed compares: bytes >= 0x80 are negative, so they fail both range tests. */
     const __m128i below_0 = _mm_set1_epi8('0' - 1), above_9 = _mm_set1_epi8('9' + 1);
     const __m128i below_a = _mm_set1_epi8('a' - 1), above_f = _mm_set1_epi8('f' + 1);
-    const __m128i zero_char = _mm_set1_epi8('0'), lower = _mm_set1_epi8(0x20);
+    const __m128i zero_char = _mm_set1_epi8('0'), lower = _mm_set1_epi8((char)fold);
     const __m128i letter_base = _mm_set1_epi8('a' - 10);
     const __m128i word_low = _mm_set1_epi16(0x00FF);
     __m128i all_valid = _mm_set1_epi8(-1);
@@ -106,11 +109,19 @@ int smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
     bad |= (unsigned)(_mm_movemask_epi8(all_valid) ^ 0xFFFF);
 #endif
     for (; i < len; i++) {
-        unsigned hi = hex_nibble(hex[i * 2], &bad);
-        unsigned lo = hex_nibble(hex[i * 2 + 1], &bad);
+        unsigned hi = hex_nibble(hex[i * 2], &bad, fold);
+        unsigned lo = hex_nibble(hex[i * 2 + 1], &bad, fold);
         out[i] = (uint8_t)((hi << 4) | lo);
     }
     return bad == 0;
+}
+
+int smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
+    return hex_decode(hex, len, out, 0x20u);
+}
+
+int smx_hex_decode_lower(const char *hex, size_t len, uint8_t *out) {
+    return hex_decode(hex, len, out, 0u);
 }
 
 void bytes_to_hex(const uint8_t *data, size_t len, char *out) {
@@ -162,7 +173,7 @@ BigInt256 bigint256_from_hex(const char *s) {
     }
     for (i = 0; i < slen; i++) {
         size_t pos = slen - 1 - i; /* nibble index from the least significant end */
-        r.limbs[pos / 16] |= (uint64_t)hex_nibble(s[i], &bad) << ((pos % 16) * 4);
+        r.limbs[pos / 16] |= (uint64_t)hex_nibble(s[i], &bad, 0x20u) << ((pos % 16) * 4);
     }
     if (bad != 0) {
         return bigint256_zero();
@@ -462,7 +473,8 @@ void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp
     }
     bits = bigint256_bit_length(exp);
     if (bits == 0) {
-        *r = bigint256_one();
+        /* x^0 = 1, which is 0 modulo 1; a zero modulus gives 0 like everything else here */
+        *r = (bigint256_is_zero(m) || bigint256_is_one(m)) ? bigint256_zero() : bigint256_one();
         return;
     }
     table[1] = *base;
@@ -486,14 +498,60 @@ void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp
     *r = result;
 }
 
+/* a << s, for a shift that the caller knows does not overflow. */
+static BigInt256 shift_left(const BigInt256 *a, int s) {
+    BigInt256 r = {{0, 0, 0, 0}};
+    int word = s / 64, bits = s % 64, i;
+    for (i = 3; i >= word; i--) {
+        r.limbs[i] = a->limbs[i - word] << bits;
+        if (bits != 0 && i - word >= 1) {
+            r.limbs[i] |= a->limbs[i - word - 1] >> (64 - bits);
+        }
+    }
+    return r;
+}
+
+/*
+ * Extended Euclid, so it is right for any modulus and not only a prime. The result is 0 when
+ * a has no inverse: gcd(a, m) != 1, or m < 2. Variable time; see the note at the top.
+ */
 void bigint256_mod_inverse(BigInt256 *r, const BigInt256 *a, const BigInt256 *m) {
-    BigInt256 two = {{2, 0, 0, 0}};
-    BigInt256 exponent;
+    BigInt256 one = bigint256_one(), r0, r1, t0, t1;
     if (r == NULL || a == NULL || m == NULL) {
         return;
     }
-    bigint256_sub(&exponent, m, &two);
-    bigint256_mod_pow(r, a, &exponent, m);
+    if (bigint256_is_zero(m) || bigint256_is_one(m)) {
+        *r = bigint256_zero();
+        return;
+    }
+    r0 = *m;
+    bigint256_mod_mul(&r1, a, &one, m);
+    t0 = bigint256_zero();
+    t1 = one;
+    /* throughout, r0 = t0 * a and r1 = t1 * a, mod m */
+    while (!bigint256_is_zero(&r1)) {
+        BigInt256 swap;
+        while (bigint256_compare(&r0, &r1) >= 0) {
+            int s = bigint256_bit_length(&r0) - bigint256_bit_length(&r1);
+            BigInt256 shifted = shift_left(&r1, s);
+            BigInt256 scale, scaled;
+            if (bigint256_compare(&shifted, &r0) > 0) {
+                s--;
+                shifted = shift_left(&r1, s);
+            }
+            bigint256_sub(&r0, &r0, &shifted);
+            scale = shift_left(&one, s);
+            bigint256_mod_mul(&scaled, &t1, &scale, m);
+            bigint256_mod_sub(&t0, &t0, &scaled, m);
+        }
+        swap = r0;
+        r0 = r1;
+        r1 = swap;
+        swap = t0;
+        t0 = t1;
+        t1 = swap;
+    }
+    *r = bigint256_is_one(&r0) ? t0 : bigint256_zero();
 }
 
 /* ---- SM2 prime ---- */

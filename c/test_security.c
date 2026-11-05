@@ -873,6 +873,146 @@ static void test_rng_and_keys(void) {
     }
 }
 
+/* Signatures and ciphertexts have one spelling; keys are case-insensitive. */
+static void swap_case(char *s) {
+    for (; *s; s++) {
+        if ((*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F')) {
+            *s = (char)(*s ^ 0x20);
+        }
+    }
+}
+
+static void test_canonical_hex(void) {
+    char sig[140], key[131], pri[65];
+    char *c, *t, *p;
+    size_t len, i;
+    SM4 ctx;
+    uint8_t k[16] = {1};
+
+    signature_of(sig, sizeof(sig), v_r, v_s);
+    CHECK("lowercase signature verifies", sm2_verify(v_uid, sig, v_msg, v_pub));
+    swap_case(sig);
+    CHECK("uppercase signature is refused", !sm2_verify(v_uid, sig, v_msg, v_pub));
+    signature_of(sig, sizeof(sig), v_r, v_s);
+    sig[0] = (char)(sig[0] ^ 0x20); /* first digit is a letter */
+    CHECK("one uppercase digit in r is refused", !sm2_verify(v_uid, sig, v_msg, v_pub));
+
+    strcpy(key, v_pub);
+    swap_case(key);
+    signature_of(sig, sizeof(sig), v_r, v_s);
+    CHECK("public key may be uppercase", sm2_verify(v_uid, sig, v_msg, key));
+    strcpy(pri, v_pri);
+    swap_case(pri);
+
+    c = sm2_encrypt(v_plain, v_pub);
+    p = sm2_decrypt(c, pri);
+    CHECK("private key may be either case", p != NULL && strcmp(p, v_plain) == 0);
+    free(p);
+    len = strlen(c);
+    /* a letter in each part: C1, C3 and C2 */
+    t = (char *)malloc(len + 1);
+    for (i = 0; i < len; i++) {
+        if (c[i] >= 'a' && c[i] <= 'f') {
+            strcpy(t, c);
+            t[i] = (char)(t[i] ^ 0x20);
+            p = sm2_decrypt(t, v_pri);
+            CHECK("uppercase in a ciphertext is refused", p == NULL);
+            free(p);
+        }
+    }
+    free(t);
+    free(c);
+
+    sm4_init(&ctx);
+    sm4_set_key(&ctx, k, 16, k, 16);
+    c = sm4_encrypt(&ctx, "canonical");
+    p = sm4_decrypt(&ctx, c);
+    CHECK("lowercase SM4 ciphertext", p != NULL && strcmp(p, "canonical") == 0);
+    free(p);
+    swap_case(c);
+    CHECK("uppercase SM4 ciphertext is refused", sm4_decrypt(&ctx, c) == NULL);
+    free(c);
+}
+
+static void test_set_key_aliasing(void) {
+    SM4 a, b;
+    uint8_t key[16] = {9, 9, 9}, iv[16];
+    char *c1, *c2;
+    memset(iv, 0xAB, sizeof(iv));
+    sm4_init(&a);
+    sm4_set_key(&a, key, 16, iv, 16);
+    sm4_set_key(&a, key, 16, a.iv, 16); /* the context's own IV */
+    CHECK("own IV survives set_key", a.iv[0] == 0xAB && a.iv[15] == 0xAB);
+    sm4_init(&b);
+    sm4_set_key(&b, key, 16, iv, 16);
+    c1 = sm4_encrypt(&a, "alias");
+    c2 = sm4_encrypt(&b, "alias");
+    CHECK("aliased IV encrypts the same", strcmp(c1, c2) == 0);
+    free(c1);
+    free(c2);
+    sm4_set_key(&a, a.iv, 16, a.iv, 16); /* the key too */
+    sm4_set_key(&b, iv, 16, iv, 16);
+    CHECK("aliased key expands the same", memcmp(a.rk, b.rk, sizeof(a.rk)) == 0);
+}
+
+static void test_sm3_state(void) {
+    SM3 h;
+    char first[65];
+    sm3_init(&h);
+    CHECK("no digest before finish", h.hash_hex[0] == '\0');
+    sm3_update(&h, (const uint8_t *)"abc", 3);
+    CHECK("no digest while hashing", h.hash_hex[0] == '\0');
+    sm3_finish(&h);
+    memcpy(first, h.hash_hex, 65);
+    CHECK("digest after finish", strlen(first) == 64);
+
+    sm3_finish(&h);
+    CHECK("finish twice keeps the digest", strcmp(h.hash_hex, first) == 0);
+
+    sm3_update(&h, (const uint8_t *)"x", 1);
+    CHECK("update removes the stale digest", h.hash_hex[0] == '\0');
+    sm3_finish(&h);
+    CHECK("the new digest differs", strlen(h.hash_hex) == 64 && strcmp(h.hash_hex, first) != 0);
+
+    sm3_update_byte(&h, 'x');
+    CHECK("update_byte removes the stale digest", h.hash_hex[0] == '\0');
+    sm3_finish(&h);
+
+    /* a failure stays visible through a second finish */
+    sm3_init(&h);
+    sm3_update(&h, NULL, 4);
+    sm3_finish(&h);
+    sm3_finish(&h);
+    CHECK("finish twice after failure stays failed", h.hash_hex[0] == '\0');
+    sm3_update(&h, (const uint8_t *)"abc", 3);
+    sm3_finish(&h);
+    CHECK("new data after failure works", strcmp(h.hash_hex, first) == 0);
+}
+
+/* The result must match the math, not a formula that holds only for primes. */
+static void test_generic_results(void) {
+    BigInt256 r, a, m, zero = bigint256_zero(), one = bigint256_one();
+    a = bigint256_from_hex("3");
+    m = bigint256_from_hex("A");
+    bigint256_mod_inverse(&r, &a, &m);
+    CHECK("3^-1 mod 10 = 7", r.limbs[0] == 7);
+    a = bigint256_from_hex("4");
+    bigint256_mod_inverse(&r, &a, &m);
+    CHECK("4 has no inverse mod 10", bigint256_is_zero(&r));
+    bigint256_mod_pow(&r, &a, &zero, &one);
+    CHECK("x^0 mod 1 = 0", bigint256_is_zero(&r));
+    bigint256_mod_pow(&r, &a, &zero, &m);
+    CHECK("x^0 mod 10 = 1", bigint256_is_one(&r));
+    bigint256_mod_inverse(&r, &a, &one);
+    CHECK("inverse mod 1 is 0", bigint256_is_zero(&r));
+    bigint256_mod_inverse(&r, &a, &zero);
+    CHECK("inverse mod 0 is 0", bigint256_is_zero(&r));
+    /* an in-place call */
+    a = bigint256_from_hex("3");
+    bigint256_mod_inverse(&a, &a, &m);
+    CHECK("inverse in place", a.limbs[0] == 7);
+}
+
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "../testvectors/security-vectors.json";
     FILE *f = fopen(path, "rb");
@@ -913,6 +1053,10 @@ int main(int argc, char **argv) {
     test_strict_encodings();
     test_sm2_binary();
     test_rng_and_keys();
+    test_canonical_hex();
+    test_set_key_aliasing();
+    test_sm3_state();
+    test_generic_results();
     printf("SM3\n");
     test_sm3_limits();
     test_shared_sm3(sm3_section);
