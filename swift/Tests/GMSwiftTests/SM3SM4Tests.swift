@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import GMSwift
 
 final class SM3SM4Tests: XCTestCase {

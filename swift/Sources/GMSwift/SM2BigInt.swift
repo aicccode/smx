@@ -31,7 +31,12 @@ public struct BigInt256: Comparable {
     // 兼容旧的limbs属性访问
     var limbs: (UInt64, UInt64, UInt64, UInt64) {
         get { (l0, l1, l2, l3) }
-        set { l0 = newValue.0; l1 = newValue.1; l2 = newValue.2; l3 = newValue.3 }
+        set {
+            l0 = newValue.0
+            l1 = newValue.1
+            l2 = newValue.2
+            l3 = newValue.3
+        }
     }
 
     // MARK: - 下标访问，避免创建数组
@@ -60,8 +65,7 @@ public struct BigInt256: Comparable {
     // MARK: - Equatable & Comparable
 
     public static func == (lhs: BigInt256, rhs: BigInt256) -> Bool {
-        return lhs.l0 == rhs.l0 && lhs.l1 == rhs.l1 &&
-               lhs.l2 == rhs.l2 && lhs.l3 == rhs.l3
+        return lhs.l0 == rhs.l0 && lhs.l1 == rhs.l1 && lhs.l2 == rhs.l2 && lhs.l3 == rhs.l3
     }
 
     public static func < (lhs: BigInt256, rhs: BigInt256) -> Bool {
@@ -96,8 +100,8 @@ public struct BigInt256: Comparable {
     @inline(__always)
     func getBit(_ bit: Int) -> Bool {
         if bit >= 256 { return false }
-        let word = bit >> 6        // bit / 64
-        let bitInWord = bit & 63   // bit % 64
+        let word = bit >> 6  // bit / 64
+        let bitInWord = bit & 63  // bit % 64
         switch word {
         case 0: return (l0 >> bitInWord) & 1 == 1
         case 1: return (l1 >> bitInWord) & 1 == 1
@@ -160,8 +164,14 @@ public struct BigInt256: Comparable {
     /// 乘法，返回512位结果（8个UInt64，小端序）
     func mul(_ other: BigInt256) -> (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) {
         // Schoolbook 4x4 乘法，直接使用属性访问，无数组分配
-        var r0: UInt64 = 0, r1: UInt64 = 0, r2: UInt64 = 0, r3: UInt64 = 0
-        var r4: UInt64 = 0, r5: UInt64 = 0, r6: UInt64 = 0, r7: UInt64 = 0
+        var r0: UInt64 = 0
+        var r1: UInt64 = 0
+        var r2: UInt64 = 0
+        var r3: UInt64 = 0
+        var r4: UInt64 = 0
+        var r5: UInt64 = 0
+        var r6: UInt64 = 0
+        var r7: UInt64 = 0
 
         // i = 0: self.l0 * other
         var carry: UInt64 = 0
@@ -169,83 +179,99 @@ public struct BigInt256: Comparable {
         var lo: UInt64
 
         (hi, lo) = l0.multipliedFullWidth(by: other.l0)
-        r0 = lo; carry = hi
+        r0 = lo
+        carry = hi
 
         (hi, lo) = l0.multipliedFullWidth(by: other.l1)
         var (s, c1) = lo.addingReportingOverflow(carry)
-        r1 = s; carry = hi &+ (c1 ? 1 : 0)
+        r1 = s
+        carry = hi &+ (c1 ? 1 : 0)
 
         (hi, lo) = l0.multipliedFullWidth(by: other.l2)
         (s, c1) = lo.addingReportingOverflow(carry)
-        r2 = s; carry = hi &+ (c1 ? 1 : 0)
+        r2 = s
+        carry = hi &+ (c1 ? 1 : 0)
 
         (hi, lo) = l0.multipliedFullWidth(by: other.l3)
         (s, c1) = lo.addingReportingOverflow(carry)
-        r3 = s; r4 = hi &+ (c1 ? 1 : 0)
+        r3 = s
+        r4 = hi &+ (c1 ? 1 : 0)
 
         // i = 1: self.l1 * other
         carry = 0
         (hi, lo) = l1.multipliedFullWidth(by: other.l0)
         (s, c1) = lo.addingReportingOverflow(r1)
-        r1 = s; carry = hi &+ (c1 ? 1 : 0)
+        r1 = s
+        carry = hi &+ (c1 ? 1 : 0)
 
         (hi, lo) = l1.multipliedFullWidth(by: other.l1)
         (s, c1) = lo.addingReportingOverflow(r2)
         var c2: Bool
         (s, c2) = s.addingReportingOverflow(carry)
-        r2 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r2 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l1.multipliedFullWidth(by: other.l2)
         (s, c1) = lo.addingReportingOverflow(r3)
         (s, c2) = s.addingReportingOverflow(carry)
-        r3 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r3 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l1.multipliedFullWidth(by: other.l3)
         (s, c1) = lo.addingReportingOverflow(r4)
         (s, c2) = s.addingReportingOverflow(carry)
-        r4 = s; r5 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r4 = s
+        r5 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         // i = 2: self.l2 * other
         carry = 0
         (hi, lo) = l2.multipliedFullWidth(by: other.l0)
         (s, c1) = lo.addingReportingOverflow(r2)
-        r2 = s; carry = hi &+ (c1 ? 1 : 0)
+        r2 = s
+        carry = hi &+ (c1 ? 1 : 0)
 
         (hi, lo) = l2.multipliedFullWidth(by: other.l1)
         (s, c1) = lo.addingReportingOverflow(r3)
         (s, c2) = s.addingReportingOverflow(carry)
-        r3 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r3 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l2.multipliedFullWidth(by: other.l2)
         (s, c1) = lo.addingReportingOverflow(r4)
         (s, c2) = s.addingReportingOverflow(carry)
-        r4 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r4 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l2.multipliedFullWidth(by: other.l3)
         (s, c1) = lo.addingReportingOverflow(r5)
         (s, c2) = s.addingReportingOverflow(carry)
-        r5 = s; r6 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r5 = s
+        r6 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         // i = 3: self.l3 * other
         carry = 0
         (hi, lo) = l3.multipliedFullWidth(by: other.l0)
         (s, c1) = lo.addingReportingOverflow(r3)
-        r3 = s; carry = hi &+ (c1 ? 1 : 0)
+        r3 = s
+        carry = hi &+ (c1 ? 1 : 0)
 
         (hi, lo) = l3.multipliedFullWidth(by: other.l1)
         (s, c1) = lo.addingReportingOverflow(r4)
         (s, c2) = s.addingReportingOverflow(carry)
-        r4 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r4 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l3.multipliedFullWidth(by: other.l2)
         (s, c1) = lo.addingReportingOverflow(r5)
         (s, c2) = s.addingReportingOverflow(carry)
-        r5 = s; carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r5 = s
+        carry = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l3.multipliedFullWidth(by: other.l3)
         (s, c1) = lo.addingReportingOverflow(r6)
         (s, c2) = s.addingReportingOverflow(carry)
-        r6 = s; r7 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r6 = s
+        r7 = hi &+ (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         return (r0, r1, r2, r3, r4, r5, r6, r7)
     }
@@ -256,25 +282,38 @@ public struct BigInt256: Comparable {
         // 对角项: a[i]^2 只出现一次
 
         // 先计算所有交叉项 (i < j) 累加到 r1..r7
-        var r0: UInt64 = 0, r1: UInt64 = 0, r2: UInt64 = 0, r3: UInt64 = 0
-        var r4: UInt64 = 0, r5: UInt64 = 0, r6: UInt64 = 0, r7: UInt64 = 0
+        var r0: UInt64 = 0
+        var r1: UInt64 = 0
+        var r2: UInt64 = 0
+        var r3: UInt64 = 0
+        var r4: UInt64 = 0
+        var r5: UInt64 = 0
+        var r6: UInt64 = 0
+        var r7: UInt64 = 0
 
-        var hi: UInt64, lo: UInt64
-        var s: UInt64, c1: Bool, c2: Bool, c3: Bool
+        var hi: UInt64
+        var lo: UInt64
+        var s: UInt64
+        var c1: Bool
+        var c2: Bool
+        var c3: Bool
 
         // l0 * l1 -> r1,r2 (no existing values to add to)
         (hi, lo) = l0.multipliedFullWidth(by: l1)
-        r1 = lo; r2 = hi
+        r1 = lo
+        r2 = hi
 
         // l0 * l2 -> add to r2,r3
         (hi, lo) = l0.multipliedFullWidth(by: l2)
         (s, c1) = r2.addingReportingOverflow(lo)
-        r2 = s; r3 = hi &+ (c1 ? 1 : 0)
+        r2 = s
+        r3 = hi &+ (c1 ? 1 : 0)
 
         // l0 * l3 -> add to r3,r4
         (hi, lo) = l0.multipliedFullWidth(by: l3)
         (s, c1) = r3.addingReportingOverflow(lo)
-        r3 = s; r4 = hi &+ (c1 ? 1 : 0)
+        r3 = s
+        r4 = hi &+ (c1 ? 1 : 0)
 
         // l1 * l2 -> add to r3,r4 (需要正确传播carry)
         (hi, lo) = l1.multipliedFullWidth(by: l2)
@@ -282,7 +321,8 @@ public struct BigInt256: Comparable {
         r3 = s
         (s, c2) = r4.addingReportingOverflow(hi)
         (s, c3) = s.addingReportingOverflow(c1 ? 1 : 0)
-        r4 = s; r5 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
+        r4 = s
+        r5 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
 
         // l1 * l3 -> add to r4,r5
         (hi, lo) = l1.multipliedFullWidth(by: l3)
@@ -290,7 +330,8 @@ public struct BigInt256: Comparable {
         r4 = s
         (s, c2) = r5.addingReportingOverflow(hi)
         (s, c3) = s.addingReportingOverflow(c1 ? 1 : 0)
-        r5 = s; r6 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
+        r5 = s
+        r6 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
 
         // l2 * l3 -> add to r5,r6
         (hi, lo) = l2.multipliedFullWidth(by: l3)
@@ -298,7 +339,8 @@ public struct BigInt256: Comparable {
         r5 = s
         (s, c2) = r6.addingReportingOverflow(hi)
         (s, c3) = s.addingReportingOverflow(c1 ? 1 : 0)
-        r6 = s; r7 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
+        r6 = s
+        r7 = (c2 ? 1 : 0) &+ (c3 ? 1 : 0)
 
         // 交叉项 * 2（左移1位）
         r7 = (r7 << 1) | (r6 >> 63)
@@ -319,23 +361,28 @@ public struct BigInt256: Comparable {
         (hi, lo) = l1.multipliedFullWidth(by: l1)
         (s, c1) = r2.addingReportingOverflow(lo)
         (s, c2) = s.addingReportingOverflow(carry)
-        r2 = s; carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r2 = s
+        carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
         (s, c1) = r3.addingReportingOverflow(hi)
         (s, c2) = s.addingReportingOverflow(carry)
-        r3 = s; carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r3 = s
+        carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l2.multipliedFullWidth(by: l2)
         (s, c1) = r4.addingReportingOverflow(lo)
         (s, c2) = s.addingReportingOverflow(carry)
-        r4 = s; carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r4 = s
+        carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
         (s, c1) = r5.addingReportingOverflow(hi)
         (s, c2) = s.addingReportingOverflow(carry)
-        r5 = s; carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r5 = s
+        carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
 
         (hi, lo) = l3.multipliedFullWidth(by: l3)
         (s, c1) = r6.addingReportingOverflow(lo)
         (s, c2) = s.addingReportingOverflow(carry)
-        r6 = s; carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
+        r6 = s
+        carry = (c1 ? 1 : 0) &+ (c2 ? 1 : 0)
         (s, c1) = r7.addingReportingOverflow(hi)
         (s, c2) = s.addingReportingOverflow(carry)
         r7 = s
@@ -380,20 +427,36 @@ public struct BigInt256: Comparable {
         _ modulus: BigInt256
     ) -> BigInt256 {
         // 使用试商法（类似Knuth Algorithm D的简化版）
-        var r0 = value.0, r1 = value.1, r2 = value.2, r3 = value.3
-        var r4 = value.4, r5 = value.5, r6 = value.6, r7 = value.7
+        var r0 = value.0
+        var r1 = value.1
+        var r2 = value.2
+        var r3 = value.3
+        var r4 = value.4
+        var r5 = value.5
+        var r6 = value.6
+        var r7 = value.7
 
         // 找到被除数的最高有效位
         var dividendBits: Int
-        if r7 != 0 { dividendBits = 512 - r7.leadingZeroBitCount }
-        else if r6 != 0 { dividendBits = 448 - r6.leadingZeroBitCount }
-        else if r5 != 0 { dividendBits = 384 - r5.leadingZeroBitCount }
-        else if r4 != 0 { dividendBits = 320 - r4.leadingZeroBitCount }
-        else if r3 != 0 { dividendBits = 256 - r3.leadingZeroBitCount }
-        else if r2 != 0 { dividendBits = 192 - r2.leadingZeroBitCount }
-        else if r1 != 0 { dividendBits = 128 - r1.leadingZeroBitCount }
-        else if r0 != 0 { dividendBits = 64 - r0.leadingZeroBitCount }
-        else { return BigInt256.zero }
+        if r7 != 0 {
+            dividendBits = 512 - r7.leadingZeroBitCount
+        } else if r6 != 0 {
+            dividendBits = 448 - r6.leadingZeroBitCount
+        } else if r5 != 0 {
+            dividendBits = 384 - r5.leadingZeroBitCount
+        } else if r4 != 0 {
+            dividendBits = 320 - r4.leadingZeroBitCount
+        } else if r3 != 0 {
+            dividendBits = 256 - r3.leadingZeroBitCount
+        } else if r2 != 0 {
+            dividendBits = 192 - r2.leadingZeroBitCount
+        } else if r1 != 0 {
+            dividendBits = 128 - r1.leadingZeroBitCount
+        } else if r0 != 0 {
+            dividendBits = 64 - r0.leadingZeroBitCount
+        } else {
+            return BigInt256.zero
+        }
 
         let modulusBits = modulus.bitLength
         if modulusBits == 0 { fatalError("Division by zero") }
@@ -409,21 +472,50 @@ public struct BigInt256: Comparable {
             let wordShift = shift >> 6
             let bitShift = shift & 63
 
-            var m0: UInt64 = 0, m1: UInt64 = 0, m2: UInt64 = 0, m3: UInt64 = 0
-            var m4: UInt64 = 0, m5: UInt64 = 0, m6: UInt64 = 0, m7: UInt64 = 0
+            var m0: UInt64 = 0
+            var m1: UInt64 = 0
+            var m2: UInt64 = 0
+            var m3: UInt64 = 0
+            var m4: UInt64 = 0
+            var m5: UInt64 = 0
+            var m6: UInt64 = 0
+            var m7: UInt64 = 0
 
             if bitShift == 0 {
                 switch wordShift {
-                case 0: m0 = modulus.l0; m1 = modulus.l1; m2 = modulus.l2; m3 = modulus.l3
-                case 1: m1 = modulus.l0; m2 = modulus.l1; m3 = modulus.l2; m4 = modulus.l3
-                case 2: m2 = modulus.l0; m3 = modulus.l1; m4 = modulus.l2; m5 = modulus.l3
-                case 3: m3 = modulus.l0; m4 = modulus.l1; m5 = modulus.l2; m6 = modulus.l3
-                case 4: m4 = modulus.l0; m5 = modulus.l1; m6 = modulus.l2; m7 = modulus.l3
+                case 0:
+                    m0 = modulus.l0
+                    m1 = modulus.l1
+                    m2 = modulus.l2
+                    m3 = modulus.l3
+                case 1:
+                    m1 = modulus.l0
+                    m2 = modulus.l1
+                    m3 = modulus.l2
+                    m4 = modulus.l3
+                case 2:
+                    m2 = modulus.l0
+                    m3 = modulus.l1
+                    m4 = modulus.l2
+                    m5 = modulus.l3
+                case 3:
+                    m3 = modulus.l0
+                    m4 = modulus.l1
+                    m5 = modulus.l2
+                    m6 = modulus.l3
+                case 4:
+                    m4 = modulus.l0
+                    m5 = modulus.l1
+                    m6 = modulus.l2
+                    m7 = modulus.l3
                 default: break
                 }
             } else {
                 let rShift = 64 - bitShift
-                let ml0 = modulus.l0, ml1 = modulus.l1, ml2 = modulus.l2, ml3 = modulus.l3
+                let ml0 = modulus.l0
+                let ml1 = modulus.l1
+                let ml2 = modulus.l2
+                let ml3 = modulus.l3
                 // 将4个limb左移bitShift位，放到wordShift开始的位置
                 let shifted0 = ml0 << bitShift
                 let shifted1 = (ml1 << bitShift) | (ml0 >> rShift)
@@ -432,11 +524,35 @@ public struct BigInt256: Comparable {
                 let shifted4 = ml3 >> rShift
 
                 switch wordShift {
-                case 0: m0 = shifted0; m1 = shifted1; m2 = shifted2; m3 = shifted3; m4 = shifted4
-                case 1: m1 = shifted0; m2 = shifted1; m3 = shifted2; m4 = shifted3; m5 = shifted4
-                case 2: m2 = shifted0; m3 = shifted1; m4 = shifted2; m5 = shifted3; m6 = shifted4
-                case 3: m3 = shifted0; m4 = shifted1; m5 = shifted2; m6 = shifted3; m7 = shifted4
-                case 4: m4 = shifted0; m5 = shifted1; m6 = shifted2; m7 = shifted3
+                case 0:
+                    m0 = shifted0
+                    m1 = shifted1
+                    m2 = shifted2
+                    m3 = shifted3
+                    m4 = shifted4
+                case 1:
+                    m1 = shifted0
+                    m2 = shifted1
+                    m3 = shifted2
+                    m4 = shifted3
+                    m5 = shifted4
+                case 2:
+                    m2 = shifted0
+                    m3 = shifted1
+                    m4 = shifted2
+                    m5 = shifted3
+                    m6 = shifted4
+                case 3:
+                    m3 = shifted0
+                    m4 = shifted1
+                    m5 = shifted2
+                    m6 = shifted3
+                    m7 = shifted4
+                case 4:
+                    m4 = shifted0
+                    m5 = shifted1
+                    m6 = shifted2
+                    m7 = shifted3
                 default: break
                 }
             }
@@ -456,20 +572,35 @@ public struct BigInt256: Comparable {
                 // remainder -= shifted_modulus
                 var borrow: UInt64 = 0
                 var (d, b): (UInt64, Bool)
-                (d, b) = r0.subtractingReportingOverflow(m0); r0 = d; borrow = b ? 1 : 0
-                (d, b) = r1.subtractingReportingOverflow(m1); let (d1b, b1b) = d.subtractingReportingOverflow(borrow)
-                r1 = d1b; borrow = (b ? 1 : 0) + (b1b ? 1 : 0)
-                (d, b) = r2.subtractingReportingOverflow(m2); let (d2b, b2b) = d.subtractingReportingOverflow(borrow)
-                r2 = d2b; borrow = (b ? 1 : 0) + (b2b ? 1 : 0)
-                (d, b) = r3.subtractingReportingOverflow(m3); let (d3b, b3b) = d.subtractingReportingOverflow(borrow)
-                r3 = d3b; borrow = (b ? 1 : 0) + (b3b ? 1 : 0)
-                (d, b) = r4.subtractingReportingOverflow(m4); let (d4b, b4b) = d.subtractingReportingOverflow(borrow)
-                r4 = d4b; borrow = (b ? 1 : 0) + (b4b ? 1 : 0)
-                (d, b) = r5.subtractingReportingOverflow(m5); let (d5b, b5b) = d.subtractingReportingOverflow(borrow)
-                r5 = d5b; borrow = (b ? 1 : 0) + (b5b ? 1 : 0)
-                (d, b) = r6.subtractingReportingOverflow(m6); let (d6b, b6b) = d.subtractingReportingOverflow(borrow)
-                r6 = d6b; borrow = (b ? 1 : 0) + (b6b ? 1 : 0)
-                (d, b) = r7.subtractingReportingOverflow(m7); let (d7b, _) = d.subtractingReportingOverflow(borrow)
+                (d, b) = r0.subtractingReportingOverflow(m0)
+                r0 = d
+                borrow = b ? 1 : 0
+                (d, b) = r1.subtractingReportingOverflow(m1)
+                let (d1b, b1b) = d.subtractingReportingOverflow(borrow)
+                r1 = d1b
+                borrow = (b ? 1 : 0) + (b1b ? 1 : 0)
+                (d, b) = r2.subtractingReportingOverflow(m2)
+                let (d2b, b2b) = d.subtractingReportingOverflow(borrow)
+                r2 = d2b
+                borrow = (b ? 1 : 0) + (b2b ? 1 : 0)
+                (d, b) = r3.subtractingReportingOverflow(m3)
+                let (d3b, b3b) = d.subtractingReportingOverflow(borrow)
+                r3 = d3b
+                borrow = (b ? 1 : 0) + (b3b ? 1 : 0)
+                (d, b) = r4.subtractingReportingOverflow(m4)
+                let (d4b, b4b) = d.subtractingReportingOverflow(borrow)
+                r4 = d4b
+                borrow = (b ? 1 : 0) + (b4b ? 1 : 0)
+                (d, b) = r5.subtractingReportingOverflow(m5)
+                let (d5b, b5b) = d.subtractingReportingOverflow(borrow)
+                r5 = d5b
+                borrow = (b ? 1 : 0) + (b5b ? 1 : 0)
+                (d, b) = r6.subtractingReportingOverflow(m6)
+                let (d6b, b6b) = d.subtractingReportingOverflow(borrow)
+                r6 = d6b
+                borrow = (b ? 1 : 0) + (b6b ? 1 : 0)
+                (d, b) = r7.subtractingReportingOverflow(m7)
+                let (d7b, _) = d.subtractingReportingOverflow(borrow)
                 r7 = d7b
             }
         }

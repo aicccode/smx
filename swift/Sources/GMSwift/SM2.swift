@@ -1,58 +1,59 @@
 // SM2椭圆曲线公钥密码算法实现
 
 import Foundation
+
 #if canImport(Security)
-import Security
+    import Security
 #endif
 
 // MARK: - SM2曲线参数
 
 /// SM2推荐曲线的素数p
 let SM2_P = BigInt256(
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFF00000000,
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFEFFFFFFFF
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFF_0000_0000,
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFE_FFFF_FFFF
 )
 
 /// SM2曲线参数 a
 let SM2_A = BigInt256(
-    0xFFFFFFFFFFFFFFFC,
-    0xFFFFFFFF00000000,
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFEFFFFFFFF
+    0xFFFF_FFFF_FFFF_FFFC,
+    0xFFFF_FFFF_0000_0000,
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFE_FFFF_FFFF
 )
 
 /// SM2曲线参数 b
 let SM2_B = BigInt256(
-    0xDDBCBD414D940E93,
-    0xF39789F515AB8F92,
-    0x4D5A9E4BCF6509A7,
-    0x28E9FA9E9D9F5E34
+    0xDDBC_BD41_4D94_0E93,
+    0xF397_89F5_15AB_8F92,
+    0x4D5A_9E4B_CF65_09A7,
+    0x28E9_FA9E_9D9F_5E34
 )
 
 /// SM2曲线阶 n
 let SM2_N = BigInt256(
-    0x53BBF40939D54123,
-    0x7203DF6B21C6052B,
-    0xFFFFFFFFFFFFFFFF,
-    0xFFFFFFFEFFFFFFFF
+    0x53BB_F409_39D5_4123,
+    0x7203_DF6B_21C6_052B,
+    0xFFFF_FFFF_FFFF_FFFF,
+    0xFFFF_FFFE_FFFF_FFFF
 )
 
 /// SM2基点 G 的 x 坐标
 let SM2_GX = BigInt256(
-    0x715A4589334C74C7,
-    0x8FE30BBFF2660BE1,
-    0x5F9904466A39C994,
-    0x32C4AE2C1F198119
+    0x715A_4589_334C_74C7,
+    0x8FE3_0BBF_F266_0BE1,
+    0x5F99_0446_6A39_C994,
+    0x32C4_AE2C_1F19_8119
 )
 
 /// SM2基点 G 的 y 坐标
 let SM2_GY = BigInt256(
-    0x02DF32E52139F0A0,
-    0xD0A9877CC62A4740,
-    0x59BDCEE36B692153,
-    0xBC3736A2F4F6779C
+    0x02DF_32E5_2139_F0A0,
+    0xD0A9_877C_C62A_4740,
+    0x59BD_CEE3_6B69_2153,
+    0xBC37_36A2_F4F6_779C
 )
 
 // MARK: - SM2素数域快速模约减
@@ -69,16 +70,16 @@ let SM2_GY = BigInt256(
 @inline(__always)
 func sm2ModReduceP(_ v: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64)) -> BigInt256 {
     // 将8个UInt64分解为16个UInt32（小端序）
-    let c0  = Int64(UInt32(truncatingIfNeeded: v.0))
-    let c1  = Int64(v.0 >> 32)
-    let c2  = Int64(UInt32(truncatingIfNeeded: v.1))
-    let c3  = Int64(v.1 >> 32)
-    let c4  = Int64(UInt32(truncatingIfNeeded: v.2))
-    let c5  = Int64(v.2 >> 32)
-    let c6  = Int64(UInt32(truncatingIfNeeded: v.3))
-    let c7  = Int64(v.3 >> 32)
-    let c8  = Int64(UInt32(truncatingIfNeeded: v.4))
-    let c9  = Int64(v.4 >> 32)
+    let c0 = Int64(UInt32(truncatingIfNeeded: v.0))
+    let c1 = Int64(v.0 >> 32)
+    let c2 = Int64(UInt32(truncatingIfNeeded: v.1))
+    let c3 = Int64(v.1 >> 32)
+    let c4 = Int64(UInt32(truncatingIfNeeded: v.2))
+    let c5 = Int64(v.2 >> 32)
+    let c6 = Int64(UInt32(truncatingIfNeeded: v.3))
+    let c7 = Int64(v.3 >> 32)
+    let c8 = Int64(UInt32(truncatingIfNeeded: v.4))
+    let c9 = Int64(v.4 >> 32)
     let c10 = Int64(UInt32(truncatingIfNeeded: v.5))
     let c11 = Int64(v.5 >> 32)
     let c12 = Int64(UInt32(truncatingIfNeeded: v.6))
@@ -101,24 +102,24 @@ func sm2ModReduceP(_ v: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64,
     // c15: w0(+2) w1(+2) w3(+1) w4(+1) w5(+2) w6(+1) w7(+3)
     // t7 = c7 + c8 + c9 + c10 + c11 + 2*c12 + 2*c13 + 2*c14 + 3*c15
 
-    var t0 = c0 + c8 + c9 + c10 + c11 + c12 + 2*c13 + 2*c14 + 2*c15
-    var t1 = c1 + c9 + c10 + c11 + c12 + c13 + 2*c14 + 2*c15
+    var t0 = c0 + c8 + c9 + c10 + c11 + c12 + 2 * c13 + 2 * c14 + 2 * c15
+    var t1 = c1 + c9 + c10 + c11 + c12 + c13 + 2 * c14 + 2 * c15
     var t2 = c2 - c8 - c9 - c13 - c14
-    var t3 = c3 + c8 + c11 + c12 + 2*c13 + c14 + c15
-    var t4 = c4 + c9 + c12 + c13 + 2*c14 + c15
-    var t5 = c5 + c10 + c13 + c14 + 2*c15
+    var t3 = c3 + c8 + c11 + c12 + 2 * c13 + c14 + c15
+    var t4 = c4 + c9 + c12 + c13 + 2 * c14 + c15
+    var t5 = c5 + c10 + c13 + c14 + 2 * c15
     var t6 = c6 + c11 + c14 + c15
-    var t7 = c7 + c8 + c9 + c10 + c11 + 2*c12 + 2*c13 + 2*c14 + 3*c15
+    var t7 = c7 + c8 + c9 + c10 + c11 + 2 * c12 + 2 * c13 + 2 * c14 + 3 * c15
 
     // 进位传播（从低到高），确保每个 t[i] 在 [0, 2^32) 范围内
     @inline(__always)
     func propagate(_ lo: inout Int64, _ hi: inout Int64) {
         // 算术右移32位实现有符号的进位/借位传播
         hi += lo >> 32
-        lo &= 0xFFFFFFFF
+        lo &= 0xFFFF_FFFF
         // 确保 lo >= 0（处理负数取模）
         if lo < 0 {
-            lo += 0x100000000
+            lo += 0x1_0000_0000
             hi -= 1
         }
     }
@@ -135,7 +136,7 @@ func sm2ModReduceP(_ v: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64,
         UInt64(t0) | (UInt64(t1) << 32),
         UInt64(t2) | (UInt64(t3) << 32),
         UInt64(t4) | (UInt64(t5) << 32),
-        UInt64(t6) | (UInt64(t7 & 0xFFFFFFFF) << 32)
+        UInt64(t6) | (UInt64(t7 & 0xFFFF_FFFF) << 32)
     )
     var extra = t7 >> 32
 
@@ -271,7 +272,9 @@ struct JacobianPoint {
             return JacobianPoint.infinity
         }
 
-        let x1 = self.x, y1 = self.y, z1 = self.z
+        let x1 = self.x
+        let y1 = self.y
+        let z1 = self.z
 
         // SM2 的 a = p - 3，可以利用 3*x1^2 + a*z1^4 = 3*(x1 - z1^2)*(x1 + z1^2)
         let z1sq = z1.square()
@@ -942,11 +945,11 @@ public class SM2 {
     private static func randomBigInt() -> BigInt256 {
         var bytes = [UInt8](repeating: 0, count: 32)
         #if canImport(Security)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+            _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
         #else
-        for i in 0..<32 {
-            bytes[i] = UInt8.random(in: 0...255)
-        }
+            for i in 0..<32 {
+                bytes[i] = UInt8.random(in: 0...255)
+            }
         #endif
         return BigInt256.fromBEBytes(bytes)
     }
@@ -1062,7 +1065,8 @@ public class SM2 {
         return sum.multiply(t)
     }
 
-    private static func createS(tag: UInt8, vu: ECPoint, za: [UInt8], zb: [UInt8], ra: ECPoint, rb: ECPoint) -> [UInt8] {
+    private static func createS(tag: UInt8, vu: ECPoint, za: [UInt8], zb: [UInt8], ra: ECPoint, rb: ECPoint) -> [UInt8]
+    {
         // 第一个哈希
         let sm3 = SM3()
         _ = sm3.update(vu.x.toBEBytes())

@@ -4,10 +4,10 @@ import PackageDescription
 let package = Package(
     name: "GMSwift",
     platforms: [
-        .iOS(.v15), .macOS(.v10_13)
+        .iOS(.v15), .macOS(.v10_13),
     ],
     products: [
-        .library(name: "GMSwift", targets: ["GMSwift"]),
+        .library(name: "GMSwift", targets: ["GMSwift"])
     ],
     targets: [
         .target(
@@ -20,6 +20,6 @@ let package = Package(
             name: "GMSwiftTests",
             dependencies: ["GMSwift"],
             path: "Tests/GMSwiftTests"
-        )
+        ),
     ]
 )

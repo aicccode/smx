@@ -58,7 +58,7 @@ func postJSON<T: Encodable, R: Decodable>(_ url: String, body: T) throws -> R {
         "-s", "-X", "POST",
         "-H", "Content-Type: application/json",
         "-d", jsonString,
-        url
+        url,
     ]
 
     let pipe = Pipe()
@@ -108,7 +108,7 @@ func main() {
     print("  Private key (ra): \(raHex)")
     print("  Public key (Ra): \(raPubHex)")
 
-    let keyLen = 16 // 16字节 = 128位密钥
+    let keyLen = 16  // 16字节 = 128位密钥
 
     // Step 1: 发起密钥交换
     print("\n--- Step 1: Key Exchange Init ---")
@@ -122,7 +122,8 @@ func main() {
     let encoder = JSONEncoder()
     encoder.outputFormatting = .prettyPrinted
     if let jsonData = try? encoder.encode(initRequest),
-       let jsonString = String(data: jsonData, encoding: .utf8) {
+        let jsonString = String(data: jsonData, encoding: .utf8)
+    {
         print("Request: \(jsonString)")
     }
 
@@ -174,7 +175,8 @@ func main() {
     )
 
     if let jsonData = try? encoder.encode(confirmRequest),
-       let jsonString = String(data: jsonData, encoding: .utf8) {
+        let jsonString = String(data: jsonData, encoding: .utf8)
+    {
         print("Request: \(jsonString)")
     }
 
@@ -215,7 +217,8 @@ func main() {
     )
 
     if let jsonData = try? encoder.encode(cryptoRequest),
-       let jsonString = String(data: jsonData, encoding: .utf8) {
+        let jsonString = String(data: jsonData, encoding: .utf8)
+    {
         print("\nRequest: \(jsonString)")
     }
 

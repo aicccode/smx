@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import GMSwift
 
 final class SM2Tests: XCTestCase {
@@ -78,7 +79,8 @@ final class SM2Tests: XCTestCase {
 
         // A计算Sa和Ka
         let sbBytes = try hexToBytes(resultB.sb!)
-        let resultA = SM2.getSa(byteLen: 16, pB: pB, Rb: Rb, pA: pA, dA: dA, Ra: Ra, ra: ra, IDa: idA, IDb: idB, Sb: sbBytes)
+        let resultA = SM2.getSa(
+            byteLen: 16, pB: pB, Rb: Rb, pA: pA, dA: dA, Ra: Ra, ra: ra, IDa: idA, IDb: idB, Sb: sbBytes)
         XCTAssertTrue(resultA.success, resultA.message ?? "Unknown error")
 
         // 验证Ka == Kb
