@@ -42,33 +42,34 @@ const fn p1(x: u32) -> u32 {
     x ^ x.rotate_left(15) ^ x.rotate_left(23)
 }
 
-/// One compression round without register moves: the caller rotates the variable names.
+/// One compression round without register moves: the caller rotates the variable names. `$wi` is
+/// W[j] and `$wj` is W'[j] = W[j] ^ W[j + 4].
 macro_rules! round {
-    ($w:ident, $j:expr, $ff:expr, $gg:expr,
+    ($ff:expr, $gg:expr, $tj:expr, $wi:expr, $wj:expr,
      $a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident, $g:ident, $h:ident) => {
         let a12 = $a.rotate_left(12);
-        let ss1 = a12.wrapping_add($e).wrapping_add(T[$j]).rotate_left(7);
-        let ss2 = ss1 ^ a12;
+        let ss1 = a12.wrapping_add($e).wrapping_add($tj).rotate_left(7);
         $d = $d
             .wrapping_add($ff)
-            .wrapping_add(ss2)
-            .wrapping_add($w[$j] ^ $w[$j + 4]);
-        $h = $h.wrapping_add($gg).wrapping_add(ss1).wrapping_add($w[$j]);
+            .wrapping_add(ss1 ^ a12)
+            .wrapping_add($wj);
+        $h = $h.wrapping_add($gg).wrapping_add(ss1).wrapping_add($wi);
         $b = $b.rotate_left(9);
         $f = $f.rotate_left(19);
         $h = p0($h);
     };
 }
 
-/// Rounds 0..16: FF and GG are plain XOR.
+/// Rounds 0..16: FF and GG are plain XOR. `$w` is the 16-word ring of the message schedule.
 macro_rules! low {
-    ($w:ident, $j:expr, $a:ident, $b:ident, $c:ident, $d:ident,
+    ($j:expr, $w:ident, $a:ident, $b:ident, $c:ident, $d:ident,
      $e:ident, $f:ident, $g:ident, $h:ident) => {
         round!(
-            $w,
-            $j,
             $a ^ $b ^ $c,
             $e ^ $f ^ $g,
+            T[$j],
+            $w[$j % 16],
+            $w[$j % 16] ^ $w[($j + 4) % 16],
             $a,
             $b,
             $c,
@@ -83,13 +84,14 @@ macro_rules! low {
 
 /// Rounds 16..64: majority and choice, in their cheapest bitwise forms.
 macro_rules! high {
-    ($w:ident, $j:expr, $a:ident, $b:ident, $c:ident, $d:ident,
+    ($j:expr, $w:ident, $a:ident, $b:ident, $c:ident, $d:ident,
      $e:ident, $f:ident, $g:ident, $h:ident) => {
         round!(
-            $w,
-            $j,
             ($a & $b) | ($c & ($a | $b)),
             (($f ^ $g) & $e) ^ $g,
+            T[$j],
+            $w[$j % 16],
+            $w[$j % 16] ^ $w[($j + 4) % 16],
             $a,
             $b,
             $c,
@@ -102,19 +104,41 @@ macro_rules! high {
     };
 }
 
-/// Four rounds starting at `$j`, ending with the variables back in their original roles.
-macro_rules! four {
-    ($kind:ident, $w:ident, $j:expr, $a:ident, $b:ident, $c:ident, $d:ident,
-     $e:ident, $f:ident, $g:ident, $h:ident) => {
-        $kind!($w, $j, $a, $b, $c, $d, $e, $f, $g, $h);
-        $kind!($w, $j + 1, $d, $a, $b, $c, $h, $e, $f, $g);
-        $kind!($w, $j + 2, $c, $d, $a, $b, $g, $h, $e, $f);
-        $kind!($w, $j + 3, $b, $c, $d, $a, $f, $g, $h, $e);
+/// Replaces W[j] in the ring with W[j + 16], from W[j], W[j + 3], W[j + 7], W[j + 10] and
+/// W[j + 13]. Round j is the last to read W[j], and W[j + 4] stays in place until round j + 4.
+macro_rules! expand {
+    ($w:ident, $j:expr) => {
+        $w[$j % 16] = p1($w[$j % 16] ^ $w[($j + 7) % 16] ^ $w[($j + 13) % 16].rotate_left(15))
+            ^ $w[($j + 3) % 16].rotate_left(7)
+            ^ $w[($j + 10) % 16];
     };
 }
 
-/// Absorbs whole 64-byte blocks; any trailing partial block is ignored by construction.
-fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
+/// Four rounds starting at `$j`, ending with the variables back in their original roles, each
+/// followed by the expansion of the schedule word it consumed when `$more` is `more`.
+macro_rules! four {
+    ($kind:ident, $more:tt, $j:expr, $w:ident, $a:ident, $b:ident, $c:ident, $d:ident,
+     $e:ident, $f:ident, $g:ident, $h:ident) => {
+        $kind!($j, $w, $a, $b, $c, $d, $e, $f, $g, $h);
+        four!(@expand $more, $w, $j);
+        $kind!($j + 1, $w, $d, $a, $b, $c, $h, $e, $f, $g);
+        four!(@expand $more, $w, $j + 1);
+        $kind!($j + 2, $w, $c, $d, $a, $b, $g, $h, $e, $f);
+        four!(@expand $more, $w, $j + 2);
+        $kind!($j + 3, $w, $b, $c, $d, $a, $f, $g, $h, $e);
+        four!(@expand $more, $w, $j + 3);
+    };
+    (@expand more, $w:ident, $j:expr) => {
+        expand!($w, $j);
+    };
+    (@expand last, $w:ident, $j:expr) => {};
+}
+
+/// The compression function over whole 64-byte blocks, with the message schedule computed in a
+/// 16-word ring inside the rounds rather than stored for all 68 words first. Always inlined into
+/// the portable and the BMI2 versions.
+#[inline(always)]
+fn compress_blocks_inline(state: &mut [u32; 8], blocks: &[u8]) {
     let [
         mut s0,
         mut s1,
@@ -126,34 +150,30 @@ fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
         mut s7,
     ] = *state;
     for block in blocks.chunks_exact(BLOCK_LEN) {
-        let mut w = [0u32; 68];
+        let mut w = [0u32; 16];
         for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
             *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        }
-        for j in 16..68 {
-            w[j] = p1(w[j - 16] ^ w[j - 9] ^ w[j - 3].rotate_left(15))
-                ^ w[j - 13].rotate_left(7)
-                ^ w[j - 6];
         }
 
         let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h) =
             (s0, s1, s2, s3, s4, s5, s6, s7);
-        four!(low, w, 0, a, b, c, d, e, f, g, h);
-        four!(low, w, 4, a, b, c, d, e, f, g, h);
-        four!(low, w, 8, a, b, c, d, e, f, g, h);
-        four!(low, w, 12, a, b, c, d, e, f, g, h);
-        four!(high, w, 16, a, b, c, d, e, f, g, h);
-        four!(high, w, 20, a, b, c, d, e, f, g, h);
-        four!(high, w, 24, a, b, c, d, e, f, g, h);
-        four!(high, w, 28, a, b, c, d, e, f, g, h);
-        four!(high, w, 32, a, b, c, d, e, f, g, h);
-        four!(high, w, 36, a, b, c, d, e, f, g, h);
-        four!(high, w, 40, a, b, c, d, e, f, g, h);
-        four!(high, w, 44, a, b, c, d, e, f, g, h);
-        four!(high, w, 48, a, b, c, d, e, f, g, h);
-        four!(high, w, 52, a, b, c, d, e, f, g, h);
-        four!(high, w, 56, a, b, c, d, e, f, g, h);
-        four!(high, w, 60, a, b, c, d, e, f, g, h);
+        four!(low, more, 0, w, a, b, c, d, e, f, g, h);
+        four!(low, more, 4, w, a, b, c, d, e, f, g, h);
+        four!(low, more, 8, w, a, b, c, d, e, f, g, h);
+        four!(low, more, 12, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 16, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 20, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 24, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 28, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 32, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 36, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 40, w, a, b, c, d, e, f, g, h);
+        four!(high, more, 44, w, a, b, c, d, e, f, g, h);
+        // W[64..68] is the last that rounds 60..64 need, made by the expansions after round 48.
+        four!(high, more, 48, w, a, b, c, d, e, f, g, h);
+        four!(high, last, 52, w, a, b, c, d, e, f, g, h);
+        four!(high, last, 56, w, a, b, c, d, e, f, g, h);
+        four!(high, last, 60, w, a, b, c, d, e, f, g, h);
 
         s0 ^= a;
         s1 ^= b;
@@ -165,6 +185,31 @@ fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
         s7 ^= h;
     }
     *state = [s0, s1, s2, s3, s4, s5, s6, s7];
+}
+
+fn compress_blocks_portable(state: &mut [u32; 8], blocks: &[u8]) {
+    compress_blocks_inline(state, blocks);
+}
+
+/// With BMI2 the rotations become `rorx`, which leaves its source intact and saves moves.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "bmi2")]
+unsafe fn compress_blocks_bmi2(state: &mut [u32; 8], blocks: &[u8]) {
+    compress_blocks_inline(state, blocks);
+}
+
+/// Absorbs whole 64-byte blocks; any trailing partial block is ignored by construction.
+#[inline]
+fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("bmi2") {
+            // SAFETY: BMI2 was just detected.
+            unsafe { compress_blocks_bmi2(state, blocks) };
+            return;
+        }
+    }
+    compress_blocks_portable(state, blocks);
 }
 
 /// A completed result, kept until the next message starts.
@@ -415,6 +460,83 @@ mod tests {
             h,
             "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0"
         );
+    }
+
+    /// The schedule written out in full, as the standard describes it, for comparison.
+    fn compress_reference(state: &mut [u32; 8], block: &[u8]) {
+        let mut w = [0u32; 68];
+        for (j, bytes) in block.chunks_exact(4).enumerate() {
+            w[j] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for j in 16..68 {
+            w[j] = super::p1(w[j - 16] ^ w[j - 9] ^ w[j - 3].rotate_left(15))
+                ^ w[j - 13].rotate_left(7)
+                ^ w[j - 6];
+        }
+        let mut v = *state;
+        for j in 0..64 {
+            let [a, b, c, d, e, f, g, h] = v;
+            let ss1 = a
+                .rotate_left(12)
+                .wrapping_add(e)
+                .wrapping_add(super::T[j])
+                .rotate_left(7);
+            let ss2 = ss1 ^ a.rotate_left(12);
+            let (ff, gg) = if j < 16 {
+                (a ^ b ^ c, e ^ f ^ g)
+            } else {
+                ((a & b) | (a & c) | (b & c), (e & f) | (!e & g))
+            };
+            let tt1 = ff
+                .wrapping_add(d)
+                .wrapping_add(ss2)
+                .wrapping_add(w[j] ^ w[j + 4]);
+            let tt2 = gg.wrapping_add(h).wrapping_add(ss1).wrapping_add(w[j]);
+            v = [
+                tt1,
+                a,
+                b.rotate_left(9),
+                c,
+                super::p0(tt2),
+                e,
+                f.rotate_left(19),
+                g,
+            ];
+        }
+        for (s, x) in state.iter_mut().zip(v) {
+            *s ^= x;
+        }
+    }
+
+    /// Every compression version against the reference, on pseudo-random blocks.
+    #[test]
+    fn compression_versions_agree() {
+        let mut x = 0x2545_F491u32;
+        let data: Vec<u8> = (0..64 * 50)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect();
+        let mut expected = super::IV;
+        for block in data.chunks_exact(64) {
+            compress_reference(&mut expected, block);
+        }
+        let mut portable = super::IV;
+        super::compress_blocks_portable(&mut portable, &data);
+        assert_eq!(portable, expected);
+        let mut dispatched = super::IV;
+        super::compress_blocks(&mut dispatched, &data);
+        assert_eq!(dispatched, expected);
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("bmi2") {
+            let mut bmi2 = super::IV;
+            // SAFETY: BMI2 was just detected.
+            unsafe { super::compress_blocks_bmi2(&mut bmi2, &data) };
+            assert_eq!(bmi2, expected);
+        }
     }
 
     const ABC: &str = "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0";
