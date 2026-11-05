@@ -156,10 +156,6 @@ public struct FpElement: Equatable {
         return BigInt256.select(zeroMask(borrow), reduced, value)
     }
 
-    static func fromHex(_ hex: String) -> FpElement {
-        return FpElement(BigInt256.fromHex(hex))
-    }
-
     static let zero = FpElement(unchecked: BigInt256.zero)
     static let one = FpElement(unchecked: BigInt256.one)
 
@@ -209,10 +205,7 @@ public struct FpElement: Equatable {
     }
 
     func invert() -> FpElement {
-        if isZero {
-            fatalError("Cannot invert zero")
-        }
-        return invertedUnchecked()
+        return invertedUnchecked()  // 0 的结果是 0，调用方负责事先排除
     }
 
     /// 费马小定理求逆：a^(p-2)，指数是公开常量，使用固定加法链（255次平方 + 15次乘法）。

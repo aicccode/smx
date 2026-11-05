@@ -123,14 +123,33 @@ struct SM3Core {
     private var state = SM3State()
     private var buffer: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0, 0, 0, 0, 0)
     private var bufferOffset = 0
-    private var byteCount = 0
+    private var byteCount: UInt64 = 0
+    private var overLimit = false
+
+    /// 标准允许的最大输入：比特长度必须小于 2^64
+    static let maximumByteCount: UInt64 = (1 << 61) - 1
+
+    init() {}
+
+    /// 测试入口：从指定的已处理字节数开始计数
+    init(testingByteCount: UInt64) {
+        byteCount = testingByteCount
+    }
+
+    var isOverLimit: Bool { return overLimit }
 
     mutating func update(_ data: UnsafeBufferPointer<UInt8>) {
         guard var source = data.baseAddress else {
             return
         }
         var remaining = data.count
-        byteCount += remaining
+        let (total, overflow) = byteCount.addingReportingOverflow(UInt64(remaining))
+        if overflow || total > SM3Core.maximumByteCount {
+            // 不回绕：标记后忽略输入，finalize 不产生摘要
+            overLimit = true
+            return
+        }
+        byteCount = total
 
         if bufferOffset > 0 {
             let offset = bufferOffset
@@ -199,10 +218,9 @@ struct SM3Core {
         state = pending
     }
 
-    /// 填充并处理最后的分组，把摘要写入 output（32字节）。
-    /// 结束后内部状态保持为填充之后的状态，缓冲偏移停留在56，这与历史实现一致。
+    /// 填充并处理最后的分组，把摘要写入 output（32字节）。值类型，复制后可以各自结束；结束后不要再使用。
     mutating func finalize(into output: UnsafeMutablePointer<UInt8>) {
-        let bitLength = byteCount * 8
+        let bitLength = byteCount &<< 3
         let start = bufferOffset
         let needsExtraBlock = start + 1 > 56
         withUnsafeMutableBytes(of: &buffer) { raw in
@@ -221,10 +239,10 @@ struct SM3Core {
             }
         }
         withUnsafeMutableBytes(of: &buffer) { raw in
-            raw.storeBytes(of: UInt64(truncatingIfNeeded: bitLength).bigEndian, toByteOffset: 56, as: UInt64.self)
+            raw.storeBytes(of: bitLength.bigEndian, toByteOffset: 56, as: UInt64.self)
         }
         compressBuffer()
-        bufferOffset = 56
+        bufferOffset = 0
 
         let words = (state.a, state.b, state.c, state.d, state.e, state.f, state.g, state.h)
         withUnsafeBytes(of: words) { raw in
@@ -238,7 +256,11 @@ struct SM3Core {
         }
     }
 
+    /// 超过长度上限时返回空数组
     mutating func finalize() -> [UInt8] {
+        if overLimit {
+            return []
+        }
         return [UInt8](unsafeUninitializedCapacity: 32) { buffer, initialized in
             if let base = buffer.baseAddress {
                 finalize(into: base)
@@ -248,31 +270,40 @@ struct SM3Core {
     }
 }
 
+/// 结束（finalize）之后对象不可再改变：之后的 update 被忽略，再次 finalize 保持同一个摘要。
 final class SM3 {
     private var core = SM3Core()
     private var digest: [UInt8] = []
+    private var finished = false
 
     func update(_ data: [UInt8]) -> SM3 {
-        core.update(data)
+        if !finished {
+            core.update(data)
+        }
         return self
     }
 
     func update(_ string: String) -> SM3 {
-        core.update(string)
+        if !finished {
+            core.update(string)
+        }
         return self
     }
 
     func finalize() -> SM3 {
-        digest = core.finalize()
+        if !finished {
+            finished = true
+            digest = core.finalize()
+        }
         return self
     }
 
-    /// 大写十六进制摘要；finalize 之前返回空串
+    /// 大写十六进制摘要；finalize 之前或输入超过上限时返回空串
     func getHash() -> String {
         return Hex.encode(digest, gap: Hex.uppercaseGap)
     }
 
-    /// 摘要字节；finalize 之前返回空数组
+    /// 摘要字节；finalize 之前或输入超过上限时返回空数组
     func getHashBytes() -> [UInt8] {
         return digest
     }

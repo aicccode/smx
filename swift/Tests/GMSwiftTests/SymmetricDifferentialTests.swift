@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import GMSwift
@@ -102,31 +103,131 @@ final class SymmetricDifferentialTests: XCTestCase {
         }
     }
 
-    /// 既有行为：长度不是16字节的字符串密钥取 SM3 大写十六进制的前16个 ASCII 字符
-    func testSM4StringKeyDerivation() {
-        let hash = getSM3().update("short").finalize().getHash()
-        let sm4 = getSM4().setKey(key: "short", iv: "1234567890abcdef", hex: false)
-        XCTAssertEqual(sm4.roundKeys, referenceKeySchedule(Array(hash.utf8.prefix(16))))
-        XCTAssertEqual(sm4.iv, Array("1234567890abcdef".utf8))
+    func testSM4SBoxCircuitMatchesStandardOnAllInputs() {
+        for value in 0..<256 {
+            let byte = UInt64(value)
+            let expected = UInt64(sbox[value])
+            // 每个字节位置都试一次，其余字节输入 0，S(0) = 0xD6
+            for position in 0..<8 {
+                let shift = UInt64(position * 8)
+                let filler = 0xD6D6_D6D6_D6D6_D6D6 & ~(UInt64(0xFF) << shift)
+                XCTAssertEqual(sm4SubstituteBytes(byte << shift), expected << shift | filler)
+                if position < 4 {
+                    let narrow = UInt32(byte << shift)
+                    XCTAssertEqual(sm4SubstituteBytes(narrow), UInt32(truncatingIfNeeded: expected << shift | filler))
+                }
+            }
+            // 同一个输入填满所有字节
+            XCTAssertEqual(sm4SubstituteBytes(byte &* 0x0101_0101_0101_0101), expected &* 0x0101_0101_0101_0101)
+        }
     }
 
-    /// 既有行为：去填充宽松，非法填充时原样返回；末尾不足一个分组的数据被忽略
-    func testSM4LenientDecrypt() {
-        let sm4 = getSM4().setKey(
-            key: "0123456789abcdeffedcba9876543210", iv: "00000000000000000000000000000000", hex: true)
-        let cipher = sm4.encrypt(text: "0123456789abcdef")
-        XCTAssertEqual(sm4.decrypt(text: cipher + "00"), "0123456789abcdef")
-        // 只取第一个分组：明文就是 16 字节消息本身，最后一字节 'f' 不是合法填充
-        XCTAssertEqual(sm4.decrypt(text: String(cipher.prefix(32))), "0123456789abcdef")
-        XCTAssertEqual(sm4.decodeHex("abc"), [])
-        XCTAssertEqual(sm4.decodeHex("abzz12"), [0xAB])
-        XCTAssertEqual(sm4.decodeHex("+f-0"), [0x0F, 0x00])
+    func testSM4RejectsKeysAndIVsOfOtherLengths() {
+        let goodKey = String(repeating: "ab", count: 16)
+        for length in [0, 1, 15, 17, 24, 32] {
+            let hex = String(repeating: "ab", count: length)
+            XCTAssertThrowsError(try getSM4().setKeyChecked(key: hex, iv: goodKey, hex: true), "key \(length)")
+            XCTAssertThrowsError(try getSM4().setKeyChecked(key: goodKey, iv: hex, hex: true), "iv \(length)")
+            let text = String(repeating: "a", count: length)
+            XCTAssertThrowsError(try getSM4().setKeyChecked(key: text, iv: "0123456789abcdef", hex: false))
+            XCTAssertThrowsError(try getSM4().setKeyChecked(key: "0123456789abcdef", iv: text, hex: false))
+        }
+        for bad in ["zz" + String(repeating: "ab", count: 15), "+f" + String(repeating: "ab", count: 15), "é"] {
+            XCTAssertThrowsError(try getSM4().setKeyChecked(key: bad, iv: goodKey, hex: true))
+        }
+        // 16 字节的 UTF-8：按字节算，不是按字符算
+        XCTAssertNoThrow(
+            try getSM4().setKeyChecked(key: "国密国密国a", iv: "0123456789abcdef", hex: false).encryptChecked(text: "x"))
     }
 
-    func testSM4ShortKeyIsZeroPadded() {
+    func testSM4FailedSetKeyClearsThePreviousKey() {
+        let good = String(repeating: "ab", count: 16)
+        let sm4 = getSM4().setKey(key: good, iv: good, hex: true)
+        XCTAssertFalse(sm4.encrypt(text: "x").isEmpty)
+        _ = sm4.setKey(key: "short", iv: good, hex: true)
+        XCTAssertEqual(sm4.encrypt(text: "x"), "")
+        XCTAssertNil(sm4.roundKeys)
+    }
+
+    /// 曾经静默地用全 0 轮密钥加密
+    func testSM4WithoutKeyFails() {
         let sm4 = getSM4()
-        sm4.setKeyBytes(keyBytes: [1, 2, 3, 4, 5, 6, 7, 8], ivBytes: [UInt8](repeating: 0, count: 16))
-        XCTAssertEqual(sm4.roundKeys, referenceKeySchedule([1, 2, 3, 4, 5, 6, 7, 8] + [UInt8](repeating: 0, count: 8)))
+        XCTAssertEqual(sm4.encrypt(text: "x"), "")
+        XCTAssertEqual(sm4.decrypt(text: "00"), "")
+        XCTAssertThrowsError(try sm4.encryptChecked(text: "x"))
+        XCTAssertThrowsError(try sm4.decryptChecked(text: "00"))
+    }
+
+    /// 曾经把 decrypt("") 变成越界陷阱，把非法填充原样返回
+    func testSM4DecryptFailuresAreUniform() throws {
+        let key = [UInt8](0..<16)
+        let iv = [UInt8](16..<32)
+        let sm4 = try getSM4().setKeyChecked(key: Hex.encode(key), iv: Hex.encode(iv), hex: true)
+        let cipher = try sm4.encryptChecked(text: "0123456789abcdef")
+        let cases = [
+            "", "0", "zz", "é", String(cipher.dropLast(2)), cipher + "00", String(repeating: "00", count: 1),
+            "+f" + String(cipher.dropFirst(2)), String(cipher.prefix(32)), String(repeating: "ff", count: 48),
+        ]
+        for text in cases {
+            XCTAssertEqual(sm4.decrypt(text: text), "", text)
+            XCTAssertThrowsError(try sm4.decryptChecked(text: text), text) { error in
+                XCTAssertEqual(error as? SM4Error, SM4Error.decryptionFailed)
+            }
+        }
+    }
+
+    /// 填充合法但不是 UTF-8：曾经被静默替换成 U+FFFD
+    func testSM4DecryptRejectsInvalidUTF8() throws {
+        let key = [UInt8](0..<16)
+        let iv = [UInt8](16..<32)
+        let sm4 = try getSM4().setKeyChecked(key: Hex.encode(key), iv: Hex.encode(iv), hex: true)
+        for bad in [[0xFF], [0xC0, 0x80], [0xE4, 0xB8], [0xED, 0xA0, 0x80]] as [[UInt8]] {
+            let cipher = Hex.encode(referenceCBCEncrypt(bad, key: key, iv: iv))
+            XCTAssertThrowsError(try sm4.decryptChecked(text: cipher))
+        }
+        // 明文里真实的 U+FFFD 和 NUL 不受影响
+        for text in ["\u{FFFD}", "a\0b"] {
+            XCTAssertEqual(try sm4.decryptChecked(text: try sm4.encryptChecked(text: text)), text)
+        }
+    }
+
+    /// 所有填充边界，并行解密的分组数覆盖 1 到 9
+    func testSM4DecryptEveryLength() throws {
+        var rng = TestRandom(seed: 0xB3)
+        let key = rng.bytes(16)
+        let iv = rng.bytes(16)
+        let sm4 = try getSM4().setKeyChecked(key: Hex.encode(key), iv: Hex.encode(iv), hex: true)
+        for length in 0..<150 {
+            let text = String(decoding: rng.bytes(length).map { $0 & 0x7F }, as: UTF8.self)
+            let cipher = Hex.encode(referenceCBCEncrypt(Array(text.utf8), key: key, iv: iv))
+            XCTAssertEqual(try sm4.decryptChecked(text: cipher), text)
+        }
+    }
+
+    /// setKey 与 encrypt/decrypt 并发：结果必须来自某一个完整的密钥，不能崩溃或混合
+    func testSM4ConcurrentUse() {
+        let first = String(repeating: "11", count: 16)
+        let second = String(repeating: "22", count: 16)
+        let sm4 = getSM4().setKey(key: first, iv: first, hex: true)
+        let expectedFirst = getSM4().setKey(key: first, iv: first, hex: true).encrypt(text: "msg")
+        let expectedSecond = getSM4().setKey(key: second, iv: second, hex: true).encrypt(text: "msg")
+        let lock = NSLock()
+        var unexpected = 0
+        DispatchQueue.concurrentPerform(iterations: 8) { worker in
+            for round in 0..<200 {
+                if worker == 0 {
+                    _ = sm4.setKey(key: round % 2 == 0 ? second : first, iv: round % 2 == 0 ? second : first, hex: true)
+                } else {
+                    let cipher = sm4.encrypt(text: "msg")
+                    if cipher != expectedFirst && cipher != expectedSecond {
+                        lock.lock()
+                        unexpected += 1
+                        lock.unlock()
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(unexpected, 0)
     }
 
     // MARK: - SM3
@@ -162,18 +263,35 @@ final class SymmetricDifferentialTests: XCTestCase {
         }
     }
 
-    func testSM3StateAfterFinalizeMatchesHistoricalBehaviour() {
+    /// 结束之后对象不再改变。曾经的实现在结束后继续累积状态，再次 finalize 得到非标准的值。
+    func testSM3ReuseAfterFinalizeIsInert() {
         let sm3 = SM3()
         XCTAssertEqual(sm3.getHash(), "")
         XCTAssertEqual(sm3.getHashBytes(), [])
         _ = sm3.update("abc").finalize()
         let first = sm3.getHash()
-        _ = sm3.update([1, 2, 3])
-        XCTAssertEqual(sm3.getHash(), first, "update must not change the stored hash")
+        _ = sm3.update([1, 2, 3]).update("more")
+        XCTAssertEqual(sm3.getHash(), first)
         _ = sm3.finalize()
-        XCTAssertEqual(sm3.getHash(), sm3AfterFinalizeCaptured.0)
-        _ = sm3.finalize()
-        XCTAssertEqual(sm3.getHash(), sm3AfterFinalizeCaptured.1)
+        XCTAssertEqual(sm3.getHash(), first)
+    }
+
+    /// 2^61 - 1 字节是上限：恰好到达时可以结束，超过时不回绕、不产生摘要
+    func testSM3LengthLimit() {
+        let limit = SM3Core.maximumByteCount
+        var atLimit = SM3Core(testingByteCount: limit - 1)
+        atLimit.update([1])
+        XCTAssertFalse(atLimit.isOverLimit)
+        XCTAssertEqual(atLimit.finalize().count, 32)
+
+        var over = SM3Core(testingByteCount: limit)
+        over.update([1])
+        XCTAssertTrue(over.isOverLimit)
+        XCTAssertEqual(over.finalize(), [])
+
+        var wrap = SM3Core(testingByteCount: .max)
+        wrap.update([1])
+        XCTAssertTrue(wrap.isOverLimit)
     }
 
     // MARK: - SM2 高层流程
@@ -224,13 +342,13 @@ final class SymmetricDifferentialTests: XCTestCase {
             }
         }
         XCTAssertEqual(message("00"), #"invalidInput("Ciphertext too short")"#)
-        XCTAssertEqual(message(String(cipher.dropLast())), #"invalidInput("Invalid hex string length")"#)
+        XCTAssertEqual(message(String(cipher.dropLast())), #"invalidInput("Invalid ciphertext encoding")"#)
         XCTAssertEqual(
             message(String(cipher.dropLast(2)) + "00"), #"decryptionFailed("Decryption verification failed")"#)
         XCTAssertEqual(
             message(String(cipher.prefix(130)) + String(repeating: "0", count: 64) + "zz"),
-            #"invalidInput("Invalid hex character")"#)
-        XCTAssertEqual(message("04" + String(repeating: "1", count: 192)), #"invalidInput("Invalid C1 point")"#)
+            #"invalidInput("Invalid ciphertext encoding")"#)
+        XCTAssertEqual(message("04" + String(repeating: "1", count: 194)), #"invalidInput("Invalid C1 point")"#)
     }
 
     func testSignatureChecks() throws {
@@ -282,7 +400,7 @@ final class SymmetricDifferentialTests: XCTestCase {
             XCTFail("expected V, Za and Zb")
         }
 
-        let offCurve = ECPoint.fromHex(xHex: "1", yHex: "1")
+        let offCurve = ECPoint(x: FpElement(.one), y: FpElement(.one))
         XCTAssertFalse(
             SM2.getSb(byteLen: 16, pA: pA, Ra: offCurve, pB: pB, dB: dB, Rb: pointRb, rb: rb, IDa: idA, IDb: idB)
                 .success)

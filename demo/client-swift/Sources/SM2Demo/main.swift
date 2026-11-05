@@ -4,6 +4,9 @@
 import Foundation
 import GMSwift
 
+// 这是演示代码。它用明文 HTTP 通信，并且为了和 Java 服务端的协议保持一致使用全 0 的 SM4 IV，
+// 真实系统必须使用 TLS，并且为每条消息使用新的随机 IV。CBC 本身不提供完整性。
+
 let serverURL = "http://localhost:8080"
 let clientId = "swift-client@demo.aicc"
 
@@ -52,47 +55,79 @@ struct CryptoTestResponse: Decodable {
 
 // MARK: - HTTP helpers using curl
 
+/// 响应上限，防止服务端返回无限长的数据
+let maximumResponseBytes = 1 << 20
+
 func postJSON<T: Encodable, R: Decodable>(_ url: String, body: T) throws -> R {
     let jsonData = try JSONEncoder().encode(body)
-    let jsonString = String(data: jsonData, encoding: .utf8)!
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+    // 请求体走标准输入，不放在命令行上：其它用户可以通过进程列表看到命令行。
     process.arguments = [
         "-s", "-X", "POST",
+        "--max-time", "30",
+        "--max-filesize", String(maximumResponseBytes),
         "-H", "Content-Type: application/json",
-        "-d", jsonString,
+        "--data-binary", "@-",
         url,
     ]
 
-    let pipe = Pipe()
-    process.standardOutput = pipe
+    let input = Pipe()
+    let output = Pipe()
+    process.standardInput = input
+    process.standardOutput = output
     process.standardError = FileHandle.nullDevice
 
     try process.run()
+    input.fileHandleForWriting.write(jsonData)
+    input.fileHandleForWriting.closeFile()
+
+    var data = Data()
+    while data.count <= maximumResponseBytes {
+        let chunk = output.fileHandleForReading.availableData
+        if chunk.isEmpty {
+            break
+        }
+        data.append(chunk)
+    }
+    if data.count > maximumResponseBytes {
+        process.terminate()
+    }
     process.waitUntilExit()
 
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-    if data.isEmpty {
-        throw NSError(domain: "SM2Demo", code: 1, userInfo: [NSLocalizedDescriptionKey: "No response from server"])
+    if data.isEmpty || data.count > maximumResponseBytes {
+        throw NSError(
+            domain: "SM2Demo", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid response from server"])
     }
 
     return try JSONDecoder().decode(R.self, from: data)
 }
 
-func hexToBytes(_ hex: String) -> [UInt8] {
+/// 严格的十六进制解码，长度为奇数或含有其它字符时返回 nil。这个输入来自网络。
+func hexToBytes(_ hex: String) -> [UInt8]? {
+    let digits = Array(hex.utf8)
+    guard digits.count % 2 == 0 else {
+        return nil
+    }
     var bytes = [UInt8]()
-    var index = hex.startIndex
-    while index < hex.endIndex {
-        let nextIndex = hex.index(index, offsetBy: 2)
-        let byteString = String(hex[index..<nextIndex])
-        if let byte = UInt8(byteString, radix: 16) {
-            bytes.append(byte)
+    bytes.reserveCapacity(digits.count / 2)
+    for index in stride(from: 0, to: digits.count, by: 2) {
+        guard let high = hexValue(digits[index]), let low = hexValue(digits[index + 1]) else {
+            return nil
         }
-        index = nextIndex
+        bytes.append(high << 4 | low)
     }
     return bytes
+}
+
+func hexValue(_ digit: UInt8) -> UInt8? {
+    switch digit {
+    case UInt8(ascii: "0")...UInt8(ascii: "9"): return digit - UInt8(ascii: "0")
+    case UInt8(ascii: "a")...UInt8(ascii: "f"): return digit - UInt8(ascii: "a") + 10
+    case UInt8(ascii: "A")...UInt8(ascii: "F"): return digit - UInt8(ascii: "A") + 10
+    default: return nil
+    }
 }
 
 // MARK: - Main
@@ -102,14 +137,20 @@ func main() {
 
     // 生成A侧(客户端)证书密钥对
     let (daHex, paHex) = SM2.genKeyPair()
+    guard !daHex.isEmpty else {
+        print("System random generator failed")
+        exit(1)
+    }
     print("Generated A certificate keypair:")
-    print("  Private key (dA): \(daHex)")
     print("  Public key (pA): \(paHex)")
 
     // 生成A侧随机密钥对
     let (raHex, raPubHex) = SM2.genKeyPair()
+    guard !raHex.isEmpty else {
+        print("System random generator failed")
+        exit(1)
+    }
     print("\nGenerated A random keypair:")
-    print("  Private key (ra): \(raHex)")
     print("  Public key (Ra): \(raPubHex)")
 
     let keyLen = 16  // 16字节 = 128位密钥
@@ -153,7 +194,10 @@ func main() {
     let pointRa = ECPoint.fromHexEncoded(raPubHex)
     let dA = BigInt256.fromHex(daHex)
     let ra = BigInt256.fromHex(raHex)
-    let sbBytes = hexToBytes(initResponse.Sb)
+    guard let sbBytes = hexToBytes(initResponse.Sb) else {
+        print("Server returned a malformed Sb")
+        exit(1)
+    }
 
     let result = SM2.getSa(
         byteLen: keyLen,
@@ -169,7 +213,7 @@ func main() {
     }
 
     print("Sa: \(sa)")
-    print("Ka (negotiated key): \(ka)")
+    print("Negotiated a \(keyLen)-byte session key")
 
     // Step 3: 确认密钥交换
     print("\n--- Step 3: Key Exchange Confirm ---")
@@ -198,18 +242,24 @@ func main() {
     }
 
     print("\nKey exchange completed successfully!")
-    print("Negotiated key (Ka): \(ka)")
 
     // Step 4: 双向加密通信测试
     print("\n--- Step 4: Bidirectional Crypto Test ---")
 
     // 初始化SM4
     let iv = "00000000000000000000000000000000"
-    let sm4 = getSM4().setKey(key: ka, iv: iv, hex: true)
+    let sm4: Sm4Impl
+    let clientCiphertext: String
+    let clientPlaintext = "Hello from Swift Client!"
+    do {
+        sm4 = try getSM4().setKeyChecked(key: ka, iv: iv, hex: true)
+        clientCiphertext = try sm4.encryptChecked(text: clientPlaintext)
+    } catch {
+        print("SM4 setup failed: \(error)")
+        exit(1)
+    }
 
     // 客户端加密消息
-    let clientPlaintext = "Hello from Swift Client!"
-    let clientCiphertext = sm4.encrypt(text: clientPlaintext)
     print("Client plaintext: \(clientPlaintext)")
     print("Client ciphertext: \(clientCiphertext)")
 
@@ -239,7 +289,7 @@ func main() {
         print("\n[Server decrypted client message]: \(serverDecryptOk ? "PASS" : "FAIL")")
 
         // 客户端解密服务端的消息
-        let serverDecrypted = sm4.decrypt(text: cryptoResponse.serverCiphertext)
+        let serverDecrypted = try sm4.decryptChecked(text: cryptoResponse.serverCiphertext)
         let clientDecryptOk = serverDecrypted == cryptoResponse.serverPlaintext
         print("[Client decrypted server message]: \(clientDecryptOk ? "PASS" : "FAIL")")
         print("  Server plaintext: \(cryptoResponse.serverPlaintext)")
@@ -249,6 +299,7 @@ func main() {
             print("\nBidirectional Crypto test PASSED!")
         } else {
             print("\nBidirectional Crypto test FAILED!")
+            exit(1)
         }
     } catch {
         print("Crypto test failed: \(error)")

@@ -258,7 +258,7 @@ final class PointDifferentialTests: XCTestCase {
         XCTAssertTrue(generator.toJacobian().addAffine(g.x, g.y.negate()).isInfinity)
     }
 
-    /// 验签不求逆的判断必须与 r == e.modAdd(x1, n) 完全一致，包括 x1 落在 [n, p) 和 e >= n 的情况
+    /// 验签不求逆的判断必须与 r == (e + x1) mod n 完全一致，包括 x1 落在 [n, p) 和 e >= n 的情况
     func testSignatureMatchesAgreesWithModAdd() {
         var rng = TestRandom(seed: 0x5)
         guard let (x1, _) = JacobianPoint.multiplyGenerator(rng.bigInt()).toAffine() else {
@@ -285,16 +285,18 @@ final class PointDifferentialTests: XCTestCase {
         var matches = 0
         for x in xs {
             for e in es {
-                let expected = e.modAdd(x, n)
+                let modulus = ReferenceBigInt(n)
+                let sum = (ReferenceBigInt(e) + ReferenceBigInt(x)) % modulus
+                let expected = sum.bigInt256
                 // 真实 r，以及不同于真实值的 r
-                // 后两个是快捷判断的陷阱：x + p - n + e 让候选值 x + p 与 x 同余；
-                // x + e + 2^256 - n 让候选值 x 的 modAdd 实际上并不回绕
+                // 后两个是快捷判断的陷阱：x + p - n + e 让候选值 x + p 与 x 模 p 同余，但模 n 不同余；
+                // x + e - n 则是未完全约减时会出现的值
                 let candidates: [BigInt256] = [
                     expected, expected.add(.one).0, expected.sub(.one).0, n.sub(.one).0, .one,
                     x.add(p).0.sub(n).0.add(e).0, x.add(e).0.sub(n).0,
                 ]
                 for r in candidates where !r.isZero && r < n {
-                    let baseline = e.modAdd(x, n) == r
+                    let baseline = expected == r
                     XCTAssertEqual(
                         SM2.signatureMatches(point: point(withAffineX: x), r: r, e: e), baseline,
                         "x=\(x.toHex()) e=\(e.toHex()) r=\(r.toHex())")
@@ -331,7 +333,7 @@ final class PointDifferentialTests: XCTestCase {
         let generator = ECPoint.generator()
         XCTAssertEqual(ECPoint.fromEncoded(generator.toEncoded()), generator)
         XCTAssertEqual(ECPoint.fromHexEncoded(generator.toHexEncoded()), generator)
-        XCTAssertEqual(ECPoint.fromHexEncoded("0x" + generator.toHexEncoded()), generator)
+        XCTAssertTrue(ECPoint.fromHexEncoded("0x" + generator.toHexEncoded()).isInfinity, "0x prefix is not canonical")
         XCTAssertEqual(ECPoint.infinityPoint().toEncoded(), [0])
         XCTAssertTrue(ECPoint.fromEncoded([]).isInfinity)
         XCTAssertEqual(SM2.decodePoint(generator.toHexEncoded()), generator)

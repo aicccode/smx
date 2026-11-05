@@ -32,26 +32,25 @@ final class KnownAnswerTests: XCTestCase {
 
     private let sm4Key = "0123456789ABCDEFFEDCBA9876543210"
 
-    /// The CBC path with a zero IV gives the raw block cipher for the first block.
-    private func encryptBlock(_ sm4: Sm4Impl, _ block: [UInt8]) -> [UInt8] {
-        let hex = sm4.doCrypt(input: block, cbcIV: [UInt8](repeating: 0, count: 16), encrypt: true)
-        return unhex(String(hex.prefix(32)))
+    private func keyedForBlocks() throws -> Sm4Impl {
+        let sm4 = Sm4Impl()
+        try sm4.setKeyBytes(keyBytes: unhex(sm4Key), ivBytes: [UInt8](repeating: 0, count: 16))
+        return sm4
     }
 
-    func testSM4StandardVector() {
-        let key = unhex(sm4Key)
-        let sm4 = Sm4Impl()
-        sm4.setKeyBytes(keyBytes: key, ivBytes: [UInt8](repeating: 0, count: 16))
-        XCTAssertEqual(encryptBlock(sm4, key), unhex("681EDF34D206965E86B3E94F536E4246"))
+    func testSM4StandardVector() throws {
+        let sm4 = try keyedForBlocks()
+        XCTAssertEqual(sm4.encryptBlock(unhex(sm4Key)), unhex("681EDF34D206965E86B3E94F536E4246"))
     }
 
-    func testSM4MillionIterationVector() {
-        let key = unhex(sm4Key)
-        let sm4 = Sm4Impl()
-        sm4.setKeyBytes(keyBytes: key, ivBytes: [UInt8](repeating: 0, count: 16))
-        var block = key
+    func testSM4MillionIterationVector() throws {
+        let sm4 = try keyedForBlocks()
+        var block = unhex(sm4Key)
         for _ in 0..<1_000_000 {
-            block = encryptBlock(sm4, block)
+            guard let next = sm4.encryptBlock(block) else {
+                return XCTFail("block encryption failed")
+            }
+            block = next
         }
         XCTAssertEqual(block, unhex("595298C7C6FD271F0402F804C33D3F66"))
     }
@@ -136,9 +135,9 @@ final class KnownAnswerTests: XCTestCase {
         }
     }
 
-    /// Off-curve points reach the scalar multiplication through getSb/getSa, which do not validate pA/pB.
+    /// Off-curve points no longer reach this through public entry points; the internal multiply stays correct for them.
     func testSM2CapturedOffCurveMultiples() {
-        let point = ECPoint.fromHex(xHex: "1", yHex: "1")
+        let point = ECPoint(x: FpElement(.one), y: FpElement(.one))
         XCTAssertEqual(
             point.multiply(BigInt256.fromHex("5")).toHexEncoded(),
             "043d8930bf8f513faac16606ed161c3cbc9a81771334bebc125ad6b5ad6b5ad6b6ec84eb6a69eb7656422f506c7b052e83d63caf66992eafd6706a8e407757a45d"

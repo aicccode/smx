@@ -146,6 +146,12 @@ public struct BigInt256: Comparable {
         return BigInt256(l0 & other.l0, l1 & other.l1, l2 & other.l2, l3 & other.l3)
     }
 
+    /// 相等时返回全 1，否则返回 0，不依赖数据分支
+    @inline(__always)
+    static func equalMask(_ a: BigInt256, _ b: BigInt256) -> UInt64 {
+        return zeroMask((a.l0 ^ b.l0) | (a.l1 ^ b.l1) | (a.l2 ^ b.l2) | (a.l3 ^ b.l3))
+    }
+
     /// mask 为全 1 时取 a，为 0 时取 b
     @inline(__always)
     static func select(_ mask: UInt64, _ a: BigInt256, _ b: BigInt256) -> BigInt256 {
@@ -339,7 +345,7 @@ public struct BigInt256: Comparable {
         }
         let dividendBits = (topIndex + 1) * 64 - limbs[topIndex].leadingZeroBitCount
         if modulus.isZero {
-            fatalError("Division by zero")
+            return BigInt256.zero  // 只有内部测试会走到通用路径；没有陷阱
         }
 
         var remainder = BigInt256.zero
@@ -363,7 +369,7 @@ public struct BigInt256: Comparable {
 
     func modInverse(_ modulus: BigInt256) -> BigInt256 {
         if isZero {
-            fatalError("Cannot invert zero")
+            return BigInt256.zero  // 0 没有逆元；调用方负责事先保证非 0，这里不陷入陷阱
         }
         if modulus == SM2Curve.p {
             return FpElement(unchecked: self).invertedUnchecked().value
@@ -393,70 +399,56 @@ public struct BigInt256: Comparable {
 
     // MARK: - 序列化
 
+    /// 解析十六进制（可带 0x 前缀，最多64位数字，不足时高位补0）。
+    /// 这个接口无法抛错：任何不合法的输入（非十六进制字符、非 ASCII、超过256位）都返回 0。
+    /// 0 不是合法私钥，所有使用它的入口都会干净地失败。要区分错误请用 `init?(hex:)`。
     public static func fromHex(_ hex: String) -> BigInt256 {
         var copy = hex
-        let parsed = copy.withUTF8 { utf8 -> BigInt256? in
+        return copy.withUTF8 { utf8 -> BigInt256? in
             var digits = utf8
             if digits.count >= 2, digits[0] == UInt8(ascii: "0"),
                 digits[1] == UInt8(ascii: "x") || digits[1] == UInt8(ascii: "X")
             {
                 digits = UnsafeBufferPointer(rebasing: digits[2...])
             }
-            if digits.count > 64 {
+            return parseHexDigits(digits)
+        } ?? BigInt256.zero
+    }
+
+    /// 严格解析：恰好64个十六进制字符（大小写均可），否则返回 nil。
+    public init?(hex: String) {
+        var copy = hex
+        let parsed = copy.withUTF8 { utf8 -> BigInt256? in
+            return utf8.count == 64 ? BigInt256.parseHexDigits(utf8) : nil
+        }
+        guard let value = parsed else {
+            return nil
+        }
+        self = value
+    }
+
+    /// 解析最多64个十六进制数字，不足时高位补0。解码本身无按数据的分支。
+    private static func parseHexDigits(_ digits: UnsafeBufferPointer<UInt8>) -> BigInt256? {
+        if digits.count > 64 {
+            return nil
+        }
+        return withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 32) { buffer -> BigInt256? in
+            guard let output = buffer.baseAddress else {
                 return nil
             }
-            return withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 32) { buffer -> BigInt256? in
-                guard let output = buffer.baseAddress else {
-                    return nil
-                }
-                output.initialize(repeating: 0, count: 32)
-                let start = output + 32 - (digits.count + 1) / 2
-                var valid: Bool
-                if digits.count % 2 == 1 {
-                    // 奇数长度时最高位数字单独占一个字节
-                    var pair: (UInt8, UInt8) = (UInt8(ascii: "0"), digits[0])
-                    valid = withUnsafeBytes(of: &pair) { Hex.decode($0.bindMemory(to: UInt8.self), into: start) }
-                    valid = Hex.decode(UnsafeBufferPointer(rebasing: digits[1...]), into: start + 1) && valid
-                } else {
-                    valid = Hex.decode(digits, into: start)
-                }
-                return valid ? fromBEPointer(UnsafePointer(output)) : nil
+            output.initialize(repeating: 0, count: 32)
+            defer { secureWipe(UnsafeMutableRawBufferPointer(buffer)) }
+            let start = output + 32 - (digits.count + 1) / 2
+            var valid: Bool
+            if digits.count % 2 == 1 {
+                // 奇数长度时最高位数字单独占一个字节
+                var pair: (UInt8, UInt8) = (UInt8(ascii: "0"), digits[0])
+                valid = withUnsafeBytes(of: &pair) { Hex.decode($0.bindMemory(to: UInt8.self), into: start) }
+                valid = Hex.decode(UnsafeBufferPointer(rebasing: digits[1...]), into: start + 1) && valid
+            } else {
+                valid = Hex.decode(digits, into: start)
             }
-        }
-        return parsed ?? fromHexSlow(hex)
-    }
-
-    /// 非常规输入（非十六进制字符、非 ASCII、超长）的逐字符解析，保持既有行为：
-    /// 无效字符按 0 处理，超过256位的输入触发数组越界陷阱。
-    private static func fromHexSlow(_ hex: String) -> BigInt256 {
-        var hex = hex.hasPrefix("0x") || hex.hasPrefix("0X") ? String(hex.dropFirst(2)) : hex
-        if hex.count % 2 == 1 {
-            hex = "0" + hex
-        }
-
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let hexBytes = Array(hex.utf8)
-        let start = max(0, 32 - hex.count / 2)
-
-        for index in 0..<(hex.count / 2) {
-            let high = hexCharToU8(hexBytes[index * 2])
-            let low = hexCharToU8(hexBytes[index * 2 + 1])
-            bytes[start + index] = (high << 4) | low
-        }
-
-        return fromBEBytes(bytes)
-    }
-
-    private static func hexCharToU8(_ char: UInt8) -> UInt8 {
-        switch char {
-        case UInt8(ascii: "0")...UInt8(ascii: "9"):
-            return char - UInt8(ascii: "0")
-        case UInt8(ascii: "a")...UInt8(ascii: "f"):
-            return char - UInt8(ascii: "a") + 10
-        case UInt8(ascii: "A")...UInt8(ascii: "F"):
-            return char - UInt8(ascii: "A") + 10
-        default:
-            return 0
+            return valid ? fromBEPointer(UnsafePointer(output)) : nil
         }
     }
 
@@ -529,4 +521,11 @@ public struct BigInt256: Comparable {
     func toHexLower() -> String {
         return Hex.encode(toBEBytes())
     }
+}
+
+extension BigInt256: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    // BigInt256 也用来存放私钥，print、dump 和错误信息都不能泄露它的值。需要输出时显式调用内部的 toHex。
+    public var description: String { return "BigInt256(<redacted>)" }
+    public var debugDescription: String { return description }
+    public var customMirror: Mirror { return Mirror(self, children: []) }
 }

@@ -1,5 +1,7 @@
 // 十六进制编解码。逐字节运算不含按数据分支或查表，因此也可以用于私钥等秘密数据。
 
+import Foundation
+
 enum Hex {
     /// 小写字母与 '9' 之间的偏移（'a' - '9' - 1）
     static let lowercaseGap: Int8 = 39
@@ -96,4 +98,26 @@ enum Hex {
             return valid ? bytes : nil
         }
     }
+}
+
+// MARK: - 敏感数据清除与严格解码
+
+/// 尽力清除敏感内存。这个函数不被内联也不被优化，memset 不会被当作死存储删掉。
+/// Swift 无法保证没有其它副本（寄存器、栈上的临时值、写时复制留下的旧缓冲区）。
+@_optimize(none)
+@inline(never)
+func secureWipe(_ buffer: UnsafeMutableRawBufferPointer) {
+    if let base = buffer.baseAddress, buffer.count > 0 {
+        memset(base, 0, buffer.count)
+    }
+}
+
+func secureWipe<Element>(_ array: inout [Element]) {
+    array.withUnsafeMutableBytes { secureWipe($0) }
+}
+
+/// 严格 UTF-8：输入不是合法 UTF-8 时返回 nil，不做替换修复
+func strictUTF8String(_ bytes: [UInt8]) -> String? {
+    let string = String(decoding: bytes, as: UTF8.self)
+    return string.utf8.elementsEqual(bytes) ? string : nil
 }

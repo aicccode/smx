@@ -27,50 +27,45 @@ public final class ECPoint: Equatable {
 
     public var isInfinity: Bool { return infinity }
 
+    /// 由32字节坐标的十六进制构造点。这些解析接口无法抛错：任何不合法的输入（长度、非十六进制、坐标 >= p、
+    /// 不在曲线上）都返回无穷远点，可以用 isInfinity 判断；所有运算入口都会拒绝无穷远点。
     public static func fromHex(xHex: String, yHex: String) -> ECPoint {
-        return ECPoint(x: FpElement.fromHex(xHex), y: FpElement.fromHex(yHex))
-    }
-
-    public static func fromEncoded(_ data: [UInt8]) -> ECPoint {
-        if data.isEmpty {
+        guard let xValue = BigInt256(hex: xHex), let yValue = BigInt256(hex: yHex) else {
             return ECPoint.infinityPoint()
         }
-        if data[0] != 0x04 {
-            fatalError("Only uncompressed point format is supported")
-        }
-        if data.count != 65 {
-            fatalError("Invalid point encoding length")
+        return validated(x: xValue, y: yValue)
+    }
+
+    /// 恰好65字节，0x04 开头，坐标规范且在曲线上；否则返回无穷远点（见 fromHex）。
+    public static func fromEncoded(_ data: [UInt8]) -> ECPoint {
+        guard data.count == 65, data[0] == 0x04 else {
+            return ECPoint.infinityPoint()
         }
         return data.withUnsafeBufferPointer { buffer -> ECPoint in
             guard let base = buffer.baseAddress else {
                 return ECPoint.infinityPoint()
             }
-            return ECPoint(
-                x: FpElement(BigInt256.fromBEPointer(base + 1)),
-                y: FpElement(BigInt256.fromBEPointer(base + 33))
-            )
+            return validated(x: BigInt256.fromBEPointer(base + 1), y: BigInt256.fromBEPointer(base + 33))
         }
     }
 
+    /// 恰好130个十六进制字符（大小写均可），其余同 fromEncoded。
     public static func fromHexEncoded(_ hex: String) -> ECPoint {
-        if let bytes = Hex.decodeStrict(hex) {
-            return fromEncoded(bytes)
-        }
-        // 非常规输入：保持既有的宽松解析（前缀 0x、跳过无法解析的两字符片段）
-        var hexStr = hex
-        if hexStr.hasPrefix("0x") || hexStr.hasPrefix("0X") {
-            hexStr = String(hexStr.dropFirst(2))
-        }
-        var bytes = [UInt8]()
-        var index = hexStr.startIndex
-        while index < hexStr.endIndex {
-            let nextIndex = hexStr.index(index, offsetBy: 2, limitedBy: hexStr.endIndex) ?? hexStr.endIndex
-            if let byte = UInt8(hexStr[index..<nextIndex], radix: 16) {
-                bytes.append(byte)
-            }
-            index = nextIndex
+        guard let bytes = Hex.decodeStrict(hex) else {
+            return ECPoint.infinityPoint()
         }
         return fromEncoded(bytes)
+    }
+
+    private static func validated(x xValue: BigInt256, y yValue: BigInt256) -> ECPoint {
+        let point = ECPoint(x: FpElement(unchecked: xValue), y: FpElement(unchecked: yValue))
+        return point.isValidPublicKey ? point : ECPoint.infinityPoint()
+    }
+
+    /// 可以作为对方公钥使用：不是无穷远点，坐标在 [0, p) 内，并且在曲线上。
+    /// x、y 是公开可写的属性，所以每个入口都要重新检查，不能只依赖解析时的校验。
+    var isValidPublicKey: Bool {
+        return !infinity && x.value < SM2Curve.p && y.value < SM2Curve.p && isOnCurve()
     }
 
     public func toEncoded() -> [UInt8] {

@@ -214,13 +214,37 @@ final class FieldDifferentialTests: XCTestCase {
         XCTAssertEqual(BigInt256.fromHex("0xAB"), BigInt256(0xAB, 0, 0, 0))
         XCTAssertEqual(BigInt256.fromHex("0XabC"), BigInt256(0xABC, 0, 0, 0))
         XCTAssertEqual(BigInt256.fromHex(""), .zero)
-        XCTAssertEqual(BigInt256.fromHex("zz"), .zero)
-        XCTAssertEqual(BigInt256.fromHex("z1"), .one)
         XCTAssertEqual(BigInt256.fromHex("F"), BigInt256(0xF, 0, 0, 0))
         XCTAssertEqual(BigInt256.fromHex(String(repeating: "F", count: 64)), BigInt256(.max, .max, .max, .max))
         XCTAssertEqual(BigInt256.fromBEBytes([]), .zero)
         XCTAssertEqual(BigInt256.fromBEBytes([1, 2]), BigInt256(0x102, 0, 0, 0))
         XCTAssertEqual(BigInt256.fromBEBytes([UInt8](repeating: 9, count: 33) + [1]).l0 & 0xFF, 1)
+    }
+
+    /// 曾经会触发数组越界陷阱（超长）或把无效字符当作 0（部分解析）的输入：现在一律得到 0，不陷入陷阱
+    func testFromHexInvalidInputReturnsZero() {
+        let invalid = [
+            "zz", "z1", "1z", "é1", "\r\n12", "12 34", "+1", "-1", "0x", "0xzz", "\u{1F600}",
+            String(repeating: "F", count: 65), "0x" + String(repeating: "F", count: 65),
+            String(repeating: "1", count: 100_000), String(repeating: "é", count: 64),
+        ]
+        for text in invalid {
+            XCTAssertEqual(BigInt256.fromHex(text), .zero, text.debugDescription)
+            XCTAssertNil(BigInt256(hex: text), text.debugDescription)
+        }
+        XCTAssertNil(BigInt256(hex: ""))
+        XCTAssertNil(BigInt256(hex: "1"))
+        XCTAssertNil(BigInt256(hex: String(repeating: "1", count: 63)))
+        XCTAssertEqual(
+            BigInt256(hex: String(repeating: "A", count: 64)), BigInt256(hex: String(repeating: "a", count: 64)))
+    }
+
+    func testInversionOfZeroDoesNotTrap() {
+        XCTAssertEqual(BigInt256.zero.modInverse(SM2Curve.p), .zero)
+        XCTAssertEqual(BigInt256.zero.modInverse(SM2Curve.n), .zero)
+        XCTAssertEqual(BigInt256.zero.modInverse(BigInt256(7, 0, 0, 0)), .zero)
+        XCTAssertEqual(FpElement.zero.invert(), .zero)
+        XCTAssertEqual(BigInt256.modReduce512((1, 0, 0, 0, 0, 0, 0, 0), .zero), .zero)
     }
 
     func testHexEncodingAgainstByteLoop() {
