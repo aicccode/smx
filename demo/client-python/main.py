@@ -4,12 +4,20 @@
 This demo talks plain HTTP to localhost, so nothing protects it on a real network, and
 SM4-CBC with the zero IV of this protocol is for demonstration only. Do not copy either
 choice into production. Private keys and negotiated keys are never printed.
+
+The protocol takes the server's public key from the same unauthenticated response it
+is checking, so by default anyone answering on the port can complete the exchange and
+read the traffic. Set SM2_DEMO_SERVER_PUBKEY to the server's public key in hex to pin
+it; a different key is then a hard failure.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -19,20 +27,64 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 from smx import (
     SM4,
+    ECPoint,
     hex_to_bytes,
     sm2_decode_point,
     sm2_gen_key_pair,
     sm2_get_sa,
 )
+from smx.hexutil import hex_to_int
 
 SERVER_URL = "http://localhost:8080"
 ID_A = "python-client@demo.aicc"
 KEY_LEN = 16
-HTTP_TIMEOUT_SECONDS = 10
+# Limits the whole request. A socket timeout alone restarts with each byte received.
+REQUEST_DEADLINE_SECONDS = 15.0
 MAX_RESPONSE_BYTES = 1024 * 1024
+PIN_VARIABLE = "SM2_DEMO_SERVER_PUBKEY"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: a response must not send this request somewhere else."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
 
 # Ignore proxy environment variables: the demo server only listens on localhost.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+def printable(value: object) -> str:
+    """Escape control characters, so server text cannot drive the terminal."""
+    return "".join(
+        char if char.isprintable() else f"\\x{ord(char):02x}" for char in str(value)
+    )
+
+
+def _fetch(request: urllib.request.Request) -> bytes:
+    with _OPENER.open(request, timeout=REQUEST_DEADLINE_SECONDS) as response:
+        return response.read(MAX_RESPONSE_BYTES + 1)
+
+
+def _fetch_before_deadline(request: urllib.request.Request) -> bytes:
+    """Run the whole request in a thread that the demo stops waiting for at the deadline."""
+    outcome: list[object] = []
+
+    def worker() -> None:
+        try:
+            outcome.append(_fetch(request))
+        except BaseException as error:  # noqa: BLE001 - handed over to the waiting thread
+            outcome.append(error)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(REQUEST_DEADLINE_SECONDS)
+    if not outcome:
+        raise TimeoutError("the server did not finish responding in time")
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+    return outcome[0]
 
 
 def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -43,20 +95,32 @@ def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         data=body.encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    raw = _fetch_before_deadline(request)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ValueError("response too large")
     text = raw.decode("utf-8")
-    print(f"Response: {text}")
+    print(f"Response: {printable(text)}")
     parsed = json.loads(text)
     if not isinstance(parsed, dict):
         raise TypeError("response is not a JSON object")
     return parsed
 
 
+def pinned_server_key() -> ECPoint | None:
+    """Return the pinned key; a value that is set but invalid raises ValueError."""
+    value = os.environ.get(PIN_VARIABLE)
+    return None if value is None else sm2_decode_point(value)
+
+
 def run() -> int:
     print("=== SM2 Key Exchange Demo (Python Client) ===\n")
+
+    pinned = pinned_server_key()
+    if pinned is None:
+        print(
+            f"WARNING: the server is UNAUTHENTICATED. Set {PIN_VARIABLE} to pin its key;"
+            " without it, anyone answering on this port can read this traffic.\n"
+        )
 
     da_hex, pa_hex = sm2_gen_key_pair()
     print("Generated A certificate keypair:")
@@ -73,14 +137,18 @@ def run() -> int:
     )
 
     print("\n--- Step 2: Calculate Sa and Ka ---")
+    server_key = sm2_decode_point(init["pB"])
+    if pinned is not None and server_key != pinned:
+        print("Server public key does not match the pinned key", file=sys.stderr)
+        return 1
     result = sm2_get_sa(
         KEY_LEN,
-        sm2_decode_point(init["pB"]),
+        server_key,
         sm2_decode_point(init["Rb"]),
         sm2_decode_point(pa_hex),
-        int(da_hex, 16),
+        hex_to_int(da_hex),
         sm2_decode_point(ra_pub_hex),
-        int(ra_hex, 16),
+        hex_to_int(ra_hex),
         ID_A,
         init["IDb"],
         hex_to_bytes(init["Sb"]),
@@ -94,10 +162,13 @@ def run() -> int:
     confirm = post_json(
         "/api/keyswap/confirm", {"sessionId": init["sessionId"], "Sa": result.sa}
     )
-    if not confirm.get("success"):
+    if confirm.get("success") is not True:
         print("Key exchange confirmation failed", file=sys.stderr)
         return 1
-    print("\nKey exchange completed successfully!")
+    if pinned is None:
+        print("\nKey exchange confirmed, with an UNAUTHENTICATED server.")
+    else:
+        print("\nKey exchange confirmed, with the pinned server key.")
 
     print("\n--- Step 4: Bidirectional Crypto Test ---")
     sm4 = SM4()
@@ -127,8 +198,8 @@ def run() -> int:
     print(
         f"[Client decrypted server message]: {'PASS' if client_decrypt_ok else 'FAIL'}"
     )
-    print(f"  Server plaintext: {crypto['serverPlaintext']}")
-    print(f"  Client decrypted: {server_decrypted}")
+    print(f"  Server plaintext: {printable(crypto['serverPlaintext'])}")
+    print(f"  Client decrypted: {printable(server_decrypted)}")
 
     if not (server_decrypt_ok and client_decrypt_ok):
         print("\nBidirectional Crypto test FAILED!", file=sys.stderr)
@@ -141,10 +212,10 @@ def run() -> int:
 def main() -> int:
     try:
         return run()
-    except (urllib.error.URLError, OSError) as error:
-        print(f"Failed to connect to server: {error}", file=sys.stderr)
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        print(f"Failed to connect to server: {printable(error)}", file=sys.stderr)
         print("Make sure the Java server is running on port 8080", file=sys.stderr)
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, RecursionError, MemoryError) as error:
         print(f"Invalid server response: {type(error).__name__}", file=sys.stderr)
     return 1
 

@@ -81,7 +81,9 @@ class ECPoint:
 
     def _fields_are_valid(self) -> bool:
         """Check the fields again, as unpickling can bypass the constructor."""
-        x, y, infinity = self.x, self.y, self.infinity
+        x = getattr(self, "x", None)
+        y = getattr(self, "y", None)
+        infinity = getattr(self, "infinity", None)
         if type(x) is not int or type(y) is not int or type(infinity) is not bool:
             return False
         if infinity:
@@ -132,7 +134,7 @@ class ECPoint:
         return ECPoint(self.x, -self.y % SM2_P)
 
     def _is_valid_public(self) -> bool:
-        return self.infinity is False and self.is_on_curve()
+        return self.is_on_curve() and self.infinity is False
 
     def _require_group_element(self) -> None:
         if not self.is_on_curve():

@@ -15,10 +15,18 @@ from functools import lru_cache
 from typing import Optional
 
 from . import _ec
-from .hexutil import as_bytes, bytes_to_hex, hex_to_bytes, hex_to_int
+from .hexutil import (
+    as_bytes,
+    bytes_to_hex,
+    bytes_to_hex_upper,
+    hex_to_int,
+    lowercase_hex_to_bytes,
+    lowercase_hex_to_int,
+)
 from .point import SM2_A, SM2_B, SM2_GX, SM2_GY, SM2_N, ECPoint
 from .sm3 import _BLOCK_SIZE, _IV, _digest, _finish_digest, compress_blocks
 
+_C1_SIZE = 65
 _C1_HEX_LEN = 130
 _C3_HEX_LEN = 64
 _HASH_SIZE = 32
@@ -210,9 +218,15 @@ def _public_key_of(d: int) -> ECPoint:
     return public_key
 
 
-def _message_digest(user_id: str, message: str, public_key: ECPoint) -> int:
-    z = user_sm3_z(_encode_user_id(user_id), public_key)
-    return int.from_bytes(_sm3(z, _encode_text(message, "message")), "big")
+def _encode_signed_input(user_id: str, message: str) -> tuple[bytes, bytes] | None:
+    try:
+        return _encode_user_id(user_id), _encode_text(message, "message")
+    except (TypeError, ValueError):
+        return None
+
+
+def _digest_of_encoded(user_id: bytes, message: bytes, public_key: ECPoint) -> int:
+    return int.from_bytes(_sm3(user_sm3_z(user_id, public_key), message), "big")
 
 
 def sm2_gen_key_pair() -> tuple[str, str]:
@@ -220,7 +234,8 @@ def sm2_gen_key_pair() -> tuple[str, str]:
     for _ in range(_MAX_RETRIES):
         d = _random_scalar()
         if d <= SM2_N - 2:
-            return f"{d:064X}", ECPoint.generator().multiply(d).to_hex_encoded()
+            private_key = bytes_to_hex_upper(d.to_bytes(_HASH_SIZE, "big"))
+            return private_key, ECPoint.generator().multiply(d).to_hex_encoded()
     raise ValueError("could not generate a key")
 
 
@@ -252,51 +267,65 @@ def sm2_encrypt(plaintext: str, public_key: str) -> str:
     raise ValueError("encryption failed")
 
 
-def sm2_decrypt(ciphertext: str, private_key: str) -> str:
-    """Decrypt ``C1 || C3 || C2`` hex; raises ValueError if verification fails.
-
-    Malformed input can raise different messages, but everything that depends on
-    the private key raises the same one.
-    """
+def _parse_ciphertext(ciphertext: str) -> tuple[ECPoint, bytes, bytes] | None:
+    """Split canonical lowercase hex into C1, C3 and C2, or return None if malformed."""
     if not isinstance(ciphertext, str):
         raise TypeError("ciphertext must be a hex string")
     # C2 holds at least one byte, as encryption refuses an empty plaintext.
     if len(ciphertext) < _C1_HEX_LEN + _C3_HEX_LEN + 2 or len(ciphertext) % 2:
-        raise ValueError("invalid ciphertext length")
-
-    c1 = ECPoint.from_hex_encoded(ciphertext[:_C1_HEX_LEN])
-    c3 = hex_to_bytes(ciphertext[_C1_HEX_LEN : _C1_HEX_LEN + _C3_HEX_LEN])
-    c2 = hex_to_bytes(ciphertext[_C1_HEX_LEN + _C3_HEX_LEN :])
+        return None
+    try:
+        data = lowercase_hex_to_bytes(ciphertext)
+        c1 = ECPoint.from_encoded(data[:_C1_SIZE])
+    except ValueError:
+        return None
+    c2 = data[_C1_SIZE + _HASH_SIZE :]
     if len(c2) > _MAX_KDF_BYTES:
-        raise ValueError("invalid ciphertext length")
+        return None
+    return c1, data[_C1_SIZE : _C1_SIZE + _HASH_SIZE], c2
 
-    p2 = c1.multiply(_parse_private_key(private_key))
+
+def _decode_utf8(data: bytes) -> str | None:
+    """Decode without letting an exception, which quotes the data, leave this frame."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _decrypt_parts(c1: ECPoint, c3: bytes, c2: bytes, d: int) -> str | None:
+    p2 = c1.multiply(d)
     if p2.infinity:
-        raise ValueError(_DECRYPT_ERROR)
-
+        return None
     key = _kdf(len(c2), (p2.x_bytes(), p2.y_bytes()))
     if not any(key):
-        raise ValueError(_DECRYPT_ERROR)
+        return None
     message = _xor(c2, key)
     if not hmac.compare_digest(_sm3(p2.x_bytes(), message, p2.y_bytes()), c3):
-        raise ValueError(_DECRYPT_ERROR)
-    # The exception must not be raised inside the handler: it would keep the plaintext
-    # in __context__, and its message quotes a plaintext byte.
-    try:
-        text = message.decode("utf-8")
-    except UnicodeDecodeError:
-        text = None
+        return None
+    return _decode_utf8(message)
+
+
+def sm2_decrypt(ciphertext: str, private_key: str) -> str:
+    """Decrypt lowercase ``C1 || C3 || C2`` hex; every failure raises the same ValueError.
+
+    Work on secrets happens in helper frames that have returned before the exception is
+    raised, so a kept traceback does not hold the plaintext, the KDF output or the
+    parsed key. Python cannot go further: the caller's own frames keep whatever
+    they hold, including the private key string, and memory is not wiped.
+    """
+    d = _parse_private_key(private_key)
+    del private_key
+    parts = _parse_ciphertext(ciphertext)
+    text = None if parts is None else _decrypt_parts(*parts, d)
+    del d
     if text is None:
         raise ValueError(_DECRYPT_ERROR)
     return text
 
 
-def sm2_sign(user_id: str, message: str, private_key: str) -> str:
-    """Sign a message and return ``r + "h" + s`` as lowercase hex."""
-    d = _parse_private_key(private_key)
-    e = _message_digest(user_id, message, _public_key_of(d))
+def _sign_digest(e: int, d: int) -> str | None:
     d_plus_1_inv = _ec.invert_blinded(d + 1, SM2_N)
-
     for _ in range(_MAX_RETRIES):
         k = _random_scalar()
         x1 = ECPoint.generator().multiply(k).x
@@ -307,14 +336,36 @@ def sm2_sign(user_id: str, message: str, private_key: str) -> str:
         if s == 0:
             continue
         return f"{r:064x}h{s:064x}"
-    raise ValueError("signing failed")
+    return None
+
+
+def sm2_sign(user_id: str, message: str, private_key: str) -> str:
+    """Sign a message and return ``r + "h" + s`` as lowercase hex."""
+    d = _parse_private_key(private_key)
+    del private_key
+    public_key = _public_key_of(d)
+    # Text errors are raised from here on with only the parsed key in the frame, and
+    # the digest is computed before signing so no failure follows the nonce.
+    encoded = _encode_signed_input(user_id, message)
+    signature = None
+    if encoded is not None:
+        e = _digest_of_encoded(*encoded, public_key)
+        signature = _sign_digest(e, d)
+    del d
+    if encoded is None:
+        raise ValueError("invalid user id or message")
+    if signature is None:
+        raise ValueError("signing failed")
+    return signature
 
 
 def _parse_signature(signature: str) -> Optional[tuple[int, int]]:  # noqa: UP045
     if len(signature) != _SIGNATURE_LEN or signature[64] != "h":
         return None
     try:
-        return hex_to_int(signature[:64]), hex_to_int(signature[65:])
+        return lowercase_hex_to_int(signature[:64]), lowercase_hex_to_int(
+            signature[65:]
+        )
     except ValueError:
         return None
 
@@ -339,11 +390,14 @@ def sm2_verify(user_id: str, signature: str, message: str, public_key: str) -> b
     if t == 0:
         return False
 
+    encoded = _encode_signed_input(user_id, message)
+    if encoded is None:
+        return False
     try:
         point = ECPoint.from_hex_encoded(public_key)
-        e = _message_digest(user_id, message, point)
     except ValueError:
         return False
+    e = _digest_of_encoded(*encoded, point)
     result = _ec.to_affine_public(_ec.mul_shamir(s, t, point.x, point.y))
     if result is None:
         return False
@@ -392,10 +446,15 @@ def _encode_ids(id_a: str, id_b: str) -> Optional[tuple[bytes, bytes]]:  # noqa:
         return None
 
 
-def _is_hash_value(value: bytes) -> bool:
-    return isinstance(value, (bytes, bytearray, memoryview)) and (
-        len(as_bytes(value)) == _HASH_SIZE
-    )
+def _hash_value_bytes(value: bytes) -> bytes | None:
+    """Return the 32 bytes of a buffer, or None for anything else."""
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    try:  # a released memoryview raises ValueError
+        data = as_bytes(value)
+    except ValueError:
+        return None
+    return data if len(data) == _HASH_SIZE else None
 
 
 def sm2_get_sb(
@@ -474,7 +533,8 @@ def sm2_get_sa(
     ids = _encode_ids(id_a, id_b)
     if ids is None:
         return SM2KeySwapParams(message="invalid user id")
-    if not _is_hash_value(sb):
+    sb_bytes = _hash_value_bytes(sb)
+    if sb_bytes is None:
         return SM2KeySwapParams(message="B's verification value does not match")
 
     ta = _calc_t(ra, d_a, _calc_x(r_a.x))
@@ -484,7 +544,7 @@ def sm2_get_sa(
 
     za = user_sm3_z(ids[0], p_a)
     zb = user_sm3_z(ids[1], p_b)
-    if not hmac.compare_digest(_create_s(_TAG_SB, u, za, zb, r_a, r_b), as_bytes(sb)):
+    if not hmac.compare_digest(_create_s(_TAG_SB, u, za, zb, r_a, r_b), sb_bytes):
         return SM2KeySwapParams(message="B's verification value does not match")
 
     ka = _kdf(byte_len, (u.x_bytes(), u.y_bytes(), za, zb))
@@ -496,17 +556,20 @@ def sm2_check_sa(
     v: ECPoint, za: bytes, zb: bytes, r_a: ECPoint, r_b: ECPoint, sa: bytes
 ) -> bool:
     """Verify A's confirmation value Sa on B's side. Invalid input returns False."""
-    if not (
-        _is_usable_public_point(v)
-        and _is_usable_public_point(r_a)
-        and _is_usable_public_point(r_b)
-        and _is_hash_value(za)
-        and _is_hash_value(zb)
-        and _is_hash_value(sa)
+    za_bytes = _hash_value_bytes(za)
+    zb_bytes = _hash_value_bytes(zb)
+    sa_bytes = _hash_value_bytes(sa)
+    if (
+        za_bytes is None
+        or zb_bytes is None
+        or sa_bytes is None
+        or not _is_usable_public_point(v)
+        or not _is_usable_public_point(r_a)
+        or not _is_usable_public_point(r_b)
     ):
         return False
-    expected = _create_s(_TAG_SA, v, as_bytes(za), as_bytes(zb), r_a, r_b)
-    return hmac.compare_digest(expected, as_bytes(sa))
+    expected = _create_s(_TAG_SA, v, za_bytes, zb_bytes, r_a, r_b)
+    return hmac.compare_digest(expected, sa_bytes)
 
 
 def sm2_decode_point(text: str) -> ECPoint:

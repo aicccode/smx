@@ -62,7 +62,7 @@ def sm3_cases(smx) -> Iterator[tuple[str, Callable[[], object], int]]:
         yield f"sm3 {name}", run, size
 
 
-def sm4_cases(smx) -> Iterator[tuple[str, Callable[[], object], int]]:
+def sm4_cases(smx, wanted: str) -> Iterator[tuple[str, Callable[[], object], int]]:
     cipher = smx.SM4()
     cipher.set_key(b"0123456789abcdef", b"fedcba9876543210")
     block = bytes(range(16))
@@ -77,6 +77,9 @@ def sm4_cases(smx) -> Iterator[tuple[str, Callable[[], object], int]]:
     # 16B/1KB/1MB are ciphertext payload sizes: the plaintext is one byte shorter,
     # so PKCS#7 adds a single byte and the ciphertext has exactly this size.
     for name, size in (("16B", 16), ("1KB", KIB), ("1MB", MIB)):
+        # Serial encryption of 1 MB takes seconds, so build only what will be measured.
+        if wanted not in f"sm4-cbc encrypt {name}" + f" sm4-cbc decrypt {name}":
+            continue
         plaintext = "x" * (size - 16 + 15)
         ciphertext = cipher.encrypt(plaintext)
 
@@ -165,7 +168,7 @@ def main() -> int:
     )
 
     results: dict[str, float] = {}
-    groups = (sm3_cases(smx), sm4_cases(smx), sm2_cases(smx, clear_caches))
+    groups = (sm3_cases(smx), sm4_cases(smx, args.filter), sm2_cases(smx, clear_caches))
     for group in groups:
         for name, func, size in group:
             if args.filter in name:

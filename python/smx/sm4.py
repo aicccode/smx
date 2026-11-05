@@ -24,13 +24,16 @@ from functools import lru_cache
 from struct import Struct
 
 from ._sm4_core import sub_bytes
-from .hexutil import as_bytes, bytes_to_hex, hex_to_bytes
+from .hexutil import as_bytes, bytes_to_hex, lowercase_hex_to_bytes
 
 _MASK32 = 0xFFFFFFFF
 _BLOCK_SIZE = 16
 _KEY_SIZE = 16
 _BATCH_BLOCKS = 2048  # measured: larger batches gain little beyond this
 _BYTE_ONES = 0x01010101
+# Added before multiplying, so that every round key has the same number of CPython
+# digits. Multiplying a round key directly costs more for larger keys.
+_ROUND_KEY_OFFSET = 1 << 32
 
 _FK = (0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC)
 
@@ -144,8 +147,10 @@ def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
             column[byte::4] = data[4 * word + byte :: _BLOCK_SIZE]
         columns.append(int.from_bytes(column, "big"))
     a, b, c, d = columns
+    offset = _ROUND_KEY_OFFSET
+    removed = repeat << 32
     for k0, k1, k2, k3 in round_keys:
-        y = sub_bytes(b ^ c ^ d ^ k0 * repeat, ones)
+        y = sub_bytes(b ^ c ^ d ^ (k0 + offset) * repeat - removed, ones)
         a ^= (
             y
             ^ (y << 2 & h2 | y >> 30 & l2)
@@ -153,7 +158,7 @@ def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
             ^ (y << 18 & h18 | y >> 14 & l18)
             ^ (y << 24 & h24 | y >> 8 & l24)
         )
-        y = sub_bytes(c ^ d ^ a ^ k1 * repeat, ones)
+        y = sub_bytes(c ^ d ^ a ^ (k1 + offset) * repeat - removed, ones)
         b ^= (
             y
             ^ (y << 2 & h2 | y >> 30 & l2)
@@ -161,7 +166,7 @@ def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
             ^ (y << 18 & h18 | y >> 14 & l18)
             ^ (y << 24 & h24 | y >> 8 & l24)
         )
-        y = sub_bytes(d ^ a ^ b ^ k2 * repeat, ones)
+        y = sub_bytes(d ^ a ^ b ^ (k2 + offset) * repeat - removed, ones)
         c ^= (
             y
             ^ (y << 2 & h2 | y >> 30 & l2)
@@ -169,7 +174,7 @@ def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
             ^ (y << 18 & h18 | y >> 14 & l18)
             ^ (y << 24 & h24 | y >> 8 & l24)
         )
-        y = sub_bytes(a ^ b ^ c ^ k3 * repeat, ones)
+        y = sub_bytes(a ^ b ^ c ^ (k3 + offset) * repeat - removed, ones)
         d ^= (
             y
             ^ (y << 2 & h2 | y >> 30 & l2)
@@ -216,16 +221,11 @@ def pkcs7_pad(data: bytes) -> bytes:
     return data + bytes([pad_length]) * pad_length
 
 
-def pkcs7_unpad(data: bytes) -> bytes:
-    """Remove and validate PKCS#7 padding.
+def _padding_is_bad(data: bytes) -> int:
+    """Return 1 if the non-empty data does not end in valid padding, else 0.
 
-    Every failure raises the same ValueError. The check always reads all of the last
-    block and has no branch on its content; only the final accept or reject branches.
+    This always reads the whole last block and has no branch on its content.
     """
-    data = as_bytes(data)
-    size = len(data)
-    if size == 0 or size % _BLOCK_SIZE != 0:
-        raise ValueError(_DECRYPT_ERROR)
     pad_length = data[-1]
     # Each term is 1 when its condition fails: pad_length is 0 or above the block size.
     bad = ((pad_length - 1) >> 8) & 1
@@ -234,9 +234,26 @@ def pkcs7_unpad(data: bytes) -> bytes:
         inside_padding = ((offset - pad_length - 1) >> 8) & 1
         differs = (((data[-offset] ^ pad_length) + 255) >> 8) & 1
         bad |= inside_padding & differs
-    if bad:
+    return bad
+
+
+def pkcs7_unpad(data: bytes) -> bytes:
+    """Remove and validate PKCS#7 padding; every failure raises the same ValueError."""
+    data = as_bytes(data)
+    size = len(data)
+    if size == 0 or size % _BLOCK_SIZE != 0:
         raise ValueError(_DECRYPT_ERROR)
-    return data[:-pad_length]
+    if _padding_is_bad(data):
+        raise ValueError(_DECRYPT_ERROR)
+    return data[: -data[-1]]
+
+
+def _decode_utf8(data: bytes) -> str | None:
+    """Decode without letting an exception, which quotes the data, leave this frame."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 class SM4:
@@ -309,35 +326,68 @@ class SM4:
             output += (p0, p1, p2, p3)
         return bytes_to_hex(Struct(f">{len(output)}I").pack(*output))
 
-    def decrypt(self, ciphertext: str) -> str:
-        """Decrypt hex ciphertext and return the UTF-8 plaintext.
-
-        Malformed hex, a bad length (including empty input), bad padding and
-        plaintext that is not valid UTF-8 all raise the same ValueError. CBC gives no
-        integrity, so authenticate the ciphertext first; UTF-8 decoding still takes
-        time that depends on the plaintext.
-        """
+    def _decrypt_all(self, ciphertext: str) -> bytes | None:
+        """Return all decrypted bytes, padding included, or None if malformed."""
         _, keys, iv = self._require_key()
         if not isinstance(ciphertext, str):
             raise TypeError("ciphertext must be a string")
         try:
-            data = hex_to_bytes(ciphertext)
+            data = lowercase_hex_to_bytes(ciphertext)
         except ValueError:
-            data = b""
+            return None
         size = len(data)
         if size == 0 or size % _BLOCK_SIZE != 0:
-            raise ValueError(_DECRYPT_ERROR)
+            return None
         # CBC decryption: P[i] = D(C[i]) ^ C[i-1], one big XOR after the block loop.
         decrypted = _decrypt_blocks(data, keys)
         shifted = iv + data[:-_BLOCK_SIZE]
         plain = int.from_bytes(decrypted, "big") ^ int.from_bytes(shifted, "big")
-        unpadded = pkcs7_unpad(plain.to_bytes(size, "big"))
-        # The exception must not be raised inside the handler: it would keep the
-        # plaintext in __context__, and its message quotes a plaintext byte.
-        try:
-            text = unpadded.decode("utf-8")
-        except UnicodeDecodeError:
-            text = None
+        return plain.to_bytes(size, "big")
+
+    def _decrypt_text(self, ciphertext: str) -> str | None:
+        plain = self._decrypt_all(ciphertext)
+        if plain is None:
+            return None
+        # The UTF-8 check runs on all the bytes whether or not the padding is valid, so
+        # its duration cannot show which it was. Valid padding bytes are themselves
+        # valid single-byte characters, so they do not change the outcome of the check.
+        bad = _padding_is_bad(plain)
+        text = _decode_utf8(plain)
+        if bad or text is None:
+            return None
+        return text[: -plain[-1]]
+
+    def decrypt(self, ciphertext: str) -> str:
+        """Decrypt lowercase hex ciphertext and return the UTF-8 plaintext.
+
+        Malformed hex, uppercase hex, a bad length (including empty input), bad padding
+        and plaintext that is not valid UTF-8 all raise the same ValueError.
+
+        CBC gives no integrity, so authenticate the ciphertext first. UTF-8 checking
+        runs on the same bytes with good and bad padding, but it stops at the first
+        invalid byte, so its duration still depends on the content. If that matters, or
+        the plaintext is binary, use :meth:`decrypt_bytes`, which has no UTF-8 step.
+        """
+        text = self._decrypt_text(ciphertext)
         if text is None:
             raise ValueError(_DECRYPT_ERROR)
         return text
+
+    def _decrypt_bytes(self, ciphertext: str) -> bytes | None:
+        plain = self._decrypt_all(ciphertext)
+        if plain is None or _padding_is_bad(plain):
+            return None
+        return plain[: -plain[-1]]
+
+    def decrypt_bytes(self, ciphertext: str) -> bytes:
+        """Decrypt lowercase hex ciphertext and return the plaintext bytes.
+
+        Everything that fails raises the same ValueError as :meth:`decrypt`.
+        """
+        data = self._decrypt_bytes(ciphertext)
+        if data is None:
+            raise ValueError(_DECRYPT_ERROR)
+        return data
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("SM4 objects hold key material and cannot be pickled or copied")

@@ -84,7 +84,11 @@ WEIRD_TEXT = (
     "04" + "0" * 128,
     "04" + "f" * 128,
 )
+_RELEASED_VIEW = memoryview(bytes(32))
+_RELEASED_VIEW.release()
 WRONG_TYPES = (
+    _RELEASED_VIEW,
+    ECPoint.__new__(ECPoint),
     None,
     0,
     1,
@@ -239,6 +243,18 @@ def f_bytes_to_hex(rng):
     is_type(hexutil.bytes_to_hex(any_bytes(rng)), str)
 
 
+def f_bytes_to_hex_upper(rng):
+    is_type(hexutil.bytes_to_hex_upper(any_bytes(rng)), str)
+
+
+def f_lowercase_hex_to_bytes(rng):
+    is_type(hexutil.lowercase_hex_to_bytes(any_text(rng, PUBLIC)), bytes)
+
+
+def f_lowercase_hex_to_int(rng):
+    is_type(hexutil.lowercase_hex_to_int(any_text(rng, PRIVATE)), int)
+
+
 def f_sm3_update(rng):
     hasher = SM3()
     for _ in range(rng.randrange(1, 4)):
@@ -255,9 +271,10 @@ def f_sm3_finish(rng):
     hasher = SM3()
     if rng.random() < 0.5:
         hasher.update(bytes(rng.randrange(200)))
-    if hasher.hash_bytes() != b"":
-        raise AssertionError("digest before finish")
-    if len(hasher.finish().hash_hex_upper()) != 64:
+    for _ in range(rng.randrange(4)):
+        action = rng.choice((hasher.finish, hasher.hash_bytes, hasher.hash_hex_upper))
+        action()
+    if len(hasher.update(b"x").finish().hash_hex_upper()) != 64:
         raise AssertionError("digest size")
 
 
@@ -289,10 +306,20 @@ def f_sm4_decrypt(rng):
     is_type(CIPHER.decrypt(any_text(rng, SM4_TEXT)), str)
 
 
+def f_sm4_decrypt_bytes(rng):
+    is_type(CIPHER.decrypt_bytes(any_text(rng, SM4_TEXT)), bytes)
+
+
 def f_sm4_no_key(rng):
     fresh = SM4()
     call = rng.choice(
-        (fresh.encrypt, fresh.decrypt, fresh.encrypt_block, fresh.decrypt_block)
+        (
+            fresh.encrypt,
+            fresh.decrypt,
+            fresh.decrypt_bytes,
+            fresh.encrypt_block,
+            fresh.decrypt_block,
+        )
     )
     call(any_text(rng, SM4_TEXT))
 
