@@ -1,6 +1,7 @@
 package smx
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"math/bits"
 	"strings"
@@ -12,90 +13,89 @@ type BigInt256 struct {
 	limbs [4]uint64
 }
 
-var (
-	bigZero = BigInt256{}
-	bigOne  = BigInt256{limbs: [4]uint64{1, 0, 0, 0}}
-)
+var bigOne = BigInt256{limbs: [4]uint64{1, 0, 0, 0}}
 
-// BigInt256FromHex parses a big-endian hex string into a BigInt256.
+// BigInt256FromHex parses a big-endian hex string, with an optional 0x prefix, into a
+// BigInt256. Parsing is lenient: only the last 32 bytes are kept, and decoding stops at
+// the first invalid digit, using the bytes decoded so far.
 func BigInt256FromHex(s string) BigInt256 {
+	// The common case: exactly 64 valid digits.
+	if len(s) == 64 {
+		var buf [32]byte
+		if decodeHexInto(buf[:], s) {
+			return BigInt256FromBEBytes(buf[:])
+		}
+	}
 	s = strings.TrimPrefix(s, "0x")
 	s = strings.TrimPrefix(s, "0X")
 	if len(s)%2 == 1 {
 		s = "0" + s
 	}
 	b, _ := hex.DecodeString(s)
-	padded := make([]byte, 32)
-	start := 32 - len(b)
-	if start < 0 {
-		start = 0
-		b = b[len(b)-32:]
-	}
-	copy(padded[start:], b)
-	return BigInt256FromBEBytes(padded)
+	return BigInt256FromBEBytes(b)
 }
 
-// BigInt256FromBEBytes creates a BigInt256 from a big-endian byte slice (up to 32 bytes).
+// BigInt256FromBEBytes creates a BigInt256 from a big-endian byte slice. Input shorter
+// than 32 bytes is left padded with zeros; for longer input only the last 32 bytes count.
 func BigInt256FromBEBytes(b []byte) BigInt256 {
 	var padded [32]byte
-	start := 32 - len(b)
-	if start < 0 {
-		start = 0
+	if len(b) > 32 {
 		b = b[len(b)-32:]
 	}
-	copy(padded[start:], b)
+	copy(padded[32-len(b):], b)
+	return BigInt256{limbs: [4]uint64{
+		binary.BigEndian.Uint64(padded[24:]),
+		binary.BigEndian.Uint64(padded[16:]),
+		binary.BigEndian.Uint64(padded[8:]),
+		binary.BigEndian.Uint64(padded[0:]),
+	}}
+}
 
-	var r BigInt256
-	for i := 0; i < 4; i++ {
-		off := (3 - i) * 8
-		r.limbs[i] = uint64(padded[off])<<56 | uint64(padded[off+1])<<48 |
-			uint64(padded[off+2])<<40 | uint64(padded[off+3])<<32 |
-			uint64(padded[off+4])<<24 | uint64(padded[off+5])<<16 |
-			uint64(padded[off+6])<<8 | uint64(padded[off+7])
-	}
-	return r
+// putLimbsBE writes four little-endian limbs as 32 big-endian bytes.
+func putLimbsBE(out *[32]byte, limbs *[4]uint64) {
+	binary.BigEndian.PutUint64(out[0:], limbs[3])
+	binary.BigEndian.PutUint64(out[8:], limbs[2])
+	binary.BigEndian.PutUint64(out[16:], limbs[1])
+	binary.BigEndian.PutUint64(out[24:], limbs[0])
 }
 
 // ToBEBytes converts to a 32-byte big-endian representation.
 func (a BigInt256) ToBEBytes() [32]byte {
 	var out [32]byte
-	for i := 0; i < 4; i++ {
-		off := (3 - i) * 8
-		out[off] = byte(a.limbs[i] >> 56)
-		out[off+1] = byte(a.limbs[i] >> 48)
-		out[off+2] = byte(a.limbs[i] >> 40)
-		out[off+3] = byte(a.limbs[i] >> 32)
-		out[off+4] = byte(a.limbs[i] >> 24)
-		out[off+5] = byte(a.limbs[i] >> 16)
-		out[off+6] = byte(a.limbs[i] >> 8)
-		out[off+7] = byte(a.limbs[i])
-	}
+	putLimbsBE(&out, &a.limbs)
 	return out
 }
 
 // ToHex returns the uppercase hex string (64 chars, zero-padded).
 func (a BigInt256) ToHex() string {
-	b := a.ToBEBytes()
-	return strings.ToUpper(hex.EncodeToString(b[:]))
+	return a.hexString(0x07)
 }
 
 // ToHexLower returns the lowercase hex string (64 chars, zero-padded).
 func (a BigInt256) ToHexLower() string {
-	b := a.ToBEBytes()
-	return hex.EncodeToString(b[:])
+	return a.hexString(0x27)
+}
+
+func (a *BigInt256) hexString(alphaOffset uint64) string {
+	var raw [32]byte
+	putLimbsBE(&raw, &a.limbs)
+	out := make([]byte, 64)
+	encodeHexTo(out, raw[:], alphaOffset)
+	return bytesAsString(out)
 }
 
 // IsZero returns true if the value is zero.
 func (a BigInt256) IsZero() bool {
-	return a.limbs[0] == 0 && a.limbs[1] == 0 && a.limbs[2] == 0 && a.limbs[3] == 0
+	return a.limbs[0]|a.limbs[1]|a.limbs[2]|a.limbs[3] == 0
 }
 
 // IsOne returns true if the value is one.
 func (a BigInt256) IsOne() bool {
-	return a.limbs[0] == 1 && a.limbs[1] == 0 && a.limbs[2] == 0 && a.limbs[3] == 0
+	return a.limbs[0] == 1 && a.limbs[1]|a.limbs[2]|a.limbs[3] == 0
 }
 
-// Compare returns -1, 0, or 1.
+// Compare returns -1, 0, or 1. It stops at the first differing limb, so it is not
+// constant time.
 func (a BigInt256) Compare(b *BigInt256) int {
 	for i := 3; i >= 0; i-- {
 		if a.limbs[i] > b.limbs[i] {
@@ -111,70 +111,70 @@ func (a BigInt256) Compare(b *BigInt256) int {
 // Add returns (a + b, carry).
 func (a BigInt256) Add(b *BigInt256) (BigInt256, uint64) {
 	var r BigInt256
-	var carry uint64
-	for i := 0; i < 4; i++ {
-		sum, c1 := bits.Add64(a.limbs[i], b.limbs[i], carry)
-		r.limbs[i] = sum
-		carry = c1
-	}
-	return r, carry
+	var c uint64
+	r.limbs[0], c = bits.Add64(a.limbs[0], b.limbs[0], 0)
+	r.limbs[1], c = bits.Add64(a.limbs[1], b.limbs[1], c)
+	r.limbs[2], c = bits.Add64(a.limbs[2], b.limbs[2], c)
+	r.limbs[3], c = bits.Add64(a.limbs[3], b.limbs[3], c)
+	return r, c
 }
 
 // Sub returns (a - b, borrow).
 func (a BigInt256) Sub(b *BigInt256) (BigInt256, uint64) {
 	var r BigInt256
-	var borrow uint64
-	for i := 0; i < 4; i++ {
-		diff, b1 := bits.Sub64(a.limbs[i], b.limbs[i], borrow)
-		r.limbs[i] = diff
-		borrow = b1
-	}
-	return r, borrow
+	var c uint64
+	r.limbs[0], c = bits.Sub64(a.limbs[0], b.limbs[0], 0)
+	r.limbs[1], c = bits.Sub64(a.limbs[1], b.limbs[1], c)
+	r.limbs[2], c = bits.Sub64(a.limbs[2], b.limbs[2], c)
+	r.limbs[3], c = bits.Sub64(a.limbs[3], b.limbs[3], c)
+	return r, c
 }
 
 // Mul returns the full 512-bit product as [8]uint64 (little-endian).
 func (a BigInt256) Mul(b *BigInt256) [8]uint64 {
-	var result [8]uint64
-	for i := 0; i < 4; i++ {
-		var carry uint64
-		for j := 0; j < 4; j++ {
-			hi, lo := bits.Mul64(a.limbs[i], b.limbs[j])
-			lo, c1 := bits.Add64(lo, result[i+j], 0)
-			hi += c1
-			lo2, c2 := bits.Add64(lo, carry, 0)
-			hi += c2
-			result[i+j] = lo2
-			carry = hi
-		}
-		result[i+4] = carry
-	}
-	return result
+	t0, t1, t2, t3, t4, t5, t6, t7 := mul512(&a.limbs, &b.limbs)
+	return [8]uint64{t0, t1, t2, t3, t4, t5, t6, t7}
 }
 
-// ModAdd returns (a + b) mod m.
+// ModAdd returns (a + b) mod m for inputs below m. It subtracts m at most once, without
+// branching on the values.
 func (a BigInt256) ModAdd(b, m *BigInt256) BigInt256 {
 	sum, carry := a.Add(b)
-	if carry != 0 || sum.Compare(m) >= 0 {
-		r, _ := sum.Sub(m)
-		return r
-	}
-	return sum
+	reduced, borrow := sum.Sub(m)
+	useSum := -(borrow &^ carry)
+	return BigInt256{limbs: [4]uint64{
+		(sum.limbs[0] & useSum) | (reduced.limbs[0] &^ useSum),
+		(sum.limbs[1] & useSum) | (reduced.limbs[1] &^ useSum),
+		(sum.limbs[2] & useSum) | (reduced.limbs[2] &^ useSum),
+		(sum.limbs[3] & useSum) | (reduced.limbs[3] &^ useSum),
+	}}
 }
 
-// ModSub returns (a - b) mod m.
+// ModSub returns (a - b) mod m for inputs below m, without branching on the values.
 func (a BigInt256) ModSub(b, m *BigInt256) BigInt256 {
 	diff, borrow := a.Sub(b)
-	if borrow != 0 {
-		r, _ := diff.Add(m)
-		return r
-	}
-	return diff
+	mask := -borrow
+	addend := BigInt256{limbs: [4]uint64{
+		m.limbs[0] & mask, m.limbs[1] & mask, m.limbs[2] & mask, m.limbs[3] & mask,
+	}}
+	r, _ := diff.Add(&addend)
+	return r
 }
 
-// ModMul returns (a * b) mod m using generic 512-bit reduction.
+// ModMul returns (a * b) mod m. Multiplication modulo SM2_P or SM2_N is constant time;
+// for any other modulus it uses variable-time long division.
 func (a BigInt256) ModMul(b, m *BigInt256) BigInt256 {
-	product := a.Mul(b)
-	return modReduce512(&product, m)
+	var r BigInt256
+	switch m.limbs {
+	case [4]uint64{p0, p1, p2, p3}:
+		r = a.SM2ModMulP(b)
+	case [4]uint64{n0, n1, n2, n3}:
+		scalarMul(&r.limbs, &a.limbs, &b.limbs)
+	default:
+		product := a.Mul(b)
+		r = modReduce512(&product, m)
+	}
+	return r
 }
 
 // ModSquare returns (a * a) mod m.
@@ -182,221 +182,144 @@ func (a BigInt256) ModSquare(m *BigInt256) BigInt256 {
 	return a.ModMul(&a, m)
 }
 
-// SM2ModMulP returns (a * b) mod SM2_P using fast Solinas reduction.
+// SM2ModMulP returns (a * b) mod SM2_P.
 func (a BigInt256) SM2ModMulP(b *BigInt256) BigInt256 {
-	product := a.Mul(b)
-	return sm2ModReduceP(&product)
+	x := feReduce(&a.limbs)
+	var t, r fe
+	feMul(&t, &x, (*fe)(&b.limbs))
+	feMul(&r, &t, &feRR)
+	return BigInt256{limbs: r}
 }
 
-// SM2ModSquareP returns (a * a) mod SM2_P using fast Solinas reduction.
+// SM2ModSquareP returns (a * a) mod SM2_P.
 func (a BigInt256) SM2ModSquareP() BigInt256 {
-	product := a.Mul(&a)
-	return sm2ModReduceP(&product)
+	x := feReduce(&a.limbs)
+	var t, r fe
+	feSqr(&t, &x)
+	feMul(&r, &t, &feRR)
+	return BigInt256{limbs: r}
 }
 
-// sm2ModReduceP performs fast modular reduction for SM2 prime p.
-// p = 2^256 - 2^224 - 2^96 + 2^64 - 1
-func sm2ModReduceP(c *[8]uint64) BigInt256 {
-	// Extract 32-bit words (little-endian)
-	w := func(i int) int64 {
-		if i%2 == 0 {
-			return int64(c[i/2] & 0xFFFFFFFF)
-		}
-		return int64(c[i/2] >> 32)
-	}
-
-	// Pre-computed signed reduction coefficients
-	var R = [8][8]int64{
-		{1, 0, -1, 1, 0, 0, 0, 1}, // R_8
-		{1, 1, -1, 0, 1, 0, 0, 1}, // R_9
-		{1, 1, 0, 0, 0, 1, 0, 1},  // R_10
-		{1, 1, 0, 1, 0, 0, 1, 1},  // R_11
-		{1, 1, 0, 1, 1, 0, 0, 2},  // R_12
-		{2, 1, -1, 2, 1, 1, 0, 2}, // R_13
-		{2, 2, -1, 1, 2, 1, 1, 2}, // R_14
-		{2, 2, 0, 1, 1, 2, 1, 3},  // R_15
-	}
-
-	var acc [9]int64
-	for j := 0; j < 8; j++ {
-		acc[j] = w(j)
-		for i := 0; i < 8; i++ {
-			acc[j] += w(i+8) * R[i][j]
-		}
-	}
-
-	// Propagate carries (32-bit words)
-	for i := 0; i < 8; i++ {
-		carry := acc[i] >> 32
-		acc[i] &= 0xFFFFFFFF
-		acc[i+1] += carry
-	}
-
-	// Handle overflow
-	overflow := acc[8]
-	if overflow != 0 {
-		acc[0] += overflow
-		acc[2] -= overflow
-		acc[3] += overflow
-		acc[7] += overflow
-		acc[8] = 0
-
-		for i := 0; i < 8; i++ {
-			carry := acc[i] >> 32
-			acc[i] &= 0xFFFFFFFF
-			acc[i+1] += carry
-		}
-
-		overflow2 := acc[8]
-		if overflow2 != 0 {
-			acc[0] += overflow2
-			acc[2] -= overflow2
-			acc[3] += overflow2
-			acc[7] += overflow2
-			acc[8] = 0
-			for i := 0; i < 8; i++ {
-				carry := acc[i] >> 32
-				acc[i] &= 0xFFFFFFFF
-				acc[i+1] += carry
-			}
-		}
-	}
-
-	// Handle negative values
-	for i := 0; i < 8; i++ {
-		for acc[i] < 0 {
-			acc[i] += 0x100000000
-			acc[i+1] -= 1
-		}
-	}
-
-	result := BigInt256{
-		limbs: [4]uint64{
-			uint64(acc[0]) | (uint64(acc[1]) << 32),
-			uint64(acc[2]) | (uint64(acc[3]) << 32),
-			uint64(acc[4]) | (uint64(acc[5]) << 32),
-			uint64(acc[6]) | (uint64(acc[7]) << 32),
-		},
-	}
-
-	sm2P := BigInt256{
-		limbs: [4]uint64{0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF00000000, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFEFFFFFFFF},
-	}
-	for result.Compare(&sm2P) >= 0 {
-		result, _ = result.Sub(&sm2P)
-	}
-	return result
-}
-
+// modReduce512 returns value mod modulus using Knuth's algorithm D with 64-bit digits.
+// It panics if modulus is zero. Its timing depends on the operands, so secret
+// values must take the Montgomery paths instead.
 func modReduce512(value *[8]uint64, modulus *BigInt256) BigInt256 {
-	var remainder [8]uint64
-	copy(remainder[:], value[:])
-
-	dividendBits := 0
-	for i := 7; i >= 0; i-- {
-		if remainder[i] != 0 {
-			dividendBits = (i+1)*64 - bits.LeadingZeros64(remainder[i])
-			break
-		}
+	n := 4
+	for n > 0 && modulus.limbs[n-1] == 0 {
+		n--
 	}
-
-	modulusBits := 0
-	for i := 3; i >= 0; i-- {
-		if modulus.limbs[i] != 0 {
-			modulusBits = (i+1)*64 - bits.LeadingZeros64(modulus.limbs[i])
-			break
-		}
-	}
-
-	if modulusBits == 0 {
+	if n == 0 {
 		panic("division by zero")
 	}
 
-	if dividendBits < modulusBits {
-		return BigInt256{limbs: [4]uint64{remainder[0], remainder[1], remainder[2], remainder[3]}}
-	}
-
-	shiftAmount := dividendBits - modulusBits
-	for shift := shiftAmount; shift >= 0; shift-- {
-		shifted := shiftLeft512(&modulus.limbs, shift)
-		if compare512(&remainder, &shifted) >= 0 {
-			remainder = sub512(&remainder, &shifted)
+	if n == 1 {
+		d := modulus.limbs[0]
+		var rem uint64
+		for i := 7; i >= 0; i-- {
+			_, rem = bits.Div64(rem, value[i], d)
 		}
+		return BigInt256{limbs: [4]uint64{rem, 0, 0, 0}}
 	}
 
-	return BigInt256{limbs: [4]uint64{remainder[0], remainder[1], remainder[2], remainder[3]}}
-}
-
-func shiftLeft512(value *[4]uint64, shift int) [8]uint64 {
-	var result [8]uint64
-	if shift == 0 {
-		copy(result[:4], value[:])
-		return result
+	// Normalize so the divisor's top bit is set.
+	shift := uint(bits.LeadingZeros64(modulus.limbs[n-1]))
+	var d [4]uint64
+	for i := n - 1; i > 0; i-- {
+		d[i] = modulus.limbs[i]<<shift | modulus.limbs[i-1]>>(64-shift)
 	}
-	wordShift := shift / 64
-	bitShift := uint(shift % 64)
-	if bitShift == 0 {
-		for i := 0; i < 4; i++ {
-			if i+wordShift < 8 {
-				result[i+wordShift] = value[i]
+	d[0] = modulus.limbs[0] << shift
+
+	var u [9]uint64
+	u[8] = value[7] >> (64 - shift)
+	for i := 7; i > 0; i-- {
+		u[i] = value[i]<<shift | value[i-1]>>(64-shift)
+	}
+	u[0] = value[0] << shift
+
+	top, next := d[n-1], d[n-2]
+	for j := 8 - n; j >= 0; j-- {
+		// Estimate the quotient digit from the top limbs and correct it.
+		var qhat, rhat uint64
+		overflow := false
+		if u[j+n] >= top {
+			qhat = ^uint64(0)
+			var c uint64
+			rhat, c = bits.Add64(u[j+n-1], top, 0)
+			overflow = c != 0
+		} else {
+			qhat, rhat = bits.Div64(u[j+n], u[j+n-1], top)
+		}
+		for !overflow {
+			hi, lo := bits.Mul64(qhat, next)
+			if hi < rhat || (hi == rhat && lo <= u[j+n-2]) {
+				break
 			}
+			qhat--
+			var c uint64
+			rhat, c = bits.Add64(rhat, top, 0)
+			overflow = c != 0
 		}
-	} else {
-		for i := 0; i < 4; i++ {
-			if i+wordShift < 8 {
-				result[i+wordShift] |= value[i] << bitShift
+
+		// Multiply and subtract.
+		var mulCarry, borrow uint64
+		for i := 0; i < n; i++ {
+			hi, lo := bits.Mul64(qhat, d[i])
+			var c uint64
+			lo, c = bits.Add64(lo, mulCarry, 0)
+			mulCarry = hi + c
+			u[i+j], borrow = bits.Sub64(u[i+j], lo, borrow)
+		}
+		u[j+n], borrow = bits.Sub64(u[j+n], mulCarry, borrow)
+
+		// The estimate was one too large in rare cases: add the divisor back.
+		if borrow != 0 {
+			var c uint64
+			for i := 0; i < n; i++ {
+				u[i+j], c = bits.Add64(u[i+j], d[i], c)
 			}
-			if i+wordShift+1 < 8 {
-				result[i+wordShift+1] |= value[i] >> (64 - bitShift)
-			}
+			u[j+n] += c
 		}
 	}
-	return result
-}
 
-func compare512(a, b *[8]uint64) int {
-	for i := 7; i >= 0; i-- {
-		if a[i] > b[i] {
-			return 1
-		}
-		if a[i] < b[i] {
-			return -1
-		}
+	// Denormalize the remainder.
+	var r BigInt256
+	for i := 0; i < n; i++ {
+		r.limbs[i] = u[i]>>shift | u[i+1]<<(64-shift)
 	}
-	return 0
+	return r
 }
 
-func sub512(a, b *[8]uint64) [8]uint64 {
-	var result [8]uint64
-	var borrow uint64
-	for i := 0; i < 8; i++ {
-		diff, b1 := bits.Sub64(a[i], b[i], borrow)
-		result[i] = diff
-		borrow = b1
-	}
-	return result
-}
-
-// ModInverse returns a^(-1) mod m using Fermat's little theorem.
+// ModInverse returns a^(-1) mod m using Fermat's little theorem, so m must be prime.
 func (a BigInt256) ModInverse(m *BigInt256) BigInt256 {
 	two := BigInt256{limbs: [4]uint64{2, 0, 0, 0}}
-	pMinus2, _ := m.Sub(&two)
-	return a.ModPow(&pMinus2, m)
+	exp, _ := m.Sub(&two)
+	return a.ModPow(&exp, m)
 }
 
-// ModPow returns (base^exp) mod m using square-and-multiply.
+// ModPow returns (a^exp) mod m using a 4-bit window. The timing depends on exp.
 func (a BigInt256) ModPow(exp, m *BigInt256) BigInt256 {
-	if exp.IsZero() {
+	bitLen := exp.BitLength()
+	if bitLen == 0 {
 		return bigOne
 	}
-	result := bigOne
-	base := a
-	bitLen := exp.BitLength()
-	for i := 0; i < bitLen; i++ {
-		if exp.GetBit(i) {
-			result = result.ModMul(&base, m)
+
+	var table [16]BigInt256
+	table[1] = a.ModMul(&bigOne, m)
+	for i := 2; i < 16; i++ {
+		table[i] = table[i-1].ModMul(&table[1], m)
+	}
+
+	// Align the windows to multiples of 4 bits from the bottom.
+	top := (bitLen - 1) / 4 * 4
+	result := table[(exp.limbs[top/64]>>uint(top%64))&0xF]
+	for pos := top - 4; pos >= 0; pos -= 4 {
+		for i := 0; i < 4; i++ {
+			result = result.ModMul(&result, m)
 		}
-		base = base.ModSquare(m)
+		window := (exp.limbs[pos/64] >> uint(pos%64)) & 0xF
+		if window != 0 {
+			result = result.ModMul(&table[window], m)
+		}
 	}
 	return result
 }
@@ -406,9 +329,7 @@ func (a BigInt256) GetBit(i int) bool {
 	if i >= 256 {
 		return false
 	}
-	word := i / 64
-	bit := uint(i % 64)
-	return (a.limbs[word]>>bit)&1 == 1
+	return (a.limbs[i/64]>>uint(i%64))&1 == 1
 }
 
 // BitLength returns the position of the highest set bit (0 for zero).
@@ -423,36 +344,30 @@ func (a BigInt256) BitLength() int {
 
 // And returns a & b.
 func (a BigInt256) And(b *BigInt256) BigInt256 {
-	return BigInt256{
-		limbs: [4]uint64{
-			a.limbs[0] & b.limbs[0],
-			a.limbs[1] & b.limbs[1],
-			a.limbs[2] & b.limbs[2],
-			a.limbs[3] & b.limbs[3],
-		},
-	}
+	return BigInt256{limbs: [4]uint64{
+		a.limbs[0] & b.limbs[0],
+		a.limbs[1] & b.limbs[1],
+		a.limbs[2] & b.limbs[2],
+		a.limbs[3] & b.limbs[3],
+	}}
 }
 
 // ShiftRight1 returns a >> 1.
 func (a BigInt256) ShiftRight1() BigInt256 {
-	var r BigInt256
-	for i := 0; i < 4; i++ {
-		r.limbs[i] = a.limbs[i] >> 1
-		if i < 3 {
-			r.limbs[i] |= a.limbs[i+1] << 63
-		}
-	}
-	return r
+	return BigInt256{limbs: [4]uint64{
+		a.limbs[0]>>1 | a.limbs[1]<<63,
+		a.limbs[1]>>1 | a.limbs[2]<<63,
+		a.limbs[2]>>1 | a.limbs[3]<<63,
+		a.limbs[3] >> 1,
+	}}
 }
 
 // ShiftLeft1 returns a << 1.
 func (a BigInt256) ShiftLeft1() BigInt256 {
-	var r BigInt256
-	for i := 3; i >= 0; i-- {
-		r.limbs[i] = a.limbs[i] << 1
-		if i > 0 {
-			r.limbs[i] |= a.limbs[i-1] >> 63
-		}
-	}
-	return r
+	return BigInt256{limbs: [4]uint64{
+		a.limbs[0] << 1,
+		a.limbs[1]<<1 | a.limbs[0]>>63,
+		a.limbs[2]<<1 | a.limbs[1]>>63,
+		a.limbs[3]<<1 | a.limbs[2]>>63,
+	}}
 }

@@ -1,20 +1,15 @@
 package smx
 
-// SM2_P is the prime for the SM2 curve: p = 2^256 - 2^224 - 2^96 + 2^64 - 1
-var SM2_P = BigInt256{
-	limbs: [4]uint64{
-		0xFFFFFFFFFFFFFFFF,
-		0xFFFFFFFF00000000,
-		0xFFFFFFFFFFFFFFFF,
-		0xFFFFFFFEFFFFFFFF,
-	},
-}
+// SM2_P is the prime for the SM2 curve: p = 2^256 - 2^224 - 2^96 + 2^64 - 1.
+var SM2_P = BigInt256{limbs: [4]uint64{p0, p1, p2, p3}}
 
-// FpElement represents a field element modulo SM2_P.
+// FpElement represents a field element modulo SM2_P. The value is held in plain form,
+// fully reduced; curve operations convert to the faster internal Montgomery form.
 type FpElement struct {
 	value BigInt256
 }
 
+// NewFpElement reduces v modulo p. Any 256-bit value is below 2p.
 func NewFpElement(v BigInt256) FpElement {
 	if v.Compare(&SM2_P) >= 0 {
 		v = v.ModSub(&SM2_P, &SM2_P)
@@ -22,93 +17,104 @@ func NewFpElement(v BigInt256) FpElement {
 	return FpElement{value: v}
 }
 
+// FpFromHex parses a big-endian hex string and reduces it modulo p.
 func FpFromHex(s string) FpElement {
 	return NewFpElement(BigInt256FromHex(s))
 }
 
+// FpZero returns 0.
 func FpZero() FpElement {
-	return FpElement{value: bigZero}
+	return FpElement{}
 }
 
+// FpOne returns 1.
 func FpOne() FpElement {
 	return FpElement{value: bigOne}
 }
 
+// IsZero reports whether a is 0.
 func (a FpElement) IsZero() bool {
 	return a.value.IsZero()
 }
 
+// IsOne reports whether a is 1.
 func (a FpElement) IsOne() bool {
 	return a.value.IsOne()
 }
 
+// Add returns a + b mod p.
 func (a FpElement) Add(b FpElement) FpElement {
-	return FpElement{value: a.value.ModAdd(&b.value, &SM2_P)}
+	var z fe
+	feAdd(&z, (*fe)(&a.value.limbs), (*fe)(&b.value.limbs))
+	return FpElement{value: BigInt256{limbs: z}}
 }
 
+// Sub returns a - b mod p.
 func (a FpElement) Sub(b FpElement) FpElement {
-	return FpElement{value: a.value.ModSub(&b.value, &SM2_P)}
+	var z fe
+	feSub(&z, (*fe)(&a.value.limbs), (*fe)(&b.value.limbs))
+	return FpElement{value: BigInt256{limbs: z}}
 }
 
+// Mul returns a * b mod p.
 func (a FpElement) Mul(b FpElement) FpElement {
 	return FpElement{value: a.value.SM2ModMulP(&b.value)}
 }
 
+// Square returns a * a mod p.
 func (a FpElement) Square() FpElement {
 	return FpElement{value: a.value.SM2ModSquareP()}
 }
 
+// Negate returns -a mod p.
 func (a FpElement) Negate() FpElement {
-	if a.IsZero() {
-		return a
-	}
-	return FpElement{value: SM2_P.ModSub(&a.value, &SM2_P)}
+	var z fe
+	feNeg(&z, (*fe)(&a.value.limbs))
+	return FpElement{value: BigInt256{limbs: z}}
 }
 
-// Invert returns a^(-1) mod p using Fermat's little theorem with SM2 fast reduction.
+// Invert returns a^-1 mod p. It panics if a is 0.
 func (a FpElement) Invert() FpElement {
 	if a.IsZero() {
 		panic("cannot invert zero")
 	}
-	two := BigInt256{limbs: [4]uint64{2, 0, 0, 0}}
-	pMinus2, _ := SM2_P.Sub(&two)
-	result := bigOne
-	base := a.value
-	bitLen := pMinus2.BitLength()
-	for i := 0; i < bitLen; i++ {
-		if pMinus2.GetBit(i) {
-			result = result.SM2ModMulP(&base)
-		}
-		base = base.SM2ModSquareP()
-	}
-	return FpElement{value: result}
+	var m, inv fe
+	feToMont(&m, &a.value.limbs)
+	feInvert(&inv, &m)
+	return FpElement{value: BigInt256{limbs: feFromMont(&inv)}}
 }
 
+// Div returns a / b mod p. It panics if b is 0.
 func (a FpElement) Div(b FpElement) FpElement {
-	inv := b.Invert()
-	return a.Mul(inv)
+	return a.Mul(b.Invert())
 }
 
+// Double returns 2 * a mod p.
 func (a FpElement) Double() FpElement {
 	return a.Add(a)
 }
 
+// Triple returns 3 * a mod p.
 func (a FpElement) Triple() FpElement {
 	return a.Double().Add(a)
 }
 
+// ToBigInt returns the plain value.
 func (a FpElement) ToBigInt() BigInt256 {
 	return a.value
 }
 
+// ToBEBytes returns the 32-byte big-endian encoding.
 func (a FpElement) ToBEBytes() [32]byte {
 	return a.value.ToBEBytes()
 }
 
+// ToHex returns the 64-digit uppercase hex encoding.
 func (a FpElement) ToHex() string {
 	return a.value.ToHex()
 }
 
+// Equal reports whether a and b are equal.
 func (a FpElement) Equal(b FpElement) bool {
 	return a.value == b.value
 }

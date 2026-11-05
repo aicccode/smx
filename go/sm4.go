@@ -1,6 +1,10 @@
 package smx
 
-import "fmt"
+import (
+	"encoding/binary"
+	"errors"
+	"math/bits"
+)
 
 var sm4SBox = [256]byte{
 	0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
@@ -34,10 +38,30 @@ var sm4CK = [32]uint32{
 	0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279,
 }
 
-// SM4 implements the SM4 block cipher with CBC mode and PKCS#7 padding.
+// sm4T0..sm4T3 combine the S-box with the linear transform L, one table per input
+// byte, for the portable code path. Caveat: these lookups are indexed by secret data, so
+// that path is not protected against cache-timing attacks, and tables of 4 KiB rather
+// than the 256-byte S-box give a local attacker somewhat more signal. They are used only
+// where no hardware path exists; see sm4_amd64.go.
+var sm4T0, sm4T1, sm4T2, sm4T3 = func() (t0, t1, t2, t3 [256]uint32) {
+	for i, sb := range sm4SBox {
+		b := uint32(sb)
+		v := b ^ bits.RotateLeft32(b, 2) ^ bits.RotateLeft32(b, 10) ^
+			bits.RotateLeft32(b, 18) ^ bits.RotateLeft32(b, 24)
+		t3[i] = v
+		t2[i] = bits.RotateLeft32(v, 8)
+		t1[i] = bits.RotateLeft32(v, 16)
+		t0[i] = bits.RotateLeft32(v, 24)
+	}
+	return t0, t1, t2, t3
+}()
+
+// SM4 implements the SM4 block cipher with CBC mode and PKCS#7 padding. After SetKey,
+// Encrypt and Decrypt only read the instance, so they are safe for concurrent use.
 type SM4 struct {
-	rk [32]uint32
-	iv [16]byte
+	rk  [32]uint32 // encryption round keys
+	drk [32]uint32 // decryption round keys, rk reversed
+	iv  [16]byte
 }
 
 // NewSM4 creates a new SM4 instance.
@@ -48,199 +72,154 @@ func NewSM4() *SM4 {
 // SetKey sets the encryption key and IV. Non-16-byte keys/IVs are hashed via SM3.
 func (s *SM4) SetKey(key, iv []byte) {
 	keyBytes := sm4PrepareKey(key)
-	ivBytes := sm4PrepareKey(iv)
-	s.initKey(keyBytes, ivBytes)
+	s.iv = sm4PrepareKey(iv)
+	s.expandKey(&keyBytes)
 }
 
+// sm4PrepareKey returns 16-byte input unchanged. Other input is replaced by the first
+// 16 characters of the uppercase hex of its SM3 digest, the format this library has
+// always used.
 func sm4PrepareKey(input []byte) [16]byte {
+	var out [16]byte
 	if len(input) == 16 {
-		var out [16]byte
 		copy(out[:], input)
 		return out
 	}
-	h := NewSM3()
+	var h SM3
+	h.v = sm3IV
 	h.Update(input)
-	h.Finish()
-	hexStr := h.HashHexUpper()
-	var out [16]byte
-	copy(out[:], hexStr[:16])
+	var digest [32]byte
+	h.sum(&digest)
+	encodeHexTo(out[:], digest[:8], 0x07)
 	return out
 }
 
-func (s *SM4) initKey(key [16]byte, iv [16]byte) {
-	var mk [4]uint32
-	for i := 0; i < 4; i++ {
-		mk[i] = uint32(key[i*4])<<24 | uint32(key[i*4+1])<<16 |
-			uint32(key[i*4+2])<<8 | uint32(key[i*4+3])
+func (s *SM4) expandKey(key *[16]byte) {
+	k0 := binary.BigEndian.Uint32(key[0:]) ^ sm4FK[0]
+	k1 := binary.BigEndian.Uint32(key[4:]) ^ sm4FK[1]
+	k2 := binary.BigEndian.Uint32(key[8:]) ^ sm4FK[2]
+	k3 := binary.BigEndian.Uint32(key[12:]) ^ sm4FK[3]
+
+	for i := 0; i < 32; i += 4 {
+		k0 ^= sm4TPrime(k1 ^ k2 ^ k3 ^ sm4CK[i])
+		k1 ^= sm4TPrime(k2 ^ k3 ^ k0 ^ sm4CK[i+1])
+		k2 ^= sm4TPrime(k3 ^ k0 ^ k1 ^ sm4CK[i+2])
+		k3 ^= sm4TPrime(k0 ^ k1 ^ k2 ^ sm4CK[i+3])
+		s.rk[i], s.rk[i+1], s.rk[i+2], s.rk[i+3] = k0, k1, k2, k3
+		s.drk[31-i], s.drk[30-i], s.drk[29-i], s.drk[28-i] = k0, k1, k2, k3
 	}
-
-	var k [36]uint32
-	k[0] = mk[0] ^ sm4FK[0]
-	k[1] = mk[1] ^ sm4FK[1]
-	k[2] = mk[2] ^ sm4FK[2]
-	k[3] = mk[3] ^ sm4FK[3]
-
-	for i := 0; i < 32; i++ {
-		input := k[i+1] ^ k[i+2] ^ k[i+3] ^ sm4CK[i]
-		k[i+4] = k[i] ^ sm4TPrime(input)
-		s.rk[i] = k[i+4]
-	}
-
-	s.iv = iv
 }
 
-func sm4Tau(a uint32) uint32 {
-	b0 := sm4SBox[byte(a>>24)]
-	b1 := sm4SBox[byte(a>>16)]
-	b2 := sm4SBox[byte(a>>8)]
-	b3 := sm4SBox[byte(a)]
-	return uint32(b0)<<24 | uint32(b1)<<16 | uint32(b2)<<8 | uint32(b3)
-}
-
-func sm4L(b uint32) uint32 {
-	return b ^ rotl32(b, 2) ^ rotl32(b, 10) ^ rotl32(b, 18) ^ rotl32(b, 24)
-}
-
-func sm4T(a uint32) uint32 {
-	return sm4L(sm4Tau(a))
-}
-
+// sm4TPrime is the key schedule's transform: the S-box followed by L'. The key schedule
+// uses the plain S-box on every path, so its table accesses are secret indexed.
 func sm4TPrime(a uint32) uint32 {
-	b := sm4Tau(a)
-	return b ^ rotl32(b, 13) ^ rotl32(b, 23)
+	b := uint32(sm4SBox[byte(a>>24)])<<24 | uint32(sm4SBox[byte(a>>16)])<<16 |
+		uint32(sm4SBox[byte(a>>8)])<<8 | uint32(sm4SBox[byte(a)])
+	return b ^ bits.RotateLeft32(b, 13) ^ bits.RotateLeft32(b, 23)
 }
 
-func rotl32(x uint32, n int) uint32 {
-	return (x << n) | (x >> (32 - n))
+// sm4Round is the round transform T using the combined tables.
+func sm4Round(x uint32) uint32 {
+	return sm4T0[x>>24] ^ sm4T1[byte(x>>16)] ^ sm4T2[byte(x>>8)] ^ sm4T3[byte(x)]
 }
 
-func sm4F(x0, x1, x2, x3, rk uint32) uint32 {
-	return x0 ^ sm4T(x1^x2^x3^rk)
+// sm4EncryptWords runs the 32 rounds over one block held in four words.
+func sm4EncryptWords(rk *[32]uint32, x0, x1, x2, x3 uint32) (uint32, uint32, uint32, uint32) {
+	for i := 0; i < 32; i += 4 {
+		x0 ^= sm4Round(x1 ^ x2 ^ x3 ^ rk[i])
+		x1 ^= sm4Round(x2 ^ x3 ^ x0 ^ rk[i+1])
+		x2 ^= sm4Round(x3 ^ x0 ^ x1 ^ rk[i+2])
+		x3 ^= sm4Round(x0 ^ x1 ^ x2 ^ rk[i+3])
+	}
+	return x3, x2, x1, x0
+}
+
+// sm4CBCEncryptGeneric encrypts whole blocks of buf in place with the portable code.
+func sm4CBCEncryptGeneric(rk *[32]uint32, iv *[16]byte, buf []byte) {
+	c0 := binary.BigEndian.Uint32(iv[0:])
+	c1 := binary.BigEndian.Uint32(iv[4:])
+	c2 := binary.BigEndian.Uint32(iv[8:])
+	c3 := binary.BigEndian.Uint32(iv[12:])
+	for ; len(buf) >= 16; buf = buf[16:] {
+		c0, c1, c2, c3 = sm4EncryptWords(rk,
+			c0^binary.BigEndian.Uint32(buf[0:]),
+			c1^binary.BigEndian.Uint32(buf[4:]),
+			c2^binary.BigEndian.Uint32(buf[8:]),
+			c3^binary.BigEndian.Uint32(buf[12:]))
+		binary.BigEndian.PutUint32(buf[0:], c0)
+		binary.BigEndian.PutUint32(buf[4:], c1)
+		binary.BigEndian.PutUint32(buf[8:], c2)
+		binary.BigEndian.PutUint32(buf[12:], c3)
+	}
+}
+
+// sm4CBCDecryptGeneric decrypts whole blocks of buf in place with the portable code.
+func sm4CBCDecryptGeneric(drk *[32]uint32, iv *[16]byte, buf []byte) {
+	p0 := binary.BigEndian.Uint32(iv[0:])
+	p1 := binary.BigEndian.Uint32(iv[4:])
+	p2 := binary.BigEndian.Uint32(iv[8:])
+	p3 := binary.BigEndian.Uint32(iv[12:])
+	for ; len(buf) >= 16; buf = buf[16:] {
+		c0 := binary.BigEndian.Uint32(buf[0:])
+		c1 := binary.BigEndian.Uint32(buf[4:])
+		c2 := binary.BigEndian.Uint32(buf[8:])
+		c3 := binary.BigEndian.Uint32(buf[12:])
+		x0, x1, x2, x3 := sm4EncryptWords(drk, c0, c1, c2, c3)
+		binary.BigEndian.PutUint32(buf[0:], x0^p0)
+		binary.BigEndian.PutUint32(buf[4:], x1^p1)
+		binary.BigEndian.PutUint32(buf[8:], x2^p2)
+		binary.BigEndian.PutUint32(buf[12:], x3^p3)
+		p0, p1, p2, p3 = c0, c1, c2, c3
+	}
 }
 
 // Encrypt encrypts a plaintext string and returns ciphertext as hex.
 func (s *SM4) Encrypt(plaintext string) (string, error) {
-	input := []byte(plaintext)
-	padded := pkcs7Pad(input)
-	iv := s.iv
-	var output []byte
+	padLen := 16 - len(plaintext)%16
+	size := len(plaintext) + padLen
 
-	for i := 0; i < len(padded); i += 16 {
-		block := padded[i : i+16]
-		encrypted := s.cbcEncryptBlock(block, iv[:])
-		output = append(output, encrypted[:]...)
-		iv = encrypted
+	// One buffer holds both forms: the ciphertext is built in the upper half and then
+	// expanded to hex from the front.
+	out := make([]byte, 2*size)
+	raw := out[size:]
+	copy(raw, plaintext)
+	for i := len(plaintext); i < size; i++ {
+		raw[i] = byte(padLen)
 	}
-
-	return bytesToHex(output), nil
+	sm4CBCEncrypt(&s.rk, &s.iv, raw)
+	encodeHexTo(out, raw, 0x27)
+	return bytesAsString(out), nil
 }
 
 // Decrypt decrypts a hex ciphertext string and returns plaintext.
 func (s *SM4) Decrypt(ciphertext string) (string, error) {
-	input, err := hexToBytes(ciphertext)
+	buf, err := hexToBytes(ciphertext)
 	if err != nil {
 		return "", err
 	}
-	if len(input)%16 != 0 {
-		return "", fmt.Errorf("invalid ciphertext length")
+	if len(buf)%16 != 0 {
+		return "", errors.New("invalid ciphertext length")
 	}
-
-	iv := s.iv
-	var output []byte
-
-	for i := 0; i < len(input); i += 16 {
-		block := input[i : i+16]
-		decrypted := s.cbcDecryptBlock(block, iv[:])
-		output = append(output, decrypted[:]...)
-		copy(iv[:], block)
-	}
-
-	unpadded, err := pkcs7Unpad(output)
+	sm4CBCDecrypt(&s.drk, &s.iv, buf)
+	plain, err := pkcs7Unpad(buf)
 	if err != nil {
 		return "", err
 	}
-	return string(unpadded), nil
+	return bytesAsString(plain), nil
 }
 
-func (s *SM4) cbcEncryptBlock(block, iv []byte) [16]byte {
-	var x [4]uint32
-	for i := 0; i < 4; i++ {
-		x[i] = uint32(block[i*4])<<24 | uint32(block[i*4+1])<<16 |
-			uint32(block[i*4+2])<<8 | uint32(block[i*4+3])
-		ivWord := uint32(iv[i*4])<<24 | uint32(iv[i*4+1])<<16 |
-			uint32(iv[i*4+2])<<8 | uint32(iv[i*4+3])
-		x[i] ^= ivWord
-	}
-
-	var xn [36]uint32
-	copy(xn[:4], x[:])
-	for i := 0; i < 32; i++ {
-		xn[i+4] = sm4F(xn[i], xn[i+1], xn[i+2], xn[i+3], s.rk[i])
-	}
-
-	// Reverse
-	xo := [4]uint32{xn[35], xn[34], xn[33], xn[32]}
-
-	var out [16]byte
-	for i := 0; i < 4; i++ {
-		out[i*4] = byte(xo[i] >> 24)
-		out[i*4+1] = byte(xo[i] >> 16)
-		out[i*4+2] = byte(xo[i] >> 8)
-		out[i*4+3] = byte(xo[i])
-	}
-	return out
-}
-
-func (s *SM4) cbcDecryptBlock(block, iv []byte) [16]byte {
-	var x [4]uint32
-	for i := 0; i < 4; i++ {
-		x[i] = uint32(block[i*4])<<24 | uint32(block[i*4+1])<<16 |
-			uint32(block[i*4+2])<<8 | uint32(block[i*4+3])
-	}
-
-	var xn [36]uint32
-	copy(xn[:4], x[:])
-	for i := 0; i < 32; i++ {
-		xn[i+4] = sm4F(xn[i], xn[i+1], xn[i+2], xn[i+3], s.rk[31-i])
-	}
-
-	xo := [4]uint32{xn[35], xn[34], xn[33], xn[32]}
-
-	var out [16]byte
-	for i := 0; i < 4; i++ {
-		b := [4]byte{byte(xo[i] >> 24), byte(xo[i] >> 16), byte(xo[i] >> 8), byte(xo[i])}
-		out[i*4] = b[0] ^ iv[i*4]
-		out[i*4+1] = b[1] ^ iv[i*4+1]
-		out[i*4+2] = b[2] ^ iv[i*4+2]
-		out[i*4+3] = b[3] ^ iv[i*4+3]
-	}
-	return out
-}
-
-func pkcs7Pad(input []byte) []byte {
-	padLen := 16 - (len(input) % 16)
-	if padLen == 0 {
-		padLen = 16
-	}
-	out := make([]byte, len(input)+padLen)
-	copy(out, input)
-	for i := len(input); i < len(out); i++ {
-		out[i] = byte(padLen)
-	}
-	return out
-}
-
+// pkcs7Unpad strips PKCS#7 padding. Empty input is returned as is.
 func pkcs7Unpad(input []byte) ([]byte, error) {
 	if len(input) == 0 {
 		return nil, nil
 	}
 	padLen := int(input[len(input)-1])
 	if padLen == 0 || padLen > 16 || padLen > len(input) {
-		return nil, fmt.Errorf("invalid padding")
+		return nil, errors.New("invalid padding")
 	}
 	for i := len(input) - padLen; i < len(input); i++ {
 		if int(input[i]) != padLen {
-			return nil, fmt.Errorf("invalid padding")
+			return nil, errors.New("invalid padding")
 		}
 	}
 	return input[:len(input)-padLen], nil
