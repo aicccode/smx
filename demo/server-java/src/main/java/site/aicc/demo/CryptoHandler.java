@@ -71,7 +71,7 @@ public class CryptoHandler implements HttpHandler {
     // 使用协商密钥 (SM4-CBC模式，IV使用全零)
     String iv = "00000000000000000000000000000000";
     SM4 sm4 = new SM4();
-    sm4.setKey(session.Kb, iv, true);
+    sm4.setKey(session.kB, iv, true);
 
     // 1. 服务端解密客户端的密文
     String clientDecrypted = sm4.decrypt(clientCiphertext);

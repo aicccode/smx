@@ -10,18 +10,18 @@ public class SessionStore {
 
   public static class Session {
     public String sessionId;
-    public String IDa;
-    public String IDb;
+    public String idA;
+    public String idB;
     public AbstractECPoint pA;
-    public AbstractECPoint Ra;
+    public AbstractECPoint rA;
     public AbstractECPoint pB;
     public BigInteger dB;
-    public AbstractECPoint Rb;
+    public AbstractECPoint rB;
     public BigInteger rb;
-    public String Kb; // 协商密钥
-    public AbstractECPoint V;
-    public byte[] Za;
-    public byte[] Zb;
+    public String kB; // 协商密钥
+    public AbstractECPoint v;
+    public byte[] zA;
+    public byte[] zB;
     public boolean confirmed;
   }
 

@@ -5,14 +5,14 @@ import site.aicc.sm2.ec.AbstractECPoint;
 /** SM2 public key. */
 public class ECPublicKey extends ECKey {
 
-  private final AbstractECPoint Q;
+  private final AbstractECPoint q;
 
-  public ECPublicKey(AbstractECPoint Q) {
+  public ECPublicKey(AbstractECPoint q) {
     super(false);
-    this.Q = validate(Q);
+    this.q = validate(q);
   }
 
-  private AbstractECPoint validate(AbstractECPoint q) {
+  private static AbstractECPoint validate(AbstractECPoint q) {
     if (q == null) {
       throw new IllegalArgumentException("Point is null");
     }
@@ -26,6 +26,6 @@ public class ECPublicKey extends ECKey {
   }
 
   public AbstractECPoint getQ() {
-    return Q;
+    return q;
   }
 }

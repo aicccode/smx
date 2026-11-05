@@ -3,6 +3,7 @@ package site.aicc.sm2;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import site.aicc.sm2.ec.AbstractECPoint;
+import site.aicc.sm2.ec.Sm2Engine;
 import site.aicc.sm2.util.ConvertUtil;
 import site.aicc.sm3.SM3;
 
@@ -13,37 +14,37 @@ public class SM2KeySwap {
       SM2Initializer init,
       int byteLen,
       AbstractECPoint pA,
-      AbstractECPoint Ra,
+      AbstractECPoint rA,
       AbstractECPoint pB,
       BigInteger dB,
-      AbstractECPoint Rb,
+      AbstractECPoint rB,
       BigInteger rb,
-      String IDa,
-      String IDb) {
+      String idA,
+      String idB) {
     SM2KeySwapParams result = new SM2KeySwapParams();
     try {
-      BigInteger x2_ = calcX(init.getW(), Rb.getXCoord().toBigInteger());
-      BigInteger tb = calcT(init.getN(), rb, dB, x2_);
+      BigInteger x2 = calcX(init.getW(), rB.getXCoord().toBigInteger());
+      BigInteger tb = calcT(init, rb, dB, x2);
       try {
-        init.validatePoint(Ra.getXCoord().toBigInteger(), Ra.getYCoord().toBigInteger());
+        init.validatePoint(rA.getXCoord().toBigInteger(), rA.getYCoord().toBigInteger());
       } catch (Exception e) {
         throw new IllegalArgumentException(
             "Key exchange failed: A's random public key is not on the curve.");
       }
-      BigInteger x1_ = calcX(init.getW(), Ra.getXCoord().toBigInteger());
-      AbstractECPoint V = calcPoint(tb, x1_, pA, Ra);
-      if (V.isInfinity()) {
+      BigInteger x1 = calcX(init.getW(), rA.getXCoord().toBigInteger());
+      AbstractECPoint v = calcPoint(init, tb, x1, pA, rA);
+      if (v.isInfinity()) {
         throw new IllegalArgumentException("Key exchange failed: V is at infinity.");
       }
-      byte[] Za = init.userSM3Z(IDa.getBytes(StandardCharsets.UTF_8), pA);
-      byte[] Zb = init.userSM3Z(IDb.getBytes(StandardCharsets.UTF_8), pB);
-      byte[] Kb = SM2KdfUtil.kdf(byteLen, V, Za, Zb);
-      byte[] Sb = createS((byte) 0x02, V, Za, Zb, Ra, Rb);
-      result.setSb(ConvertUtil.byteToHex(Sb));
-      result.setKb(ConvertUtil.byteToHex(Kb));
-      result.setV(V);
-      result.setZa(Za);
-      result.setZb(Zb);
+      byte[] zA = init.userSM3Z(idA.getBytes(StandardCharsets.UTF_8), pA);
+      byte[] zB = init.userSM3Z(idB.getBytes(StandardCharsets.UTF_8), pB);
+      byte[] kB = SM2KdfUtil.kdf(byteLen, v, zA, zB);
+      byte[] sB = createS((byte) 0x02, v, zA, zB, rA, rB);
+      result.setSb(ConvertUtil.byteToHex(sB));
+      result.setKb(ConvertUtil.byteToHex(kB));
+      result.setV(v);
+      result.setZa(zA);
+      result.setZb(zB);
       result.setSuccess(true);
     } catch (Exception e) {
       result.setMessage(e.getMessage());
@@ -56,41 +57,40 @@ public class SM2KeySwap {
       SM2Initializer init,
       int byteLen,
       AbstractECPoint pB,
-      AbstractECPoint Rb,
+      AbstractECPoint rB,
       AbstractECPoint pA,
       BigInteger dA,
-      AbstractECPoint Ra,
+      AbstractECPoint rA,
       BigInteger ra,
-      String IDa,
-      String IDb,
-      byte[] Sb) {
+      String idA,
+      String idB,
+      byte[] sB) {
     SM2KeySwapParams result = new SM2KeySwapParams();
     try {
-      BigInteger x1_ = calcX(init.getW(), Ra.getXCoord().toBigInteger());
-      BigInteger ta = calcT(init.getN(), ra, dA, x1_);
+      BigInteger x1 = calcX(init.getW(), rA.getXCoord().toBigInteger());
+      BigInteger ta = calcT(init, ra, dA, x1);
       try {
-        init.validatePoint(Rb.getXCoord().toBigInteger(), Rb.getYCoord().toBigInteger());
+        init.validatePoint(rB.getXCoord().toBigInteger(), rB.getYCoord().toBigInteger());
       } catch (Exception e) {
         throw new IllegalArgumentException(
             "Key exchange failed: B's random public key is not on the curve.");
       }
-      BigInteger x2_ = calcX(init.getW(), Rb.getXCoord().toBigInteger());
-      AbstractECPoint U = calcPoint(ta, x2_, pB, Rb);
-      if (U.isInfinity()) {
+      BigInteger x2 = calcX(init.getW(), rB.getXCoord().toBigInteger());
+      AbstractECPoint u = calcPoint(init, ta, x2, pB, rB);
+      if (u.isInfinity()) {
         throw new IllegalArgumentException("Key exchange failed: U is at infinity.");
       }
-
-      byte[] Za = init.userSM3Z(IDa.getBytes(StandardCharsets.UTF_8), pA);
-      byte[] Zb = init.userSM3Z(IDb.getBytes(StandardCharsets.UTF_8), pB);
-      byte[] Ka = SM2KdfUtil.kdf(byteLen, U, Za, Zb);
-      byte[] S1 = createS((byte) 0x02, U, Za, Zb, Ra, Rb);
-      if (!ConvertUtil.byteArrayEqual(Sb, S1)) {
+      byte[] zA = init.userSM3Z(idA.getBytes(StandardCharsets.UTF_8), pA);
+      byte[] zB = init.userSM3Z(idB.getBytes(StandardCharsets.UTF_8), pB);
+      byte[] kA = SM2KdfUtil.kdf(byteLen, u, zA, zB);
+      byte[] s1 = createS((byte) 0x02, u, zA, zB, rA, rB);
+      if (!ConvertUtil.byteArrayEqual(sB, s1)) {
         throw new IllegalArgumentException(
             "Key exchange failed: B's verification value does not match.");
       }
-      byte[] Sa = createS((byte) 0x03, U, Za, Zb, Ra, Rb);
-      result.setSa(ConvertUtil.byteToHex(Sa));
-      result.setKa(ConvertUtil.byteToHex(Ka));
+      byte[] sA = createS((byte) 0x03, u, zA, zB, rA, rB);
+      result.setSa(ConvertUtil.byteToHex(sA));
+      result.setKa(ConvertUtil.byteToHex(kA));
       result.setSuccess(true);
     } catch (Exception e) {
       result.setSuccess(false);
@@ -100,47 +100,58 @@ public class SM2KeySwap {
   }
 
   protected static boolean checkSa(
-      AbstractECPoint V, byte[] Za, byte[] Zb, AbstractECPoint Ra, AbstractECPoint Rb, byte[] Sa) {
-    byte[] S2 = createS((byte) 0x03, V, Za, Zb, Ra, Rb);
-    return ConvertUtil.byteArrayEqual(Sa, S2);
+      AbstractECPoint v, byte[] zA, byte[] zB, AbstractECPoint rA, AbstractECPoint rB, byte[] sA) {
+    byte[] s2 = createS((byte) 0x03, v, zA, zB, rA, rB);
+    return ConvertUtil.byteArrayEqual(sA, s2);
+  }
+
+  private static void updateCoordinate(SM3 sm3, BigInteger coordinate) {
+    byte[] bytes = ConvertUtil.bigIntegerTo32Bytes(coordinate);
+    sm3.update(bytes, 0, bytes.length);
   }
 
   private static byte[] createS(
-      byte tag, AbstractECPoint vu, byte[] Za, byte[] Zb, AbstractECPoint Ra, AbstractECPoint Rb) {
-    SM3 sm3 = new SM3();
-    byte[] bXvu = ConvertUtil.bigIntegerTo32Bytes(vu.getXCoord().toBigInteger());
-    sm3.update(bXvu, 0, bXvu.length);
-    sm3.update(Za, 0, Za.length);
-    sm3.update(Zb, 0, Zb.length);
-    byte[] bRax = ConvertUtil.bigIntegerTo32Bytes(Ra.getXCoord().toBigInteger());
-    byte[] bRay = ConvertUtil.bigIntegerTo32Bytes(Ra.getYCoord().toBigInteger());
-    byte[] bRbx = ConvertUtil.bigIntegerTo32Bytes(Rb.getXCoord().toBigInteger());
-    byte[] bRby = ConvertUtil.bigIntegerTo32Bytes(Rb.getYCoord().toBigInteger());
-    sm3.update(bRax, 0, bRax.length);
-    sm3.update(bRay, 0, bRay.length);
-    sm3.update(bRbx, 0, bRbx.length);
-    sm3.update(bRby, 0, bRby.length);
-    byte[] h1 = sm3.finish().getHashBytes();
+      byte tag, AbstractECPoint vu, byte[] zA, byte[] zB, AbstractECPoint rA, AbstractECPoint rB) {
+    SM3 inner = new SM3();
+    updateCoordinate(inner, vu.getXCoord().toBigInteger());
+    inner.update(zA, 0, zA.length);
+    inner.update(zB, 0, zB.length);
+    updateCoordinate(inner, rA.getXCoord().toBigInteger());
+    updateCoordinate(inner, rA.getYCoord().toBigInteger());
+    updateCoordinate(inner, rB.getXCoord().toBigInteger());
+    updateCoordinate(inner, rB.getYCoord().toBigInteger());
+    byte[] h1 = inner.finish().getHashBytes();
     SM3 hash = new SM3();
     hash.update(tag);
-    byte[] bYvu = ConvertUtil.bigIntegerTo32Bytes(vu.getYCoord().toBigInteger());
-    hash.update(bYvu, 0, bYvu.length);
+    updateCoordinate(hash, vu.getYCoord().toBigInteger());
     hash.update(h1, 0, h1.length);
     return hash.finish().getHashBytes();
   }
 
-  private static BigInteger calcX(int w, BigInteger x2) {
-    BigInteger _2PowW = BigInteger.valueOf(2).pow(w);
-    _2PowW = _2PowW.add(x2.and(_2PowW.subtract(BigInteger.valueOf(1))));
-    return ConvertUtil.fromUnsignedByteArray(ConvertUtil.bigIntegerTo32Bytes(_2PowW), 0, 32);
+  private static BigInteger calcX(int w, BigInteger x) {
+    BigInteger pow = BigInteger.ONE.shiftLeft(w);
+    BigInteger value = pow.add(x.and(pow.subtract(BigInteger.ONE)));
+    return ConvertUtil.fromUnsignedByteArray(ConvertUtil.bigIntegerTo32Bytes(value), 0, 32);
   }
 
-  private static BigInteger calcT(BigInteger n, BigInteger rb, BigInteger db, BigInteger x2_) {
-    return db.add(x2_.multiply(rb)).mod(n);
+  private static BigInteger calcT(SM2Initializer init, BigInteger r, BigInteger d, BigInteger x) {
+    if (init.isStandardDomain()
+        && Sm2Engine.isScalarInRange(r)
+        && Sm2Engine.isScalarInRange(d)
+        && Sm2Engine.isScalarInRange(x)) {
+      return Sm2Engine.keyExchangeT(d, x, r);
+    }
+    return d.add(x.multiply(r)).mod(init.getN());
   }
 
   private static AbstractECPoint calcPoint(
-      BigInteger t, BigInteger x, AbstractECPoint pA, AbstractECPoint rA) {
-    return pA.add(rA.multiply(x)).multiply(t);
+      SM2Initializer init, BigInteger t, BigInteger x, AbstractECPoint pub, AbstractECPoint rnd) {
+    if (init.isStandardDomain()) {
+      AbstractECPoint fast = Sm2Engine.keyExchangePoint(pub, rnd, x, t);
+      if (fast != null) {
+        return fast;
+      }
+    }
+    return pub.add(rnd.multiply(x)).multiply(t);
   }
 }

@@ -2,7 +2,9 @@ package site.aicc.sm2;
 
 import java.io.IOException;
 import java.math.BigInteger;
+import java.util.Arrays;
 import site.aicc.sm2.ec.AbstractECPoint;
+import site.aicc.sm2.ec.Sm2Engine;
 import site.aicc.sm2.keygen.ECKeyPair;
 import site.aicc.sm2.keygen.ECPrivateKey;
 import site.aicc.sm2.keygen.ECPublicKey;
@@ -12,8 +14,11 @@ import site.aicc.sm3.SM3;
 /** SM2 encryption/decryption and signature core. */
 public class SM2Cipher {
 
-  private static final int C1_HEX_LENGTH = 130;
-  private static final int C3_HEX_LENGTH = 64;
+  private static final int C1_BYTES = 65;
+  private static final int C3_BYTES = 32;
+
+  /** A hex value is 64 digits long exactly when its bit length exceeds this. */
+  private static final int SHORT_VALUE_BITS = 252;
 
   private AbstractECPoint p2;
   private SM3 sm3c3;
@@ -26,17 +31,19 @@ public class SM2Cipher {
     if (data == null || data.length == 0) {
       return null;
     }
-    byte[] source = new byte[data.length];
-    System.arraycopy(data, 0, source, 0, data.length);
     SM2Cipher cipher = new SM2Cipher();
     AbstractECPoint userPublicKey = init.decodePoint(publicKey);
     AbstractECPoint c1 = cipher.initEnc(init, userPublicKey);
-    cipher.encryptData(source);
-    byte[] c3 = new byte[32];
-    cipher.doFinal(c3);
-    return ConvertUtil.byteToHex(c1.getEncoded())
-        + ConvertUtil.byteToHex(c3)
-        + ConvertUtil.byteToHex(source);
+    byte[] c1Bytes = c1.getEncoded();
+    byte[] out = new byte[c1Bytes.length + C3_BYTES + data.length];
+    System.arraycopy(c1Bytes, 0, out, 0, c1Bytes.length);
+    int c2Offset = c1Bytes.length + C3_BYTES;
+    System.arraycopy(data, 0, out, c2Offset, data.length);
+    cipher.sm3c3.update(data, 0, data.length);
+    cipher.xorKeyStream(out, c2Offset, data.length);
+    byte[] c3 = cipher.finishC3();
+    System.arraycopy(c3, 0, out, c1Bytes.length, C3_BYTES);
+    return ConvertUtil.byteToHex(out);
   }
 
   protected static byte[] decrypt(byte[] privateKey, byte[] encryptedData, SM2Initializer init)
@@ -47,21 +54,21 @@ public class SM2Cipher {
     if (encryptedData == null || encryptedData.length == 0) {
       return null;
     }
-    // C1(130)||C3(64)||C2
-    String data = ConvertUtil.byteToHex(encryptedData);
-    byte[] c1Bytes = ConvertUtil.hexToByte(data.substring(0, C1_HEX_LENGTH));
-    byte[] c3 = ConvertUtil.hexToByte(data.substring(C1_HEX_LENGTH, C1_HEX_LENGTH + C3_HEX_LENGTH));
-    byte[] c2 =
-        ConvertUtil.hexToByte(
-            data.substring(C1_HEX_LENGTH + C3_HEX_LENGTH, 2 * encryptedData.length));
+    // C1(65) || C3(32) || C2
+    if (encryptedData.length < C1_BYTES + C3_BYTES) {
+      throw new StringIndexOutOfBoundsException(
+          "ciphertext too short: " + encryptedData.length + " bytes");
+    }
+    byte[] c1Bytes = Arrays.copyOf(encryptedData, C1_BYTES);
+    byte[] c3 = Arrays.copyOfRange(encryptedData, C1_BYTES, C1_BYTES + C3_BYTES);
+    byte[] c2 = Arrays.copyOfRange(encryptedData, C1_BYTES + C3_BYTES, encryptedData.length);
     BigInteger userPrivateKey = new BigInteger(1, privateKey);
     AbstractECPoint c1 = init.decodePoint(c1Bytes);
     SM2Cipher cipher = new SM2Cipher();
     cipher.initDec(init, userPrivateKey, c1);
-    cipher.decryptData(c2);
-    byte[] v = new byte[32];
-    cipher.doFinal(v);
-    if (!ConvertUtil.byteArrayEqual(v, c3)) {
+    cipher.xorKeyStream(c2, 0, c2.length);
+    cipher.sm3c3.update(c2, 0, c2.length);
+    if (!ConvertUtil.byteArrayEqual(cipher.finishC3(), c3)) {
       throw new IllegalArgumentException("Decryption failed");
     }
     return c2;
@@ -69,124 +76,117 @@ public class SM2Cipher {
 
   protected static String sm2Sign(
       String userId, byte[] privatekey, byte[] sourceData, SM2Initializer init) throws Exception {
-    BigInteger intPrivateKey = new BigInteger(privatekey);
-    AbstractECPoint pA = init.getPublicKey(intPrivateKey);
+    // Read as a signed number, so a key with the top bit set signs as d - 2^256. Changing this
+    // would change signatures, so the behavior is kept.
+    BigInteger d = new BigInteger(privatekey);
+    AbstractECPoint pA = init.getPublicKey(d);
     byte[] zA = init.userSM3Z(ConvertUtil.hexToByte(userId), pA);
     SM3 sm3 = new SM3();
     sm3.update(zA, 0, zA.length);
     sm3.update(sourceData, 0, sourceData.length);
-    sm3.finish();
-    BigInteger e = new BigInteger(1, sm3.getHashBytes());
-    BigInteger k = null;
-    AbstractECPoint kp = null;
-    BigInteger r = null;
-    BigInteger s = null;
+    BigInteger e = new BigInteger(1, sm3.finish().getHashBytes());
+    boolean limbPath = init.isStandardDomain() && Sm2Engine.isSigningKeyInRange(d);
+    BigInteger n = init.getN();
+    BigInteger r;
+    BigInteger s;
     do {
+      BigInteger k;
+      BigInteger candidate;
       do {
         ECKeyPair keypair = init.genKeyPair();
-        ECPrivateKey ecpriv = (ECPrivateKey) keypair.getPrivate();
-        ECPublicKey ecpub = (ECPublicKey) keypair.getPublic();
-        k = ecpriv.getD();
-        kp = ecpub.getQ();
-        r = e.add(kp.getXCoord().toBigInteger());
-        r = r.mod(init.getN());
-      } while (r.equals(BigInteger.ZERO)
-          || r.add(k).equals(init.getN())
-          || r.toString(16).length() != 64);
-      BigInteger da1 = intPrivateKey.add(BigInteger.ONE);
-      da1 = da1.modInverse(init.getN());
-      s = r.multiply(intPrivateKey);
-      s = k.subtract(s).mod(init.getN());
-      s = da1.multiply(s).mod(init.getN());
-    } while (s.equals(BigInteger.ZERO) || (s.toString(16).length() != 64));
-    return (ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(r))
+        k = ((ECPrivateKey) keypair.getPrivate()).getD();
+        AbstractECPoint kp = ((ECPublicKey) keypair.getPublic()).getQ();
+        r = e.add(kp.getXCoord().toBigInteger()).mod(n);
+        candidate = limbPath ? signatureValue(d, k, r) : null;
+      } while (r.signum() == 0
+          || r.bitLength() <= SHORT_VALUE_BITS
+          || (limbPath ? candidate == null : r.add(k).equals(n)));
+      s = limbPath ? candidate : genericSignatureValue(d, k, r, n);
+    } while (s.signum() == 0 || s.bitLength() <= SHORT_VALUE_BITS);
+    return ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(r))
         + "h"
-        + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(s)));
+        + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(s));
+  }
+
+  /** Limb computation of s, skipped for r values the signer rejects anyway. */
+  private static BigInteger signatureValue(BigInteger d, BigInteger k, BigInteger r) {
+    return r.signum() == 0 || r.bitLength() <= SHORT_VALUE_BITS
+        ? null
+        : Sm2Engine.signatureS(d, k, r);
+  }
+
+  private static BigInteger genericSignatureValue(
+      BigInteger d, BigInteger k, BigInteger r, BigInteger n) {
+    BigInteger inverse = d.add(BigInteger.ONE).modInverse(n);
+    return inverse.multiply(k.subtract(r.multiply(d)).mod(n)).mod(n);
   }
 
   protected static boolean sm2SignVerify(
       String userId, byte[] publicKey, byte[] sourceData, String signData, SM2Initializer init) {
     try {
-      byte[] formatedPubKey;
+      byte[] encodedKey = publicKey;
       if (publicKey.length == 64) {
-        formatedPubKey = new byte[65];
-        formatedPubKey[0] = 0x04;
-        System.arraycopy(publicKey, 0, formatedPubKey, 1, publicKey.length);
-      } else {
-        formatedPubKey = publicKey;
+        encodedKey = new byte[65];
+        encodedKey[0] = 0x04;
+        System.arraycopy(publicKey, 0, encodedKey, 1, publicKey.length);
       }
-      AbstractECPoint userKey = init.decodePoint(formatedPubKey);
+      AbstractECPoint userKey = init.decodePoint(encodedKey);
       SM3 sm3 = new SM3();
       byte[] z = init.userSM3Z(ConvertUtil.hexToByte(userId), userKey);
       sm3.update(z, 0, z.length);
       sm3.update(sourceData, 0, sourceData.length);
-      sm3.finish();
-      String sr = signData.split("h")[0];
-      String ss = signData.split("h")[1];
-      BigInteger r = new BigInteger(sr, 16);
-      BigInteger s = new BigInteger(ss, 16);
-      BigInteger e = new BigInteger(1, sm3.getHashBytes());
-      BigInteger t = r.add(s).mod(init.getN());
-      BigInteger R = null;
-      if (!t.equals(BigInteger.ZERO)) {
-        AbstractECPoint x1y1 = init.getG().multiply(s);
-        x1y1 = x1y1.add(userKey.multiply(t));
-        R = e.add(x1y1.getXCoord().toBigInteger()).mod(init.getN());
+      String[] parts = signData.split("h");
+      BigInteger r = new BigInteger(parts[0], 16);
+      BigInteger s = new BigInteger(parts[1], 16);
+      BigInteger e = new BigInteger(1, sm3.finish().getHashBytes());
+      BigInteger n = init.getN();
+      BigInteger t = r.add(s).mod(n);
+      if (t.signum() == 0) {
+        return false;
       }
-      return r.equals(R);
-    } catch (IllegalArgumentException e) {
-      return false;
+      if (init.isStandardDomain()) {
+        Boolean verdict = Sm2Engine.verify(userKey, s, t, e, r);
+        if (verdict != null) {
+          return verdict;
+        }
+      }
+      AbstractECPoint sum = init.getG().multiply(s).add(userKey.multiply(t));
+      return r.equals(e.add(sum.getXCoord().toBigInteger()).mod(n));
     } catch (Exception e) {
       return false;
     }
   }
 
-  private byte[] kdf(int keylen) {
-    return SM2KdfUtil.kdf(keylen, this.p2, null, null);
-  }
-
   protected AbstractECPoint initEnc(SM2Initializer init, AbstractECPoint userPublicKey) {
     ECKeyPair key = init.genKeyPair();
-    ECPrivateKey ecpriv = (ECPrivateKey) key.getPrivate();
-    ECPublicKey ecpub = (ECPublicKey) key.getPublic();
-    BigInteger k = ecpriv.getD();
-    AbstractECPoint c1 = ecpub.getQ();
-
-    this.p2 = userPublicKey.multiply(k);
-    byte[] p2x = p2.getXCoord().getEncoded();
-    this.sm3c3 = new SM3();
-    this.sm3c3.update(p2x, 0, p2x.length);
+    BigInteger k = ((ECPrivateKey) key.getPrivate()).getD();
+    AbstractECPoint c1 = ((ECPublicKey) key.getPublic()).getQ();
+    startC3(userPublicKey.multiply(k));
     return c1;
-  }
-
-  private void encryptData(byte[] data) {
-    this.sm3c3.update(data, 0, data.length);
-    byte[] key = kdf(data.length);
-    for (int i = 0; i < data.length; i++) {
-      data[i] ^= key[i];
-    }
   }
 
   protected void initDec(SM2Initializer init, BigInteger privateKey, AbstractECPoint c1) {
     init.validatePoint(c1.getXCoord().toBigInteger(), c1.getYCoord().toBigInteger());
-    this.p2 = c1.multiply(privateKey);
-    byte[] p2x = p2.getXCoord().getEncoded();
+    startC3(c1.multiply(privateKey));
+  }
+
+  private void startC3(AbstractECPoint shared) {
+    this.p2 = shared;
+    byte[] p2x = shared.getXCoord().getEncoded();
     this.sm3c3 = new SM3();
     this.sm3c3.update(p2x, 0, p2x.length);
   }
 
-  private void decryptData(byte[] data) {
-    byte[] key = kdf(data.length);
-    for (int i = 0; i < data.length; i++) {
-      data[i] ^= key[i];
+  private void xorKeyStream(byte[] data, int offset, int length) {
+    byte[] key = SM2KdfUtil.kdf(length, this.p2, null, null);
+    for (int i = 0; i < length; i++) {
+      data[offset + i] ^= key[i];
     }
-    this.sm3c3.update(data, 0, data.length);
   }
 
-  private void doFinal(byte[] c3) {
-    byte[] p = ConvertUtil.bigIntegerTo32Bytes(p2.getYCoord().toBigInteger());
-    this.sm3c3.update(p, 0, p.length);
-    this.sm3c3.finish();
-    System.arraycopy(this.sm3c3.getHashBytes(), 0, c3, 0, c3.length);
+  private byte[] finishC3() {
+    byte[] y = ConvertUtil.bigIntegerTo32Bytes(p2.getYCoord().toBigInteger());
+    this.sm3c3.update(y, 0, y.length);
+    return this.sm3c3.finish().getHashBytes();
   }
 }

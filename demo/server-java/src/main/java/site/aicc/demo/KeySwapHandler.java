@@ -76,20 +76,20 @@ public class KeySwapHandler implements HttpHandler {
   /** 处理密钥交换初始化请求 */
   private String handleInit(String body) throws Exception {
     // 简单JSON解析
-    String IDa = extractJsonValue(body, "IDa");
+    String idA = extractJsonValue(body, "IDa");
     String pAHex = extractJsonValue(body, "pA");
-    String RaHex = extractJsonValue(body, "Ra");
+    String rAHex = extractJsonValue(body, "Ra");
     int keyLen = Integer.parseInt(extractJsonValue(body, "keyLen"));
 
     System.out.println("\n=== KeySwap Init ===");
-    System.out.println("IDa: " + IDa);
+    System.out.println("IDa: " + idA);
     System.out.println("pA: " + pAHex);
-    System.out.println("Ra: " + RaHex);
+    System.out.println("Ra: " + rAHex);
     System.out.println("keyLen: " + keyLen);
 
     // 解析A的公钥和随机公钥
     AbstractECPoint pA = SM2.decodePoint(pAHex);
-    AbstractECPoint Ra = SM2.decodePoint(RaHex);
+    AbstractECPoint rA = SM2.decodePoint(rAHex);
 
     // 获取B的密钥
     AbstractECPoint pB = ((ECPublicKey) serverKeyPair.getPublic()).getQ();
@@ -97,11 +97,11 @@ public class KeySwapHandler implements HttpHandler {
 
     // 生成B的随机密钥对
     ECKeyPair rbPair = SM2.genSM2KeyPair();
-    AbstractECPoint Rb = ((ECPublicKey) rbPair.getPublic()).getQ();
+    AbstractECPoint rB = ((ECPublicKey) rbPair.getPublic()).getQ();
     BigInteger rb = ((ECPrivateKey) rbPair.getPrivate()).getD();
 
     // 调用getSb
-    SM2KeySwapParams result = SM2.getSb(keyLen, pA, Ra, pB, dB, Rb, rb, IDa, serverId);
+    SM2KeySwapParams result = SM2.getSb(keyLen, pA, rA, pB, dB, rB, rb, idA, serverId);
 
     if (!result.isSuccess()) {
       throw new Exception("getSb failed: " + result.getMessage());
@@ -114,18 +114,18 @@ public class KeySwapHandler implements HttpHandler {
     String sessionId = UUID.randomUUID().toString();
     SessionStore.Session session = new SessionStore.Session();
     session.sessionId = sessionId;
-    session.IDa = IDa;
-    session.IDb = serverId;
+    session.idA = idA;
+    session.idB = serverId;
     session.pA = pA;
-    session.Ra = Ra;
+    session.rA = rA;
     session.pB = pB;
     session.dB = dB;
-    session.Rb = Rb;
+    session.rB = rB;
     session.rb = rb;
-    session.Kb = result.getKb();
-    session.V = result.getV();
-    session.Za = result.getZa();
-    session.Zb = result.getZb();
+    session.kB = result.getKb();
+    session.v = result.getV();
+    session.zA = result.getZa();
+    session.zB = result.getZb();
     session.confirmed = false;
     SessionStore.put(sessionId, session);
 
@@ -134,24 +134,24 @@ public class KeySwapHandler implements HttpHandler {
         "04"
             + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(pB.getXCoord().toBigInteger()))
             + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(pB.getYCoord().toBigInteger()));
-    String RbHex =
+    String rBHex =
         "04"
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(Rb.getXCoord().toBigInteger()))
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(Rb.getYCoord().toBigInteger()));
+            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(rB.getXCoord().toBigInteger()))
+            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(rB.getYCoord().toBigInteger()));
 
     return String.format(
         "{\"sessionId\":\"%s\",\"IDb\":\"%s\",\"pB\":\"%s\",\"Rb\":\"%s\",\"Sb\":\"%s\"}",
-        sessionId, serverId, pBHex, RbHex, result.getSb());
+        sessionId, serverId, pBHex, rBHex, result.getSb());
   }
 
   /** 处理密钥交换确认请求 */
   private String handleConfirm(String body) throws Exception {
     String sessionId = extractJsonValue(body, "sessionId");
-    String Sa = extractJsonValue(body, "Sa");
+    String sA = extractJsonValue(body, "Sa");
 
     System.out.println("\n=== KeySwap Confirm ===");
     System.out.println("sessionId: " + sessionId);
-    System.out.println("Sa: " + Sa);
+    System.out.println("Sa: " + sA);
 
     SessionStore.Session session = SessionStore.get(sessionId);
     if (session == null) {
@@ -161,7 +161,7 @@ public class KeySwapHandler implements HttpHandler {
     // 验证Sa
     boolean valid =
         SM2.checkSa(
-            session.V, session.Za, session.Zb, session.Ra, session.Rb, ConvertUtil.hexToByte(Sa));
+            session.v, session.zA, session.zB, session.rA, session.rB, ConvertUtil.hexToByte(sA));
 
     System.out.println("checkSa result: " + valid);
 

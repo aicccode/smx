@@ -9,7 +9,9 @@ public abstract class AbstractECPoint {
   protected AbstractECElement x;
   protected AbstractECElement y;
   protected AbstractECElement[] zs;
-  protected AbstractECPreCalcInfo preCalcInfo = null;
+
+  /** Published complete and never changed afterwards, so concurrent multiplies can share it. */
+  protected volatile AbstractECPreCalcInfo preCalcInfo = null;
 
   protected AbstractECPoint(AbstractECCurve curve, AbstractECElement x, AbstractECElement y) {
     this(curve, x, y, new AbstractECElement[0]);
@@ -31,8 +33,9 @@ public abstract class AbstractECPoint {
     this.preCalcInfo = preCalcInfo;
   }
 
-  private static AbstractECPoint referenceMultiply(AbstractECPoint p, BigInteger k) {
+  private static AbstractECPoint referenceMultiply(AbstractECPoint point, BigInteger k) {
     BigInteger x = k.abs();
+    AbstractECPoint p = point;
     AbstractECPoint q = p.getCurve().getInfinity();
     int t = x.bitLength();
     if (t > 0) {
@@ -76,31 +79,20 @@ public abstract class AbstractECPoint {
     if (isInfinity()) {
       return true;
     }
-    AbstractECCurve curve = getCurve();
-    if (curve != null) {
-      if (!satisfiesCurveEquation()) {
-        return false;
-      }
-
-      if (!satisfiesCofactor()) {
-        return false;
-      }
-    }
-
-    return true;
+    return getCurve() == null || (satisfiesCurveEquation() && satisfiesCofactor());
   }
 
   public byte[] getEncoded() {
     if (this.isInfinity()) {
       return new byte[1];
     }
-    byte[] X = this.getXCoord().getEncoded();
-    byte[] Y = this.getYCoord().getEncoded();
-    byte[] PO = new byte[X.length + Y.length + 1];
-    PO[0] = 0x04;
-    System.arraycopy(X, 0, PO, 1, X.length);
-    System.arraycopy(Y, 0, PO, X.length + 1, Y.length);
-    return PO;
+    byte[] xBytes = this.getXCoord().getEncoded();
+    byte[] yBytes = this.getYCoord().getEncoded();
+    byte[] encoded = new byte[xBytes.length + yBytes.length + 1];
+    encoded[0] = 0x04;
+    System.arraycopy(xBytes, 0, encoded, 1, xBytes.length);
+    System.arraycopy(yBytes, 0, encoded, xBytes.length + 1, yBytes.length);
+    return encoded;
   }
 
   public abstract AbstractECPoint add(AbstractECPoint b);
@@ -115,7 +107,7 @@ public abstract class AbstractECPoint {
     }
 
     AbstractECPoint p = this;
-    while (--e >= 0) {
+    for (int i = 0; i < e; i++) {
       p = p.twice();
     }
     return p;

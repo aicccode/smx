@@ -6,8 +6,8 @@ import site.aicc.sm2.util.ConvertUtil;
 
 /** SM2 key pair (public + private). */
 public class ECKeyPair {
-  private ECKey publicKey;
-  private ECKey privateKey;
+  private final ECKey publicKey;
+  private final ECKey privateKey;
 
   public ECKeyPair(ECKey publicKey, ECKey privateKey) {
     this.publicKey = publicKey;
@@ -23,24 +23,18 @@ public class ECKeyPair {
   }
 
   public String getHexPubKey() {
-    ECPublicKey ecpub = (ECPublicKey) publicKey;
-    AbstractECPoint publicKey = ecpub.getQ();
-    return ConvertUtil.byteToHex(publicKey.getEncoded());
+    return ConvertUtil.byteToHex(getPointPubKey().getEncoded());
   }
 
   public String getHexPriKey() {
-    ECPrivateKey ecpriv = (ECPrivateKey) privateKey;
-    BigInteger privateKey = ecpriv.getD();
-    return ConvertUtil.byteToHex(privateKey.toByteArray());
+    return ConvertUtil.byteToHex(getBIPriKey().toByteArray());
   }
 
   public AbstractECPoint getPointPubKey() {
-    ECPublicKey ecpub = (ECPublicKey) publicKey;
-    return ecpub.getQ();
+    return ((ECPublicKey) publicKey).getQ();
   }
 
   public BigInteger getBIPriKey() {
-    ECPrivateKey ecpriv = (ECPrivateKey) privateKey;
-    return ecpriv.getD();
+    return ((ECPrivateKey) privateKey).getD();
   }
 }

@@ -5,8 +5,10 @@ import site.aicc.sm2.util.ConvertUtil;
 
 /** Abstract elliptic curve. */
 public abstract class AbstractECCurve {
-  protected AbstractECElement a, b;
-  protected BigInteger order, cofactor;
+  protected AbstractECElement a;
+  protected AbstractECElement b;
+  protected BigInteger order;
+  protected BigInteger cofactor;
 
   public abstract int getFieldSize();
 
@@ -47,14 +49,13 @@ public abstract class AbstractECCurve {
   public abstract AbstractECMultiplier getMultiplier();
 
   public AbstractECPoint decodePoint(byte[] encoded) {
-    AbstractECPoint p = null;
     int expectedLength = (getFieldSize() + 7) / 8;
     if (encoded.length != (2 * expectedLength + 1)) {
       throw new IllegalArgumentException("Invalid point encoding length");
     }
-    BigInteger X = ConvertUtil.fromUnsignedByteArray(encoded, 1, expectedLength);
-    BigInteger Y = ConvertUtil.fromUnsignedByteArray(encoded, 1 + expectedLength, expectedLength);
-    p = validatePoint(X, Y);
+    BigInteger x = ConvertUtil.fromUnsignedByteArray(encoded, 1, expectedLength);
+    BigInteger y = ConvertUtil.fromUnsignedByteArray(encoded, 1 + expectedLength, expectedLength);
+    AbstractECPoint p = validatePoint(x, y);
     if (p.isInfinity()) {
       throw new IllegalArgumentException("Point is at infinity");
     }

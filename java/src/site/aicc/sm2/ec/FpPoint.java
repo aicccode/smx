@@ -18,9 +18,8 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   protected boolean satisfiesCurveEquation() {
-    AbstractECElement X = this.x, Y = this.y, A = curve.getA(), B = curve.getB();
-    AbstractECElement lhs = Y.square();
-    AbstractECElement rhs = X.square().add(A).multiply(X).add(B);
+    AbstractECElement lhs = this.y.square();
+    AbstractECElement rhs = this.x.square().add(curve.getA()).multiply(this.x).add(curve.getB());
     return lhs.equals(rhs);
   }
 
@@ -43,20 +42,22 @@ public class FpPoint extends AbstractECPoint {
     if (this == b) {
       return twice();
     }
-    AbstractECCurve curve = this.getCurve();
-    AbstractECElement X1 = this.x, Y1 = this.y;
-    AbstractECElement X2 = b.x, Y2 = b.y;
-    AbstractECElement dx = X2.subtract(X1), dy = Y2.subtract(Y1);
+    AbstractECElement x1 = this.x;
+    AbstractECElement y1 = this.y;
+    AbstractECElement x2 = b.x;
+    AbstractECElement y2 = b.y;
+    AbstractECElement dx = x2.subtract(x1);
+    AbstractECElement dy = y2.subtract(y1);
     if (dx.isZero()) {
       if (dy.isZero()) {
         return twice();
       }
-      return curve.getInfinity();
+      return this.getCurve().getInfinity();
     }
     AbstractECElement gamma = dy.divide(dx);
-    AbstractECElement X3 = gamma.square().subtract(X1).subtract(X2);
-    AbstractECElement Y3 = gamma.multiply(X1.subtract(X3)).subtract(Y1);
-    return new FpPoint(curve, X3, Y3);
+    AbstractECElement x3 = gamma.square().subtract(x1).subtract(x2);
+    AbstractECElement y3 = gamma.multiply(x1.subtract(x3)).subtract(y1);
+    return new FpPoint(this.getCurve(), x3, y3);
   }
 
   @Override
@@ -64,17 +65,15 @@ public class FpPoint extends AbstractECPoint {
     if (this.isInfinity()) {
       return this;
     }
-    AbstractECCurve curve = this.getCurve();
-    AbstractECElement Y1 = this.y;
-    if (Y1.isZero()) {
-      return curve.getInfinity();
+    AbstractECElement y1 = this.y;
+    if (y1.isZero()) {
+      return this.getCurve().getInfinity();
     }
-    AbstractECElement X1 = this.x;
-    AbstractECElement X1Squared = X1.square();
-    AbstractECElement gamma = three(X1Squared).add(this.getCurve().getA()).divide(two(Y1));
-    AbstractECElement X3 = gamma.square().subtract(two(X1));
-    AbstractECElement Y3 = gamma.multiply(X1.subtract(X3)).subtract(Y1);
-    return new FpPoint(curve, X3, Y3);
+    AbstractECElement x1 = this.x;
+    AbstractECElement gamma = three(x1.square()).add(this.getCurve().getA()).divide(two(y1));
+    AbstractECElement x3 = gamma.square().subtract(two(x1));
+    AbstractECElement y3 = gamma.multiply(x1.subtract(x3)).subtract(y1);
+    return new FpPoint(this.getCurve(), x3, y3);
   }
 
   @Override
@@ -88,39 +87,35 @@ public class FpPoint extends AbstractECPoint {
     if (b.isInfinity()) {
       return twice();
     }
-
-    AbstractECElement Y1 = this.y;
-    if (Y1.isZero()) {
+    AbstractECElement y1 = this.y;
+    if (y1.isZero()) {
       return b;
     }
-    AbstractECCurve curve = this.getCurve();
-    AbstractECElement X1 = this.x;
-    AbstractECElement X2 = b.x, Y2 = b.y;
-
-    AbstractECElement dx = X2.subtract(X1), dy = Y2.subtract(Y1);
-
+    AbstractECElement x1 = this.x;
+    AbstractECElement x2 = b.x;
+    AbstractECElement y2 = b.y;
+    AbstractECElement dx = x2.subtract(x1);
+    AbstractECElement dy = y2.subtract(y1);
     if (dx.isZero()) {
       if (dy.isZero()) {
         return threeTimes();
       }
-
       return this;
     }
-
-    AbstractECElement X = dx.square(), Y = dy.square();
-    AbstractECElement d = X.multiply(two(X1).add(X2)).subtract(Y);
+    // 2P + Q with a single inversion, skipping the y coordinate of 2P.
+    AbstractECElement dxSquared = dx.square();
+    AbstractECElement dySquared = dy.square();
+    AbstractECElement d = dxSquared.multiply(two(x1).add(x2)).subtract(dySquared);
     if (d.isZero()) {
-      return curve.getInfinity();
+      return this.getCurve().getInfinity();
     }
-
-    AbstractECElement D = d.multiply(dx);
-    AbstractECElement I = D.invert();
-    AbstractECElement L1 = d.multiply(I).multiply(dy);
-    AbstractECElement L2 = two(Y1).multiply(X).multiply(dx).multiply(I).subtract(L1);
-    AbstractECElement X4 = (L2.subtract(L1)).multiply(L1.add(L2)).add(X2);
-    AbstractECElement Y4 = (X1.subtract(X4)).multiply(L2).subtract(Y1);
-
-    return new FpPoint(curve, X4, Y4);
+    AbstractECElement inverse = d.multiply(dx).invert();
+    AbstractECElement lambda1 = d.multiply(inverse).multiply(dy);
+    AbstractECElement lambda2 =
+        two(y1).multiply(dxSquared).multiply(dx).multiply(inverse).subtract(lambda1);
+    AbstractECElement x4 = lambda2.subtract(lambda1).multiply(lambda1.add(lambda2)).add(x2);
+    AbstractECElement y4 = x1.subtract(x4).multiply(lambda2).subtract(y1);
+    return new FpPoint(this.getCurve(), x4, y4);
   }
 
   @Override
@@ -128,27 +123,24 @@ public class FpPoint extends AbstractECPoint {
     if (this.isInfinity()) {
       return this;
     }
-    AbstractECElement Y1 = this.y;
-    if (Y1.isZero()) {
+    AbstractECElement y1 = this.y;
+    if (y1.isZero()) {
       return this;
     }
-    AbstractECCurve curve = this.getCurve();
-    AbstractECElement X1 = this.x;
-    AbstractECElement _2Y1 = two(Y1);
-    AbstractECElement X = _2Y1.square();
-    AbstractECElement Z = three(X1.square()).add(this.getCurve().getA());
-    AbstractECElement Y = Z.square();
-    AbstractECElement d = three(X1).multiply(X).subtract(Y);
+    AbstractECElement x1 = this.x;
+    AbstractECElement twoY1 = two(y1);
+    AbstractECElement twoY1Squared = twoY1.square();
+    AbstractECElement slope = three(x1.square()).add(this.getCurve().getA());
+    AbstractECElement d = three(x1).multiply(twoY1Squared).subtract(slope.square());
     if (d.isZero()) {
       return this.getCurve().getInfinity();
     }
-    AbstractECElement D = d.multiply(_2Y1);
-    AbstractECElement I = D.invert();
-    AbstractECElement L1 = d.multiply(I).multiply(Z);
-    AbstractECElement L2 = X.square().multiply(I).subtract(L1);
-    AbstractECElement X4 = (L2.subtract(L1)).multiply(L1.add(L2)).add(X1);
-    AbstractECElement Y4 = (X1.subtract(X4)).multiply(L2).subtract(Y1);
-    return new FpPoint(curve, X4, Y4);
+    AbstractECElement inverse = d.multiply(twoY1).invert();
+    AbstractECElement lambda1 = d.multiply(inverse).multiply(slope);
+    AbstractECElement lambda2 = twoY1Squared.square().multiply(inverse).subtract(lambda1);
+    AbstractECElement x4 = lambda2.subtract(lambda1).multiply(lambda1.add(lambda2)).add(x1);
+    AbstractECElement y4 = x1.subtract(x4).multiply(lambda2).subtract(y1);
+    return new FpPoint(this.getCurve(), x4, y4);
   }
 
   @Override
@@ -163,35 +155,36 @@ public class FpPoint extends AbstractECPoint {
       return twice();
     }
     AbstractECCurve curve = this.getCurve();
-    AbstractECElement Y1 = this.y;
-    if (Y1.isZero()) {
+    AbstractECElement y1 = this.y;
+    if (y1.isZero()) {
       return curve.getInfinity();
     }
-    AbstractECElement W1 = curve.getA();
-    AbstractECElement X1 = this.x;
-    AbstractECElement Z1 =
+    AbstractECElement w1 = curve.getA();
+    AbstractECElement x1 = this.x;
+    AbstractECElement z1 =
         this.zs.length < 1 ? curve.fromBigInteger(BigInteger.valueOf(1)) : this.zs[0];
     for (int i = 0; i < e; ++i) {
-      if (Y1.isZero()) {
+      if (y1.isZero()) {
         return curve.getInfinity();
       }
-      AbstractECElement X1Squared = X1.square();
-      AbstractECElement M = three(X1Squared);
-      AbstractECElement _2Y1 = two(Y1);
-      AbstractECElement _2Y1Squared = _2Y1.multiply(Y1);
-      AbstractECElement S = two(X1.multiply(_2Y1Squared));
-      AbstractECElement _4T = _2Y1Squared.square();
-      AbstractECElement _8T = two(_4T);
-      if (!W1.isZero()) {
-        M = M.add(W1);
-        W1 = two(_8T.multiply(W1));
+      AbstractECElement m = three(x1.square());
+      AbstractECElement twoY1 = two(y1);
+      AbstractECElement twoY1Squared = twoY1.multiply(y1);
+      AbstractECElement s = two(x1.multiply(twoY1Squared));
+      AbstractECElement fourT = twoY1Squared.square();
+      AbstractECElement eightT = two(fourT);
+      if (!w1.isZero()) {
+        m = m.add(w1);
+        w1 = two(eightT.multiply(w1));
       }
-      X1 = M.square().subtract(two(S));
-      Y1 = M.multiply(S.subtract(X1)).subtract(_8T);
-      Z1 = Z1.isOne() ? _2Y1 : _2Y1.multiply(Z1);
+      x1 = m.square().subtract(two(s));
+      y1 = m.multiply(s.subtract(x1)).subtract(eightT);
+      z1 = z1.isOne() ? twoY1 : twoY1.multiply(z1);
     }
-    AbstractECElement zInv = Z1.invert(), zInv2 = zInv.square(), zInv3 = zInv2.multiply(zInv);
-    return new FpPoint(curve, X1.multiply(zInv2), Y1.multiply(zInv3));
+    AbstractECElement zInv = z1.invert();
+    AbstractECElement zInv2 = zInv.square();
+    AbstractECElement zInv3 = zInv2.multiply(zInv);
+    return new FpPoint(curve, x1.multiply(zInv2), y1.multiply(zInv3));
   }
 
   protected AbstractECElement two(AbstractECElement x) {
@@ -207,7 +200,6 @@ public class FpPoint extends AbstractECPoint {
     if (this.isInfinity()) {
       return this;
     }
-    AbstractECCurve curve = this.getCurve();
-    return new FpPoint(curve, this.x, this.y.negate());
+    return new FpPoint(this.getCurve(), this.x, this.y.negate());
   }
 }

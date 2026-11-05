@@ -1,14 +1,20 @@
 package site.aicc.sm4;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import site.aicc.sm3.SM3;
 
-/** SM4 block cipher algorithm. */
+/**
+ * SM4 block cipher in CBC mode with PKCS#7 padding (GB/T 32907).
+ *
+ * <p>The round function uses a single 1 KB lookup table that combines the S-box and the linear
+ * transform L. Java offers no AES-NI/GFNI access, so there is no hardware path to prefer. Like the
+ * plain S-box lookups it replaces, indexing a table with secret data is exposed to cache-timing
+ * attacks by a co-located attacker; this is a limit of table-based software SM4.
+ */
 public class SM4 {
-  private static final short[] S_BOX_TABLE = {
+  private static final short[] SBOX = {
     0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
     0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
     0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62,
@@ -27,10 +33,6 @@ public class SM4 {
     0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48
   };
 
-  private byte sbox(byte input) {
-    return (byte) S_BOX_TABLE[input & 0xFF];
-  }
-
   private static final int[] FK = {0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc};
 
   private static final int[] CK = {
@@ -44,18 +46,53 @@ public class SM4 {
     0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279
   };
 
-  private int[] roundKeys = new int[32];
+  /** S-box output passed through L: x ^ x<<<2 ^ x<<<10 ^ x<<<18 ^ x<<<24, for the top byte. */
+  private static final int[] T = new int[256];
+
+  private static final byte[] HEX_LOWER = "0123456789abcdef".getBytes(StandardCharsets.ISO_8859_1);
+  private static final byte[] HEX_UPPER = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
+
+  /** Value of each ASCII hex digit, -1 for everything else. */
+  private static final byte[] HEX_DIGITS = new byte[128];
+
+  static {
+    Arrays.fill(HEX_DIGITS, (byte) -1);
+    for (int i = 0; i < 10; i++) {
+      HEX_DIGITS['0' + i] = (byte) i;
+    }
+    for (int i = 0; i < 6; i++) {
+      HEX_DIGITS['a' + i] = (byte) (10 + i);
+      HEX_DIGITS['A' + i] = (byte) (10 + i);
+    }
+  }
+
+  static {
+    for (int i = 0; i < 256; i++) {
+      int b = SBOX[i] << 24;
+      T[i] =
+          b
+              ^ Integer.rotateLeft(b, 2)
+              ^ Integer.rotateLeft(b, 10)
+              ^ Integer.rotateLeft(b, 18)
+              ^ Integer.rotateLeft(b, 24);
+    }
+  }
+
+  private final int[] roundKeys = new int[32];
+  private final int[] decryptKeys = new int[32];
   private byte[] iv = new byte[16];
 
+  /** Encrypts the UTF-8 encoding of the text; returns lower-case hex. */
   public String encrypt(String text) throws IOException {
-    return processBlocks(
-        text.getBytes(StandardCharsets.UTF_8), Arrays.copyOfRange(iv, 0, iv.length), true);
+    return processBlocks(text.getBytes(StandardCharsets.UTF_8), iv.clone(), true);
   }
 
+  /** Decrypts hex and removes the padding; returns the text decoded as UTF-8. */
   public String decrypt(String text) throws IOException {
-    return processBlocks(hex2Bytes(text), Arrays.copyOfRange(iv, 0, iv.length), false);
+    return processBlocks(hex2Bytes(text), iv.clone(), false);
   }
 
+  /** Sets key and IV, either as hex or as text. */
   public SM4 setKey(String key, String iv, boolean hex) {
     if (hex) {
       setKey(hex2Bytes(key), hex2Bytes(iv));
@@ -70,201 +107,231 @@ public class SM4 {
   }
 
   private void setKey(String keyString, String ivString) {
-    byte[] key = keyString.getBytes(StandardCharsets.UTF_8);
     SM3 sm3 = new SM3();
+    byte[] key = keyString.getBytes(StandardCharsets.UTF_8);
     if (key.length != 16) {
-      key = new byte[16];
-      String hashKey =
-          sm3.update(
-                  keyString.getBytes(StandardCharsets.UTF_8),
-                  0,
-                  keyString.getBytes(StandardCharsets.UTF_8).length)
-              .finish()
-              .getHashCode();
-      byte[] sm3Bytes = hashKey.getBytes();
-      System.arraycopy(sm3Bytes, 0, key, 0, 16);
+      key = hashToBlock(sm3, key);
     }
-
-    byte[] iv = ivString.getBytes(StandardCharsets.UTF_8);
-    if (iv.length != 16) {
-      iv = new byte[16];
-      String hashIv =
-          sm3.update(
-                  ivString.getBytes(StandardCharsets.UTF_8),
-                  0,
-                  ivString.getBytes(StandardCharsets.UTF_8).length)
-              .finish()
-              .getHashCode();
-      byte[] sm3Bytes = hashIv.getBytes();
-      System.arraycopy(sm3Bytes, 0, iv, 0, 16);
+    byte[] ivBytes = ivString.getBytes(StandardCharsets.UTF_8);
+    if (ivBytes.length != 16) {
+      ivBytes = hashToBlock(sm3, ivBytes);
     }
-    this.initKey(key, iv);
+    this.initKey(key, ivBytes);
   }
 
-  private void initKey(byte[] key, byte[] iv) {
+  /** First 16 characters of the upper-case hex digest, as bytes; a format fixed by the baseline. */
+  private static byte[] hashToBlock(SM3 sm3, byte[] data) {
+    String digest = sm3.update(data, 0, data.length).finish().getHashCode();
+    return digest.substring(0, 16).getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  private void initKey(byte[] key, byte[] ivBytes) {
     int[] masterKey = new int[4];
-    int offset = 0;
-    for (int i = 0; i < key.length / 4; i++) {
-      masterKey[i] =
-          (((key[offset] & 0xff) << 24)
-              | ((key[++offset] & 0xff) << 16)
-              | ((key[++offset] & 0xff) << 8)
-              | (key[++offset] & 0xff));
-      offset++;
+    for (int i = 0, offset = 0; i < key.length / 4; i++, offset += 4) {
+      masterKey[i] = readInt(key, offset);
     }
-
-    int[] K = new int[36];
-    K[0] = masterKey[0] ^ FK[0];
-    K[1] = masterKey[1] ^ FK[1];
-    K[2] = masterKey[2] ^ FK[2];
-    K[3] = masterKey[3] ^ FK[3];
+    int k0 = masterKey[0] ^ FK[0];
+    int k1 = masterKey[1] ^ FK[1];
+    int k2 = masterKey[2] ^ FK[2];
+    int k3 = masterKey[3] ^ FK[3];
+    int[] rk = roundKeys;
+    for (int i = 0; i < 32; i += 4) {
+      k0 ^= keyRound(k1 ^ k2 ^ k3 ^ CK[i]);
+      rk[i] = k0;
+      k1 ^= keyRound(k2 ^ k3 ^ k0 ^ CK[i + 1]);
+      rk[i + 1] = k1;
+      k2 ^= keyRound(k3 ^ k0 ^ k1 ^ CK[i + 2]);
+      rk[i + 2] = k2;
+      k3 ^= keyRound(k0 ^ k1 ^ k2 ^ CK[i + 3]);
+      rk[i + 3] = k3;
+    }
     for (int i = 0; i < 32; i++) {
-      K[i + 4] = (K[i] ^ transformTPrime(K[i + 1] ^ K[i + 2] ^ K[i + 3] ^ CK[i]));
-      roundKeys[i] = K[i + 4];
+      decryptKeys[i] = rk[31 - i];
     }
-    this.iv = Arrays.copyOfRange(iv, 0, 16);
+    this.iv = Arrays.copyOf(ivBytes, 16);
   }
 
-  private String processBlocks(byte[] input, byte[] cbcVector, boolean encrypt) throws IOException {
+  private static int keyRound(int a) {
+    int b =
+        SBOX[a >>> 24] << 24
+            | SBOX[(a >>> 16) & 0xFF] << 16
+            | SBOX[(a >>> 8) & 0xFF] << 8
+            | SBOX[a & 0xFF];
+    return b ^ Integer.rotateLeft(b, 13) ^ Integer.rotateLeft(b, 23);
+  }
+
+  private static int readInt(byte[] b, int off) {
+    return b[off] << 24
+        | (b[off + 1] & 0xFF) << 16
+        | (b[off + 2] & 0xFF) << 8
+        | (b[off + 3] & 0xFF);
+  }
+
+  private static void writeInt(byte[] b, int off, int v) {
+    b[off] = (byte) (v >>> 24);
+    b[off + 1] = (byte) (v >>> 16);
+    b[off + 2] = (byte) (v >>> 8);
+    b[off + 3] = (byte) v;
+  }
+
+  private String processBlocks(byte[] input, byte[] cbcVector, boolean encrypt) {
     if (encrypt) {
-      input = applyPkcs7Padding(input);
+      byte[] padded = applyPkcs7Padding(input);
+      encryptCbc(padded, cbcVector);
+      return bytes2Hex(padded, false);
     }
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    int offset = 0;
-    for (int j = 0; j < input.length / 16; j++) {
-      int[] X = new int[36];
-      byte[] nextiv = Arrays.copyOfRange(input, offset, offset + 16);
-      for (int i = 0; i < 4; i++) {
-        if (encrypt) {
-          int x1 = ((input[offset] ^ cbcVector[offset % 16]) & 0xff) << 24;
-          int x2 = ((input[++offset] ^ cbcVector[offset % 16]) & 0xff) << 16;
-          int x3 = ((input[++offset] ^ cbcVector[offset % 16]) & 0xff) << 8;
-          int x4 = (input[++offset] ^ cbcVector[offset % 16]) & 0xff;
-          X[i] = x1 | x2 | x3 | x4;
-        } else {
-          X[i] =
-              (((input[offset] & 0xff) << 24)
-                  | ((input[++offset] & 0xff) << 16)
-                  | ((input[++offset] & 0xff) << 8)
-                  | ((input[++offset] & 0xff)));
-        }
+    int length = input.length & ~15;
+    decryptCbc(input, length, cbcVector);
+    int pad = input[length - 1];
+    if (pad >= 0 && pad <= length) {
+      return new String(input, 0, length - pad, StandardCharsets.UTF_8);
+    }
+    // An invalid padding byte has always been tolerated in this exact way.
+    byte[] blocks = Arrays.copyOf(input, length);
+    return new String(Arrays.copyOfRange(blocks, 0, length - pad), StandardCharsets.UTF_8);
+  }
 
-        offset++;
+  private void encryptCbc(byte[] data, byte[] cbcVector) {
+    int[] t = T;
+    int[] rk = roundKeys;
+    int c0 = readInt(cbcVector, 0);
+    int c1 = readInt(cbcVector, 4);
+    int c2 = readInt(cbcVector, 8);
+    int c3 = readInt(cbcVector, 12);
+    for (int off = 0; off < data.length; off += 16) {
+      int x0 = readInt(data, off) ^ c0;
+      int x1 = readInt(data, off + 4) ^ c1;
+      int x2 = readInt(data, off + 8) ^ c2;
+      int x3 = readInt(data, off + 12) ^ c3;
+      for (int i = 0; i < 32; i += 4) {
+        int a = x1 ^ x2 ^ x3 ^ rk[i];
+        x0 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x2 ^ x3 ^ x0 ^ rk[i + 1];
+        x1 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x3 ^ x0 ^ x1 ^ rk[i + 2];
+        x2 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x0 ^ x1 ^ x2 ^ rk[i + 3];
+        x3 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
       }
-      for (int i = 0; i < 32; i++) {
-        X[i + 4] =
-            roundFunction(
-                X[i], X[i + 1], X[i + 2], X[i + 3], encrypt ? roundKeys[i] : roundKeys[31 - i]);
+      c0 = x3;
+      c1 = x2;
+      c2 = x1;
+      c3 = x0;
+      writeInt(data, off, c0);
+      writeInt(data, off + 4, c1);
+      writeInt(data, off + 8, c2);
+      writeInt(data, off + 12, c3);
+    }
+  }
+
+  private void decryptCbc(byte[] data, int length, byte[] cbcVector) {
+    int[] t = T;
+    int[] rk = decryptKeys;
+    int c0 = readInt(cbcVector, 0);
+    int c1 = readInt(cbcVector, 4);
+    int c2 = readInt(cbcVector, 8);
+    int c3 = readInt(cbcVector, 12);
+    for (int off = 0; off < length; off += 16) {
+      int n0 = readInt(data, off);
+      int n1 = readInt(data, off + 4);
+      int n2 = readInt(data, off + 8);
+      int n3 = readInt(data, off + 12);
+      int x0 = n0;
+      int x1 = n1;
+      int x2 = n2;
+      int x3 = n3;
+      for (int i = 0; i < 32; i += 4) {
+        int a = x1 ^ x2 ^ x3 ^ rk[i];
+        x0 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x2 ^ x3 ^ x0 ^ rk[i + 1];
+        x1 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x3 ^ x0 ^ x1 ^ rk[i + 2];
+        x2 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
+        a = x0 ^ x1 ^ x2 ^ rk[i + 3];
+        x3 ^=
+            t[a >>> 24]
+                ^ Integer.rotateLeft(t[(a >>> 16) & 0xFF], 24)
+                ^ Integer.rotateLeft(t[(a >>> 8) & 0xFF], 16)
+                ^ Integer.rotateLeft(t[a & 0xFF], 8);
       }
-      int[] lastFour = Arrays.copyOfRange(X, 32, 36);
-      int[] reversed = reverseOrder(lastFour);
-      byte[] outputBlock = new byte[16];
-      int index = 0;
-      for (int i = 0; i < 4; i++) {
-        outputBlock[index] = (byte) ((reversed[i] >>> 24) & 0xff);
-        outputBlock[++index] = (byte) ((reversed[i] >>> 16) & 0xff);
-        outputBlock[++index] = (byte) ((reversed[i] >>> 8) & 0xff);
-        outputBlock[++index] = (byte) (reversed[i] & 0xff);
-        index++;
-      }
-      if (encrypt) {
-        System.arraycopy(outputBlock, 0, cbcVector, 0, 16);
-      } else {
-        for (int i = 0; i < outputBlock.length; i++) {
-          outputBlock[i] ^= cbcVector[i];
-        }
-        System.arraycopy(nextiv, 0, cbcVector, 0, 16);
-      }
-      out.write(outputBlock);
-    }
-    if (encrypt) {
-      return bytes2Hex(out.toByteArray(), false);
-    } else {
-      byte[] bs = out.toByteArray();
-      return new String(
-          Arrays.copyOfRange(bs, 0, bs.length - bs[bs.length - 1]), StandardCharsets.UTF_8);
+      writeInt(data, off, x3 ^ c0);
+      writeInt(data, off + 4, x2 ^ c1);
+      writeInt(data, off + 8, x1 ^ c2);
+      writeInt(data, off + 12, x0 ^ c3);
+      c0 = n0;
+      c1 = n1;
+      c2 = n2;
+      c3 = n3;
     }
   }
 
-  private int roundFunction(int x0, int x1, int x2, int x3, int rk) {
-    return x0 ^ transformT(x1 ^ x2 ^ x3 ^ rk);
-  }
-
-  private int transformT(int a) {
-    byte[] abs = int2Bytes(a);
-    for (int i = 0; i < abs.length; i++) {
-      abs[i] = sbox(abs[i]);
-    }
-    int b = bytes2Int(abs);
-    return b
-        ^ ((b << 2) | (b >>> (32 - 2)))
-        ^ ((b << 10) | (b >>> (32 - 10)))
-        ^ ((b << 18) | (b >>> (32 - 18)))
-        ^ ((b << 24) | (b >>> (32 - 24)));
-  }
-
-  private int transformTPrime(int a) {
-    byte[] abs = int2Bytes(a);
-    for (int i = 0; i < abs.length; i++) {
-      abs[i] = sbox(abs[i]);
-    }
-    int b = bytes2Int(abs);
-    return b ^ ((b << 13) | (b >>> (32 - 13))) ^ ((b << 23) | (b >>> (32 - 23)));
-  }
-
-  private int[] reverseOrder(int[] A) {
-    A[0] = A[0] ^ A[3];
-    A[3] = A[0] ^ A[3];
-    A[0] = A[0] ^ A[3];
-    A[1] = A[1] ^ A[2];
-    A[2] = A[1] ^ A[2];
-    A[1] = A[1] ^ A[2];
-    return A;
-  }
-
-  private byte[] applyPkcs7Padding(byte[] input) {
-    byte t = (byte) (16 - input.length % 16);
-    byte[] out = new byte[input.length + t];
-    System.arraycopy(input, 0, out, 0, input.length);
-    for (int i = 0; i < t; i++) {
-      out[input.length + i] = t;
-    }
+  private static byte[] applyPkcs7Padding(byte[] input) {
+    int pad = 16 - input.length % 16;
+    byte[] out = Arrays.copyOf(input, input.length + pad);
+    Arrays.fill(out, input.length, out.length, (byte) pad);
     return out;
   }
 
-  private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
-
+  /** Encodes bytes as hex in the requested case. */
   public static String bytes2Hex(byte[] bytes, boolean upperCase) {
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
+    byte[] alphabet = upperCase ? HEX_UPPER : HEX_LOWER;
+    byte[] hexChars = new byte[bytes.length * 2];
+    for (int j = 0, o = 0; j < bytes.length; j++, o += 2) {
       int v = bytes[j] & 0xFF;
-      hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-      hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+      hexChars[o] = alphabet[v >>> 4];
+      hexChars[o + 1] = alphabet[v & 0x0F];
     }
-    return upperCase ? new String(hexChars).toUpperCase() : new String(hexChars).toLowerCase();
+    return new String(hexChars, StandardCharsets.ISO_8859_1);
   }
 
+  /** Decodes hex; an odd length fails on the unpaired last digit, as it always has. */
   private static byte[] hex2Bytes(String hex) {
-    char[] chars = hex.toCharArray();
-    byte[] bs = new byte[chars.length / 2];
-    int point = 0;
-    for (int i = 0; i < hex.length(); i++) {
-      bs[point++] = (byte) (Integer.parseInt("" + chars[i++] + chars[i], 16) & 0xFF);
+    int length = hex.length();
+    byte[] digits = HEX_DIGITS;
+    byte[] b = new byte[length / 2];
+    for (int i = 0, j = 0; i < length; i += 2, j++) {
+      if (i + 1 == length) {
+        throw new ArrayIndexOutOfBoundsException(length);
+      }
+      char a = hex.charAt(i);
+      char c = hex.charAt(i + 1);
+      int hi = a < 128 ? digits[a] : -1;
+      int lo = c < 128 ? digits[c] : -1;
+      if ((hi | lo) < 0) {
+        // Signs and non-ASCII digits keep Integer.parseInt semantics.
+        b[j] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+      } else {
+        b[j] = (byte) (hi << 4 | lo);
+      }
     }
-    return bs;
-  }
-
-  private static int bytes2Int(byte[] b) {
-    int n = (b[0] & 0xff) << 24 | ((b[1] & 0xff) << 16) | ((b[2] & 0xff) << 8) | (b[3] & 0xff);
-    return n;
-  }
-
-  private static byte[] int2Bytes(int n) {
-    byte[] b = new byte[4];
-    b[0] = (byte) (0xFF & n >> 24);
-    b[1] = (byte) (0xFF & n >> 16);
-    b[2] = (byte) (0xFF & n >> 8);
-    b[3] = (byte) (0xFF & n);
     return b;
   }
 }

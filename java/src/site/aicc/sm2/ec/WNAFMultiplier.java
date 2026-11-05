@@ -4,6 +4,7 @@ import java.math.BigInteger;
 
 /** w-ary non-adjacent form (wNAF) point multiplication method. */
 public class WNAFMultiplier extends AbstractECMultiplier {
+  private static final int[] WINDOW_SIZE_CUTOFFS = {13, 41, 121, 337, 897, 2305};
 
   private static int getBitLen(int size) {
     if (size == 0) return 0;
@@ -18,16 +19,21 @@ public class WNAFMultiplier extends AbstractECMultiplier {
 
   @Override
   protected AbstractECPoint multiplyPositive(AbstractECPoint p, BigInteger k) {
+    AbstractECPoint fast = Sm2Engine.tryMultiply(p, k);
+    if (fast != null) {
+      return fast;
+    }
     int width = Math.max(2, Math.min(16, getWindowSize(k.bitLength())));
     WNAFPreCalcInfo wnafPreCompInfo = preCalc(p, width);
     AbstractECPoint[] preComp = wnafPreCompInfo.getPreComp();
     AbstractECPoint[] preCompNeg = wnafPreCompInfo.getPreCompNeg();
     int[] wnaf = generateCompactWindow(width, k);
-    AbstractECPoint Q = p.getCurve().getInfinity();
+    AbstractECPoint q = p.getCurve().getInfinity();
     int i = wnaf.length;
     if (i > 1) {
       int wi = wnaf[--i];
-      int digit = wi >> 16, zeroes = wi & 0xFFFF;
+      int digit = wi >> 16;
+      int zeroes = wi & 0xFFFF;
       int n = Math.abs(digit);
       AbstractECPoint[] table = digit < 0 ? preCompNeg : preComp;
       if ((n << 2) < (1 << width)) {
@@ -36,97 +42,73 @@ public class WNAFMultiplier extends AbstractECMultiplier {
         int lowBits = n ^ (1 << (highest - 1));
         int i1 = ((1 << (width - 1)) - 1);
         int i2 = (lowBits << scale) + 1;
-        Q = table[i1 >>> 1].add(table[i2 >>> 1]);
+        q = table[i1 >>> 1].add(table[i2 >>> 1]);
         zeroes -= scale;
       } else {
-        Q = table[n >>> 1];
+        q = table[n >>> 1];
       }
 
-      Q = Q.timesPow2(zeroes);
+      q = q.timesPow2(zeroes);
     }
     while (i > 0) {
       int wi = wnaf[--i];
-      int digit = wi >> 16, zeroes = wi & 0xFFFF;
+      int digit = wi >> 16;
+      int zeroes = wi & 0xFFFF;
       int n = Math.abs(digit);
       AbstractECPoint[] table = digit < 0 ? preCompNeg : preComp;
       AbstractECPoint r = table[n >>> 1];
-      Q = Q.twicePlus(r);
-      Q = Q.timesPow2(zeroes);
+      q = q.twicePlus(r);
+      q = q.timesPow2(zeroes);
     }
 
-    return Q;
+    return q;
   }
 
+  /**
+   * Returns tables of at least the required size. A larger table is built as a new object and only
+   * then published, so threads sharing the point never see a half-filled one.
+   */
   private static WNAFPreCalcInfo preCalc(AbstractECPoint p, int width) {
-    AbstractECCurve curve = p.getCurve();
-    WNAFPreCalcInfo preCompInfo = getPreCompInfo((WNAFPreCalcInfo) p.getPreCalcInfo());
-    int iniPreCompLen = 0, reqPreCompLen = 1 << Math.max(0, width - 2);
-    AbstractECPoint[] preComp = preCompInfo.getPreComp();
-    if (preComp == null) {
-      preComp = new AbstractECPoint[0];
-    } else {
-      iniPreCompLen = preComp.length;
+    int required = 1 << Math.max(0, width - 2);
+    AbstractECPreCalcInfo cached = p.getPreCalcInfo();
+    if (cached instanceof WNAFPreCalcInfo && cached.getPreComp().length >= required) {
+      return (WNAFPreCalcInfo) cached;
     }
-    if (iniPreCompLen < reqPreCompLen) {
-      preComp = resizeTable(preComp, reqPreCompLen);
-      if (reqPreCompLen == 1) {
-        preComp[0] = p;
-      } else {
-        int curPreCompLen = iniPreCompLen;
-        if (curPreCompLen == 0) {
-          preComp[0] = p;
-          curPreCompLen = 1;
-        }
-        if (reqPreCompLen == 2) {
-          preComp[1] = p.threeTimes();
-        } else {
-          AbstractECPoint twiceP = preCompInfo.getTwice(), last = preComp[curPreCompLen - 1];
-          if (twiceP == null) {
-            twiceP = preComp[0].twice();
-            preCompInfo.setTwice(twiceP);
-          }
-          while (curPreCompLen < reqPreCompLen) {
-            preComp[curPreCompLen++] = last = last.add(twiceP);
-          }
-        }
-        curve.checkPoints(preComp, iniPreCompLen, reqPreCompLen - iniPreCompLen);
+    AbstractECPoint[] preComp = new AbstractECPoint[required];
+    preComp[0] = p;
+    if (required == 2) {
+      preComp[1] = p.threeTimes();
+    } else if (required > 2) {
+      AbstractECPoint twice = p.twice();
+      for (int i = 1; i < required; i++) {
+        preComp[i] = preComp[i - 1].add(twice);
       }
     }
-
-    preCompInfo.setPreComp(preComp);
-    AbstractECPoint[] preCompNeg = preCompInfo.getPreCompNeg();
-    int pos;
-    if (preCompNeg == null) {
-      pos = 0;
-      preCompNeg = new AbstractECPoint[reqPreCompLen];
-    } else {
-      pos = preCompNeg.length;
-      if (pos < reqPreCompLen) {
-        preCompNeg = resizeTable(preCompNeg, reqPreCompLen);
-      }
+    AbstractECPoint[] preCompNeg = new AbstractECPoint[required];
+    for (int i = 0; i < required; i++) {
+      preCompNeg[i] = preComp[i].negate();
     }
-    while (pos < reqPreCompLen) {
-      preCompNeg[pos] = preComp[pos].negate();
-      ++pos;
-    }
-    preCompInfo.setPreCompNeg(preCompNeg);
-    p.setPreCalcInfo(preCompInfo);
-    return preCompInfo;
+    WNAFPreCalcInfo info = new WNAFPreCalcInfo();
+    info.setPreComp(preComp);
+    info.setPreCompNeg(preCompNeg);
+    p.setPreCalcInfo(info);
+    return info;
   }
 
-  private static int[] generateCompactWindow(int width, BigInteger k) {
+  private static int[] generateCompactWindow(int width, BigInteger scalar) {
     if (width == 2) {
-      return generateCompact(k);
+      return generateCompact(scalar);
     }
     if (width < 2 || width > 16) {
       throw new IllegalArgumentException("'width' must be in [2, 16]");
     }
-    if ((k.bitLength() >>> 16) != 0) {
+    if ((scalar.bitLength() >>> 16) != 0) {
       throw new IllegalArgumentException("'k' bit length must be less than 2^16");
     }
-    if (k.signum() == 0) {
+    if (scalar.signum() == 0) {
       return new int[0];
     }
+    BigInteger k = scalar;
     int[] wnaf = new int[k.bitLength() / width + 1];
     int pow2 = 1 << width;
     int mask = pow2 - 1;
@@ -164,10 +146,10 @@ public class WNAFMultiplier extends AbstractECMultiplier {
     if (k.signum() == 0) {
       return new int[0];
     }
-    BigInteger _3k = k.shiftLeft(1).add(k);
-    int bits = _3k.bitLength();
+    BigInteger triple = k.shiftLeft(1).add(k);
+    int bits = triple.bitLength();
     int[] naf = new int[bits >> 1];
-    BigInteger diff = _3k.xor(k);
+    BigInteger diff = triple.xor(k);
     int highBit = bits - 1, length = 0, zeroes = 0;
     for (int i = 1; i < highBit; ++i) {
       if (!diff.testBit(i)) {
@@ -193,23 +175,10 @@ public class WNAFMultiplier extends AbstractECMultiplier {
   }
 
   private static int getWindowSize(int bits) {
-    int[] windowSizeCutoffs = new int[] {13, 41, 121, 337, 897, 2305};
     int w = 0;
-    for (; w < windowSizeCutoffs.length; ++w) {
-      if (bits < windowSizeCutoffs[w]) {
-        break;
-      }
+    while (w < WINDOW_SIZE_CUTOFFS.length && bits >= WINDOW_SIZE_CUTOFFS[w]) {
+      ++w;
     }
     return w + 2;
-  }
-
-  private static WNAFPreCalcInfo getPreCompInfo(WNAFPreCalcInfo preCompInfo) {
-    return preCompInfo == null ? new WNAFPreCalcInfo() : preCompInfo;
-  }
-
-  private static AbstractECPoint[] resizeTable(AbstractECPoint[] a, int length) {
-    AbstractECPoint[] result = new AbstractECPoint[length];
-    System.arraycopy(a, 0, result, 0, a.length);
-    return result;
   }
 }

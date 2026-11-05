@@ -1,6 +1,8 @@
 package site.aicc.sm2.util;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /** Data type conversion utilities. */
 public class ConvertUtil {
@@ -15,12 +17,12 @@ public class ConvertUtil {
     if (a.length != b.length) {
       return false;
     }
+    // No early exit: this compares MACs and hash values.
+    int diff = 0;
     for (int i = 0; i != a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
+      diff |= a[i] ^ b[i];
     }
-    return true;
+    return diff == 0;
   }
 
   public static BigInteger toBigInteger(int len, int[] x) {
@@ -35,7 +37,7 @@ public class ConvertUtil {
   }
 
   public static byte[] bigIntegerTo32Bytes(BigInteger n) {
-    byte[] tmpd = null;
+    byte[] tmpd;
     if (n == null) {
       return null;
     }
@@ -47,9 +49,6 @@ public class ConvertUtil {
       tmpd = nArray;
     } else {
       tmpd = new byte[32];
-      for (int i = 0; i < 32 - nArray.length; i++) {
-        tmpd[i] = 0;
-      }
       System.arraycopy(nArray, 0, tmpd, 32 - nArray.length, nArray.length);
     }
     return tmpd;
@@ -87,12 +86,20 @@ public class ConvertUtil {
     if (hex.length() % 2 != 0) {
       throw new IllegalArgumentException("Input is not a hex string");
     }
-    char[] arr = hex.toCharArray();
-    byte[] b = new byte[hex.length() / 2];
-    for (int i = 0, j = 0, l = hex.length(); i < l; i++, j++) {
-      String swap = "" + arr[i++] + arr[i];
-      int byteint = Integer.parseInt(swap, 16) & 0xFF;
-      b[j] = (byte) byteint;
+    int length = hex.length();
+    byte[] digits = HEX_DIGITS;
+    byte[] b = new byte[length / 2];
+    for (int i = 0, j = 0; i < length; i += 2, j++) {
+      char a = hex.charAt(i);
+      char c = hex.charAt(i + 1);
+      int hi = a < 128 ? digits[a] : -1;
+      int lo = c < 128 ? digits[c] : -1;
+      if ((hi | lo) < 0) {
+        // Signs and non-ASCII digits keep Integer.parseInt semantics.
+        b[j] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+      } else {
+        b[j] = (byte) (hi << 4 | lo);
+      }
     }
     return b;
   }
@@ -123,16 +130,32 @@ public class ConvertUtil {
     return (x[w] >>> b) & 1;
   }
 
-  private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+  private static final byte[] HEX_UPPER = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
+  private static final byte[] HEX_LOWER = "0123456789abcdef".getBytes(StandardCharsets.ISO_8859_1);
+
+  /** Value of each ASCII hex digit, -1 for everything else. */
+  private static final byte[] HEX_DIGITS = new byte[128];
+
+  static {
+    Arrays.fill(HEX_DIGITS, (byte) -1);
+    for (int i = 0; i < 10; i++) {
+      HEX_DIGITS['0' + i] = (byte) i;
+    }
+    for (int i = 0; i < 6; i++) {
+      HEX_DIGITS['a' + i] = (byte) (10 + i);
+      HEX_DIGITS['A' + i] = (byte) (10 + i);
+    }
+  }
 
   public static String getHexString(byte[] bytes, boolean upperCase) {
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
+    byte[] alphabet = upperCase ? HEX_UPPER : HEX_LOWER;
+    byte[] hexChars = new byte[bytes.length * 2];
+    for (int j = 0, o = 0; j < bytes.length; j++, o += 2) {
       int v = bytes[j] & 0xFF;
-      hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-      hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+      hexChars[o] = alphabet[v >>> 4];
+      hexChars[o + 1] = alphabet[v & 0x0F];
     }
-    return upperCase ? new String(hexChars).toUpperCase() : new String(hexChars).toLowerCase();
+    return new String(hexChars, StandardCharsets.ISO_8859_1);
   }
 
   public static void intToBigEndian(int n, byte[] bs, int off) {

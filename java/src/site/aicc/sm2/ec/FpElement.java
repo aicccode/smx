@@ -1,12 +1,25 @@
 package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 import site.aicc.sm2.util.ConvertUtil;
 
-/** Prime field element Fp. */
+/**
+ * Prime field element Fp. Elements of the SM2 prime field are held as limbs and use {@link
+ * Sm2Field}; the BigInteger value is then produced only on demand. Other fields use BigInteger.
+ */
 public class FpElement extends AbstractECElement {
 
-  private BigInteger q, r, v;
+  private static final long UNSIGNED_MASK = 0xFFFFFFFFL;
+
+  private final BigInteger q;
+  private final BigInteger r;
+
+  /** Set when q is the SM2 prime; never modified after construction. */
+  private final int[] limbs;
+
+  /** Lazily computed for SM2 elements; benign race, BigInteger is immutable. */
+  private BigInteger v;
 
   static BigInteger calculateResidue(BigInteger p) {
     int bitLength = p.bitLength();
@@ -23,15 +36,37 @@ public class FpElement extends AbstractECElement {
     if (v == null || v.signum() < 0 || v.compareTo(q) >= 0) {
       throw new IllegalArgumentException("v is not in Fp");
     }
-
     this.q = q;
     this.r = r;
     this.v = v;
+    this.limbs = q.equals(Sm2Field.P_BIG) ? Sm2Field.fromBigInteger(v) : null;
+  }
+
+  /** Wraps canonical limbs of the SM2 field; takes ownership of the array. */
+  FpElement(int[] limbs) {
+    this.q = Sm2Field.P_BIG;
+    this.r = null;
+    this.limbs = limbs;
+  }
+
+  /** The limbs of an SM2 field element, or null; callers must not modify the array. */
+  int[] limbs() {
+    return limbs;
+  }
+
+  /** The other element's limbs when both are SM2 limb elements, else null. */
+  private int[] otherLimbs(AbstractECElement b) {
+    return limbs != null && b instanceof FpElement ? ((FpElement) b).limbs : null;
   }
 
   @Override
   public BigInteger toBigInteger() {
-    return v;
+    BigInteger value = v;
+    if (value == null) {
+      value = Sm2Field.toBigInteger(limbs);
+      v = value;
+    }
+    return value;
   }
 
   @Override
@@ -41,37 +76,102 @@ public class FpElement extends AbstractECElement {
 
   @Override
   public AbstractECElement add(AbstractECElement b) {
-    return new FpElement(q, r, modAdd(v, b.toBigInteger()));
+    int[] other = otherLimbs(b);
+    if (other != null) {
+      int[] out = new int[8];
+      Sm2Field.add(out, limbs, other);
+      return new FpElement(out);
+    }
+    return new FpElement(q, r, modAdd(toBigInteger(), b.toBigInteger()));
   }
 
   @Override
   public AbstractECElement subtract(AbstractECElement b) {
-    return new FpElement(q, r, modSubtract(v, b.toBigInteger()));
+    int[] other = otherLimbs(b);
+    if (other != null) {
+      int[] out = new int[8];
+      Sm2Field.sub(out, limbs, other);
+      return new FpElement(out);
+    }
+    return new FpElement(q, r, modSubtract(toBigInteger(), b.toBigInteger()));
   }
 
   @Override
   public AbstractECElement multiply(AbstractECElement b) {
-    return new FpElement(q, r, modMult(v, b.toBigInteger()));
+    int[] other = otherLimbs(b);
+    if (other != null) {
+      int[] out = new int[8];
+      Sm2Field.mul(out, limbs, other);
+      return new FpElement(out);
+    }
+    return new FpElement(q, r, modMult(toBigInteger(), b.toBigInteger()));
   }
 
   @Override
   public AbstractECElement divide(AbstractECElement b) {
-    return new FpElement(q, r, modMult(v, modInverse(b.toBigInteger())));
+    int[] other = otherLimbs(b);
+    if (other != null) {
+      int[] out = new int[8];
+      invertLimbs(out, other);
+      Sm2Field.mul(out, limbs, out);
+      return new FpElement(out);
+    }
+    return new FpElement(q, r, modMult(toBigInteger(), modInverse(b.toBigInteger())));
   }
 
   @Override
   public AbstractECElement negate() {
+    if (limbs != null) {
+      if (Sm2Field.isZero(limbs) != 0) {
+        return this;
+      }
+      int[] out = new int[8];
+      Sm2Field.neg(out, limbs);
+      return new FpElement(out);
+    }
     return v.signum() == 0 ? this : new FpElement(q, r, q.subtract(v));
   }
 
   @Override
   public AbstractECElement square() {
+    if (limbs != null) {
+      int[] out = new int[8];
+      Sm2Field.sqr(out, limbs);
+      return new FpElement(out);
+    }
     return new FpElement(q, r, modMult(v, v));
   }
 
   @Override
   public AbstractECElement invert() {
+    if (limbs != null) {
+      int[] out = new int[8];
+      invertLimbs(out, limbs);
+      return new FpElement(out);
+    }
     return new FpElement(q, r, modInverse(v));
+  }
+
+  private static void invertLimbs(int[] out, int[] value) {
+    if (Sm2Field.isZero(value) != 0) {
+      throw new IllegalArgumentException("'x' cannot be zero");
+    }
+    Sm2Group.invert(out, value);
+  }
+
+  @Override
+  public boolean isZero() {
+    return limbs != null ? Sm2Field.isZero(limbs) != 0 : super.isZero();
+  }
+
+  @Override
+  public byte[] getEncoded() {
+    if (limbs != null) {
+      byte[] out = new byte[32];
+      Sm2Field.toBytes(limbs, out, 0);
+      return out;
+    }
+    return super.getEncoded();
   }
 
   private BigInteger modAdd(BigInteger x1, BigInteger x2) {
@@ -96,30 +196,30 @@ public class FpElement extends AbstractECElement {
     return modReduce(x1.multiply(x2));
   }
 
-  private BigInteger modReduce(BigInteger x) {
-    if (r != null) {
-      boolean negative = x.signum() < 0;
-      if (negative) {
-        x = x.abs();
+  private BigInteger modReduce(BigInteger value) {
+    if (r == null) {
+      return value.mod(q);
+    }
+    BigInteger x = value;
+    boolean negative = x.signum() < 0;
+    if (negative) {
+      x = x.abs();
+    }
+    int qLen = q.bitLength();
+    boolean residueIsOne = r.equals(BigInteger.ONE);
+    while (x.bitLength() > (qLen + 1)) {
+      BigInteger high = x.shiftRight(qLen);
+      BigInteger low = x.subtract(high.shiftLeft(qLen));
+      if (!residueIsOne) {
+        high = high.multiply(r);
       }
-      int qLen = q.bitLength();
-      boolean rIsOne = r.equals(BigInteger.valueOf(1));
-      while (x.bitLength() > (qLen + 1)) {
-        BigInteger u = x.shiftRight(qLen);
-        BigInteger v = x.subtract(u.shiftLeft(qLen));
-        if (!rIsOne) {
-          u = u.multiply(r);
-        }
-        x = u.add(v);
-      }
-      while (x.compareTo(q) >= 0) {
-        x = x.subtract(q);
-      }
-      if (negative && x.signum() != 0) {
-        x = q.subtract(x);
-      }
-    } else {
-      x = x.mod(q);
+      x = high.add(low);
+    }
+    while (x.compareTo(q) >= 0) {
+      x = x.subtract(q);
+    }
+    if (negative && x.signum() != 0) {
+      x = q.subtract(x);
     }
     return x;
   }
@@ -141,15 +241,16 @@ public class FpElement extends AbstractECElement {
       return false;
     }
     FpElement o = (FpElement) other;
-    return q.equals(o.q) && v.equals(o.v);
+    if (limbs != null && o.limbs != null) {
+      return Arrays.equals(limbs, o.limbs);
+    }
+    return q.equals(o.q) && toBigInteger().equals(o.toBigInteger());
   }
 
   @Override
   public int hashCode() {
-    return q.hashCode() ^ v.hashCode();
+    return q.hashCode() ^ toBigInteger().hashCode();
   }
-
-  private static final long UNSIGNED_MASK = 0xFFFFFFFFL;
 
   private static void invertMod(int[] p, int[] x, int[] z) {
     int len = p.length;
@@ -160,7 +261,7 @@ public class FpElement extends AbstractECElement {
       System.arraycopy(x, 0, z, 0, len);
       return;
     }
-    int[] u = copy(len, x);
+    int[] u = x.clone();
     int[] a = new int[len];
     a[0] = 1;
     int carryA = 0;
@@ -171,7 +272,7 @@ public class FpElement extends AbstractECElement {
       inversionResult(p, carryA, a, z);
       return;
     }
-    int[] v = copy(len, p);
+    int[] v = p.clone();
     int[] b = new int[len];
     int carryB = 0;
     int uvLen = len;
@@ -207,18 +308,19 @@ public class FpElement extends AbstractECElement {
     }
   }
 
-  private static int inversionStep(int[] p, int[] u, int uLen, int[] x, int xc) {
+  private static int inversionStep(int[] p, int[] u, int uLen, int[] x, int carry) {
     int len = p.length;
     int count = 0;
     while (u[0] == 0) {
-      shiftDownWord(uLen, u, 0);
+      shiftDownWord(uLen, u);
       count += 32;
     }
-    int zeroes = getTrailingZeroes(u[0]);
+    int zeroes = Integer.numberOfTrailingZeros(u[0]);
     if (zeroes > 0) {
-      shiftDownBits(uLen, u, zeroes, 0);
+      shiftDownBits(uLen, u, zeroes);
       count += zeroes;
     }
+    int xc = carry;
     for (int i = 0; i < count; ++i) {
       if ((x[0] & 1) != 0) {
         if (xc < 0) {
@@ -232,23 +334,13 @@ public class FpElement extends AbstractECElement {
     return xc;
   }
 
-  private static int getTrailingZeroes(int x) {
-    int count = 0;
-    while ((x & 1) == 0) {
-      x >>>= 1;
-      ++count;
-    }
-    return count;
-  }
-
-  private static int add(int len, int[] x, int[] y, int[] z) {
+  private static void add(int len, int[] x, int[] y, int[] z) {
     long c = 0;
     for (int i = 0; i < len; ++i) {
       c += (x[i] & UNSIGNED_MASK) + (y[i] & UNSIGNED_MASK);
       z[i] = (int) c;
       c >>>= 32;
     }
-    return (int) c;
   }
 
   private static int addTo(int len, int[] x, int[] z) {
@@ -261,18 +353,16 @@ public class FpElement extends AbstractECElement {
     return (int) c;
   }
 
-  private static int[] copy(int len, int[] x) {
-    int[] z = new int[len];
-    System.arraycopy(x, 0, z, 0, len);
-    return z;
-  }
-
   private static boolean gte(int len, int[] x, int[] y) {
     for (int i = len - 1; i >= 0; --i) {
       int xUnsigned = x[i] ^ Integer.MIN_VALUE;
       int yUnsigned = y[i] ^ Integer.MIN_VALUE;
-      if (xUnsigned < yUnsigned) return false;
-      if (xUnsigned > yUnsigned) return true;
+      if (xUnsigned < yUnsigned) {
+        return false;
+      }
+      if (xUnsigned > yUnsigned) {
+        return true;
+      }
     }
     return true;
   }
@@ -298,34 +388,31 @@ public class FpElement extends AbstractECElement {
     return true;
   }
 
-  private static int shiftDownBit(int len, int[] z, int c) {
-    int i = len;
-    while (--i >= 0) {
+  private static void shiftDownBit(int len, int[] z, int carry) {
+    int c = carry;
+    for (int i = len - 1; i >= 0; --i) {
       int next = z[i];
       z[i] = (next >>> 1) | (c << 31);
       c = next;
     }
-    return c << 31;
   }
 
-  private static int shiftDownBits(int len, int[] z, int bits, int c) {
-    int i = len;
-    while (--i >= 0) {
+  private static void shiftDownBits(int len, int[] z, int bits) {
+    int c = 0;
+    for (int i = len - 1; i >= 0; --i) {
       int next = z[i];
       z[i] = (next >>> bits) | (c << -bits);
       c = next;
     }
-    return c << -bits;
   }
 
-  private static int shiftDownWord(int len, int[] z, int c) {
-    int i = len;
-    while (--i >= 0) {
+  private static void shiftDownWord(int len, int[] z) {
+    int c = 0;
+    for (int i = len - 1; i >= 0; --i) {
       int next = z[i];
       z[i] = c;
       c = next;
     }
-    return c;
   }
 
   private static int subFrom(int len, int[] x, int[] z) {
