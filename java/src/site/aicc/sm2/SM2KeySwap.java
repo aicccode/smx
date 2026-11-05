@@ -178,12 +178,12 @@ public class SM2KeySwap {
     }
   }
 
+  /**
+   * The KDF output, used as it is: GB/T 32918.3 has no all-zero rule for key exchange (that rule is
+   * for encryption only), and other implementations return such keys.
+   */
   private static byte[] deriveKey(int byteLen, AbstractECPoint shared, byte[] zA, byte[] zB) {
-    byte[] key = SM2KdfUtil.kdf(byteLen, shared, zA, zB);
-    if (SM2KdfUtil.isAllZero(key, 0, key.length)) {
-      throw new IllegalArgumentException("Key exchange failed: derived key is all zero.");
-    }
-    return key;
+    return SM2KdfUtil.kdf(byteLen, shared, zA, zB);
   }
 
   private static void updateCoordinate(SM3 sm3, AbstractECElement coordinate) {

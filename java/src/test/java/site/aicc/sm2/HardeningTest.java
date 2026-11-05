@@ -216,6 +216,36 @@ public class HardeningTest {
     assertTrue(SM2.getSa(16, pB, rB, pA, D_A, rA, R_A, "a", "b", sb).isSuccess());
   }
 
+  /**
+   * Interop regression (BouncyCastle 1.86): a 1-byte key that happens to be 00 is a valid result of
+   * the key exchange, not an error. A has d = ra = n - 2, B has d = 3.
+   */
+  @Test
+  public void keyExchangeAcceptsAnAllZeroDerivedKey() {
+    BigInteger nMinus2 = N.subtract(BigInteger.valueOf(2));
+    BigInteger dB = BigInteger.valueOf(3);
+    BigInteger rb =
+        new BigInteger("03482a3222c8c7ed544e7410e18ea9f9f4f282e8cbddd9431c66664ea966d81b", 16);
+    String idA = "ALICE123@YAHOO.COM";
+    char[] repeated = new char[70];
+    String idB = new String(repeated).replace("\0", "id-");
+    AbstractECPoint pA = pub(nMinus2);
+    AbstractECPoint pB = pub(dB);
+    AbstractECPoint rB = pub(rb);
+    assertEquals(
+        "0456cefd60d7c87c000d58ef57fa73ba4d9c0dfa08c08a7331495c2e1da3f2bd52ce481818337e760997aca31f07150e429217b3e6d093718f9087f2c568f5dc3c",
+        ConvertUtil.byteToHex(pA.getEncoded()));
+    SM2KeySwapParams b = SM2.getSb(1, pA, pA, pB, dB, rB, rb, idA, idB);
+    assertTrue(b.getMessage(), b.isSuccess());
+    assertEquals("00", b.getKb());
+    SM2KeySwapParams a =
+        SM2.getSa(1, pB, rB, pA, nMinus2, pA, nMinus2, idA, idB, ConvertUtil.hexToByte(b.getSb()));
+    assertTrue(a.getMessage(), a.isSuccess());
+    assertEquals("00", a.getKa());
+    assertTrue(
+        SM2.checkSa(b.getV(), b.getZa(), b.getZb(), pA, rB, ConvertUtil.hexToByte(a.getSa())));
+  }
+
   /** Coordinates with leading zero bytes must hash fixed-width on both sides. */
   @Test
   public void sharedPointsWithShortCoordinatesAgree() {
