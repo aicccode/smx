@@ -770,6 +770,10 @@ static unsigned ref_nibble(unsigned char c) {
     return 0;
 }
 
+static int ref_is_hex(unsigned char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 static void test_hex(void) {
     static const char lower[] = "0123456789abcdef", upper[] = "0123456789ABCDEF";
     uint8_t data[100], back[100];
@@ -817,13 +821,15 @@ static void test_hex(void) {
                 expect[i] = (uint8_t)((ref_nibble((unsigned char)s[i * 2]) << 4) |
                                       ref_nibble((unsigned char)s[i * 2 + 1]));
             }
-            /* s may start with 0x, which hex_to_bytes strips; decode the body directly */
-            smx_hex_decode(s, 32, got);
+            CHECK("hex decode validity",
+                  smx_hex_decode(s, 32, got) == ref_is_hex((unsigned char)v));
             CHECK("hex decode char", memcmp(got, expect, 32) == 0);
         }
     }
     CHECK("hex_to_bytes too long", hex_to_bytes("0011", back, 1) == -1);
-    CHECK("hex_to_bytes 0x prefix", hex_to_bytes("0xAB", back, 1) == 1 && back[0] == 0xAB);
+    CHECK("hex_to_bytes rejects 0x prefix", hex_to_bytes("0xAB", back, 1) == -1);
+    CHECK("hex_to_bytes rejects odd length", hex_to_bytes("ABC", back, 2) == -1);
+    CHECK("hex_to_bytes rejects non-hex", hex_to_bytes("zz", back, 1) == -1);
 }
 
 /* ---- group ---- */
@@ -1166,48 +1172,6 @@ static void test_double_mult(void) {
     }
 }
 
-/* Points off the curve still follow the group law of their own curve y^2 = x^3 - 3x + b'. */
-static void test_off_curve(void) {
-    long i;
-    printf("points outside the prime-order group\n");
-    for (i = 0; i < 20 * scale; i++) {
-        U256 x = rng_u256(), y = rng_u256(), k = rng_u256();
-        RefPoint p, want, got;
-        Jac base, r;
-        ref_reduce(p.x, x.v, P_LIMBS);
-        ref_reduce(p.y, y.v, P_LIMBS);
-        p.inf = 0;
-        want = ref_mul(&p, k.v);
-        to_jac(&base, &p);
-        ec_mul_ct(&r, &base, k.v);
-        got = from_prod(&r);
-        CHECK("ec_mul_ct off curve", points_equal(&got, &want));
-        ec_mul_vt(&r, &base, k.v);
-        got = from_prod(&r);
-        CHECK("ec_mul_vt off curve", points_equal(&got, &want));
-    }
-    /* y = 0 means order 2, so every table entry and most additions are exceptional */
-    for (i = 0; i < 16; i++) {
-        U256 x = rng_u256();
-        RefPoint p, want, got;
-        Jac base, r;
-        uint64_t k[4] = {0, 0, 0, 0};
-        ref_reduce(p.x, x.v, P_LIMBS);
-        memset(p.y, 0, 32);
-        p.inf = 0;
-        k[0] = (uint64_t)i;
-        k[3] = rng64();
-        want = ref_mul(&p, k);
-        to_jac(&base, &p);
-        ec_mul_ct(&r, &base, k);
-        got = from_prod(&r);
-        CHECK("ec_mul_ct order 2", points_equal(&got, &want));
-        ec_mul_vt(&r, &base, k);
-        got = from_prod(&r);
-        CHECK("ec_mul_vt order 2", points_equal(&got, &want));
-    }
-}
-
 /* ---- public API on top of all this ---- */
 
 static void test_public_points(void) {
@@ -1227,6 +1191,9 @@ static void test_public_points(void) {
     CHECK("n*G is infinity", r.infinity);
     r = ec_point_multiply(inf, &one);
     CHECK("1*inf is infinity", r.infinity);
+    r = ec_point_new(g.x, fp_add(g.y, fp_one()));
+    r = ec_point_multiply(r, &one);
+    CHECK("off-curve base is refused", r.infinity);
     r = sm2_get_public_key(&zero);
     CHECK("public key of 0", r.infinity);
     r = sm2_get_public_key(&n);
@@ -1237,7 +1204,7 @@ static void test_public_points(void) {
     CHECK("inf + G", fp_equal(r.x, g.x));
     r = ec_point_add(g, ec_point_new(g.x, fp_negate(g.y)));
     CHECK("G + (-G)", r.infinity);
-    CHECK("infinity is on curve (baseline behaviour)", ec_point_is_on_curve(&inf));
+    CHECK("infinity does not pass as a valid point", !ec_point_is_on_curve(&inf));
     CHECK("G on curve", ec_point_is_on_curve(&g));
 
     r = ec_point_from_hex_encoded("00");
@@ -1292,7 +1259,6 @@ int main(int argc, char **argv) {
     test_recodings();
     test_scalar_mult();
     test_double_mult();
-    test_off_curve();
     test_public_points();
     printf("\n=== differential results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

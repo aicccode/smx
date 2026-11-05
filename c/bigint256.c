@@ -1,5 +1,6 @@
 #include "sm2_fp.h"
 #include "smx_internal.h"
+#include <limits.h>
 #include <string.h>
 
 #ifdef SMX_HAVE_SSE2
@@ -8,9 +9,9 @@
 
 /*
  * Generic BigInt256 API. Comparison, add, sub, mod_add, mod_sub and the hex
- * conversions are branch-free. bigint256_mod_mul, bigint256_mod_pow and
- * bigint256_mod_inverse work for arbitrary moduli and are variable time, as they
- * always were; the SM2 code paths do not use them.
+ * conversions are branch-free, apart from rejecting malformed input. bigint256_mod_mul,
+ * bigint256_mod_pow and bigint256_mod_inverse work for arbitrary moduli and are variable time, as
+ * they always were; the SM2 code paths do not use them.
  */
 
 /* ---- hex ---- */
@@ -50,17 +51,19 @@ void smx_hex_encode(const uint8_t *data, size_t len, char *out, char alpha) {
     }
 }
 
-/* ASCII hex digit to its value; anything else maps to 0. No branch or table. */
-static inline unsigned hex_nibble(char ch) {
+/* Hex digit to its value, with *bad accumulating an error flag. No branch or table. */
+static inline unsigned hex_nibble(char ch, unsigned *bad) {
     unsigned c = (unsigned char)ch;
     unsigned d = c - '0';
     unsigned l = (c | 0x20u) - 'a';
     unsigned is_digit = 0u - (((d - 10u) & ~d) >> 31);
     unsigned is_letter = 0u - (((l - 6u) & ~l) >> 31);
+    *bad |= ~(is_digit | is_letter);
     return (d & is_digit) | ((l + 10u) & is_letter);
 }
 
-void smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
+int smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
+    unsigned bad = 0;
     size_t i = 0;
 
 #ifdef SMX_HAVE_SSE2
@@ -70,46 +73,58 @@ void smx_hex_decode(const char *hex, size_t len, uint8_t *out) {
     const __m128i zero_char = _mm_set1_epi8('0'), lower = _mm_set1_epi8(0x20);
     const __m128i letter_base = _mm_set1_epi8('a' - 10);
     const __m128i word_low = _mm_set1_epi16(0x00FF);
-#define SMX_NIBBLES(v)                                                                             \
-    _mm_or_si128(                                                                                  \
-        _mm_and_si128(_mm_and_si128(_mm_cmpgt_epi8(v, below_0), _mm_cmpgt_epi8(above_9, v)),       \
-                      _mm_sub_epi8(v, zero_char)),                                                 \
-        _mm_and_si128(_mm_and_si128(_mm_cmpgt_epi8(_mm_or_si128(v, lower), below_a),               \
-                                    _mm_cmpgt_epi8(above_f, _mm_or_si128(v, lower))),              \
-                      _mm_sub_epi8(_mm_or_si128(v, lower), letter_base)))
+    __m128i all_valid = _mm_set1_epi8(-1);
+#define SMX_NIBBLES(v, out_nibbles)                                                                \
+    do {                                                                                           \
+        __m128i folded = _mm_or_si128(v, lower);                                                   \
+        __m128i is_digit = _mm_and_si128(_mm_cmpgt_epi8(v, below_0), _mm_cmpgt_epi8(above_9, v));  \
+        __m128i is_letter =                                                                        \
+            _mm_and_si128(_mm_cmpgt_epi8(folded, below_a), _mm_cmpgt_epi8(above_f, folded));       \
+        all_valid = _mm_and_si128(all_valid, _mm_or_si128(is_digit, is_letter));                   \
+        out_nibbles = _mm_or_si128(_mm_and_si128(is_digit, _mm_sub_epi8(v, zero_char)),            \
+                                   _mm_and_si128(is_letter, _mm_sub_epi8(folded, letter_base)));   \
+    } while (0)
     for (; len - i >= 16; i += 16) {
         __m128i a = _mm_loadu_si128((const __m128i *)(const void *)(hex + i * 2));
         __m128i b = _mm_loadu_si128((const __m128i *)(const void *)(hex + i * 2 + 16));
-        __m128i na = SMX_NIBBLES(a);
-        __m128i nb = SMX_NIBBLES(b);
+        __m128i na, nb;
+        SMX_NIBBLES(a, na);
+        SMX_NIBBLES(b, nb);
         /* each 16-bit word holds (first char, second char); make (first << 4) | second */
         na = _mm_and_si128(_mm_or_si128(_mm_slli_epi16(na, 4), _mm_srli_epi16(na, 8)), word_low);
         nb = _mm_and_si128(_mm_or_si128(_mm_slli_epi16(nb, 4), _mm_srli_epi16(nb, 8)), word_low);
         _mm_storeu_si128((__m128i *)(void *)(out + i), _mm_packus_epi16(na, nb));
     }
 #undef SMX_NIBBLES
+    bad |= (unsigned)(_mm_movemask_epi8(all_valid) ^ 0xFFFF);
 #endif
     for (; i < len; i++) {
-        out[i] = (uint8_t)((hex_nibble(hex[i * 2]) << 4) | hex_nibble(hex[i * 2 + 1]));
+        unsigned hi = hex_nibble(hex[i * 2], &bad);
+        unsigned lo = hex_nibble(hex[i * 2 + 1], &bad);
+        out[i] = (uint8_t)((hi << 4) | lo);
     }
+    return bad == 0;
 }
 
 void bytes_to_hex(const uint8_t *data, size_t len, char *out) {
+    if (data == NULL || out == NULL) {
+        return;
+    }
     smx_hex_encode(data, len, out, 'a');
     out[len * 2] = '\0';
 }
 
 int hex_to_bytes(const char *hex, uint8_t *out, size_t max_len) {
-    size_t byte_len;
-    if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) {
-        hex += 2;
-    }
-    byte_len = strlen(hex) / 2;
-    if (byte_len > max_len) {
+    size_t hex_len, byte_len;
+    if (hex == NULL || out == NULL) {
         return -1;
     }
-    smx_hex_decode(hex, byte_len, out);
-    return (int)byte_len;
+    hex_len = strlen(hex);
+    byte_len = hex_len / 2;
+    if ((hex_len & 1) != 0 || byte_len > max_len || byte_len > (size_t)INT_MAX) {
+        return -1;
+    }
+    return smx_hex_decode(hex, byte_len, out) ? (int)byte_len : -1;
 }
 
 /* ---- construction and conversion ---- */
@@ -124,27 +139,26 @@ BigInt256 bigint256_one(void) {
     return r;
 }
 
-/*
- * Accepts an optional 0x prefix and any length. An odd length has an implied
- * leading zero. At most the first 64 bytes of a longer string are considered, and
- * of those the last 32 bytes form the value.
- */
 BigInt256 bigint256_from_hex(const char *s) {
     BigInt256 r = {{0, 0, 0, 0}};
-    size_t slen, byte_len, end, start, i;
+    size_t slen, i;
+    unsigned bad = 0;
+    if (s == NULL) {
+        return r;
+    }
     if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
         s += 2;
     }
     slen = strlen(s);
-    byte_len = (slen + 1) / 2;
-    if (byte_len > 64) {
-        byte_len = 64;
+    if (slen > 64) {
+        return r;
     }
-    end = byte_len * 2 - (slen & 1);
-    start = end > 64 ? end - 64 : 0;
-    for (i = start; i < end; i++) {
-        size_t pos = end - 1 - i; /* nibble index from the least significant end */
-        r.limbs[pos / 16] |= (uint64_t)hex_nibble(s[i]) << ((pos % 16) * 4);
+    for (i = 0; i < slen; i++) {
+        size_t pos = slen - 1 - i; /* nibble index from the least significant end */
+        r.limbs[pos / 16] |= (uint64_t)hex_nibble(s[i], &bad) << ((pos % 16) * 4);
+    }
+    if (bad != 0) {
+        return bigint256_zero();
     }
     return r;
 }
@@ -152,7 +166,18 @@ BigInt256 bigint256_from_hex(const char *s) {
 BigInt256 bigint256_from_be_bytes(const uint8_t *data, size_t len) {
     uint8_t padded[32];
     BigInt256 r;
+    if (data == NULL) {
+        return bigint256_zero();
+    }
     if (len >= 32) {
+        uint8_t high = 0;
+        size_t i;
+        for (i = 0; i + 32 < len; i++) {
+            high |= data[i];
+        }
+        if (high != 0) {
+            return bigint256_zero();
+        }
         data += len - 32;
     } else {
         memset(padded, 0, 32 - len);
@@ -165,43 +190,63 @@ BigInt256 bigint256_from_be_bytes(const uint8_t *data, size_t len) {
     r.limbs[2] = smx_load_be64(data + 8);
     r.limbs[1] = smx_load_be64(data + 16);
     r.limbs[0] = smx_load_be64(data + 24);
+    if (data == padded) {
+        smx_wipe(padded, sizeof(padded));
+    }
     return r;
 }
 
 void bigint256_to_be_bytes(const BigInt256 *a, uint8_t out[32]) {
+    if (a == NULL || out == NULL) {
+        return;
+    }
     smx_store_be64(out, a->limbs[3]);
     smx_store_be64(out + 8, a->limbs[2]);
     smx_store_be64(out + 16, a->limbs[1]);
     smx_store_be64(out + 24, a->limbs[0]);
 }
 
-void bigint256_to_hex(const BigInt256 *a, char out[65]) {
+static void bigint_to_hex(const BigInt256 *a, char out[65], char alpha) {
     uint8_t be[32];
+    if (a == NULL || out == NULL) {
+        return;
+    }
     bigint256_to_be_bytes(a, be);
-    smx_hex_encode(be, 32, out, 'A');
+    smx_hex_encode(be, 32, out, alpha);
     out[64] = '\0';
+    smx_wipe(be, sizeof(be));
+}
+
+void bigint256_to_hex(const BigInt256 *a, char out[65]) {
+    bigint_to_hex(a, out, 'A');
 }
 
 void bigint256_to_hex_lower(const BigInt256 *a, char out[65]) {
-    uint8_t be[32];
-    bigint256_to_be_bytes(a, be);
-    smx_hex_encode(be, 32, out, 'a');
-    out[64] = '\0';
+    bigint_to_hex(a, out, 'a');
 }
 
 /* ---- comparison and bits ---- */
 
 int bigint256_is_zero(const BigInt256 *a) {
+    if (a == NULL) {
+        return 0;
+    }
     return (a->limbs[0] | a->limbs[1] | a->limbs[2] | a->limbs[3]) == 0;
 }
 
 int bigint256_is_one(const BigInt256 *a) {
+    if (a == NULL) {
+        return 0;
+    }
     return ((a->limbs[0] ^ 1) | a->limbs[1] | a->limbs[2] | a->limbs[3]) == 0;
 }
 
 int bigint256_compare(const BigInt256 *a, const BigInt256 *b) {
     uint64_t lt = 0, gt = 0;
     int i;
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
     for (i = 0; i < 4; i++) {
         (void)smx_subb(a->limbs[i], b->limbs[i], lt, &lt);
         (void)smx_subb(b->limbs[i], a->limbs[i], gt, &gt);
@@ -210,7 +255,7 @@ int bigint256_compare(const BigInt256 *a, const BigInt256 *b) {
 }
 
 int bigint256_get_bit(const BigInt256 *a, int i) {
-    if (i >= 256) {
+    if (a == NULL || i < 0 || i >= 256) {
         return 0;
     }
     return (int)((a->limbs[i / 64] >> (i % 64)) & 1);
@@ -231,6 +276,9 @@ static inline int clz64(uint64_t x) {
 
 int bigint256_bit_length(const BigInt256 *a) {
     int i;
+    if (a == NULL) {
+        return 0;
+    }
     for (i = 3; i >= 0; i--) {
         if (a->limbs[i] != 0) {
             return (i + 1) * 64 - clz64(a->limbs[i]);
@@ -241,6 +289,9 @@ int bigint256_bit_length(const BigInt256 *a) {
 
 void bigint256_and(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
     int i;
+    if (r == NULL || a == NULL || b == NULL) {
+        return;
+    }
     for (i = 0; i < 4; i++) {
         r->limbs[i] = a->limbs[i] & b->limbs[i];
     }
@@ -250,6 +301,9 @@ void bigint256_and(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
 
 uint64_t bigint256_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
     uint64_t c;
+    if (r == NULL || a == NULL || b == NULL) {
+        return 0;
+    }
     r->limbs[0] = smx_addc(a->limbs[0], b->limbs[0], 0, &c);
     r->limbs[1] = smx_addc(a->limbs[1], b->limbs[1], c, &c);
     r->limbs[2] = smx_addc(a->limbs[2], b->limbs[2], c, &c);
@@ -259,6 +313,9 @@ uint64_t bigint256_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
 
 uint64_t bigint256_sub(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
     uint64_t c;
+    if (r == NULL || a == NULL || b == NULL) {
+        return 0;
+    }
     r->limbs[0] = smx_subb(a->limbs[0], b->limbs[0], 0, &c);
     r->limbs[1] = smx_subb(a->limbs[1], b->limbs[1], c, &c);
     r->limbs[2] = smx_subb(a->limbs[2], b->limbs[2], c, &c);
@@ -268,16 +325,23 @@ uint64_t bigint256_sub(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
 
 void bigint256_mul(uint64_t r[8], const BigInt256 *a, const BigInt256 *b) {
     uint64_t t[8];
+    if (r == NULL || a == NULL || b == NULL) {
+        return;
+    }
     smx_mul_4x4(t, a->limbs, b->limbs);
     memcpy(r, t, sizeof(t));
 }
 
 void bigint256_mod_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m) {
     BigInt256 sum, reduced;
-    uint64_t carry = bigint256_add(&sum, a, b);
-    uint64_t borrow = bigint256_sub(&reduced, &sum, m);
-    uint64_t keep = (uint64_t)0 - (borrow & (carry ^ 1));
+    uint64_t carry, borrow, keep;
     int i;
+    if (r == NULL || a == NULL || b == NULL || m == NULL) {
+        return;
+    }
+    carry = bigint256_add(&sum, a, b);
+    borrow = bigint256_sub(&reduced, &sum, m);
+    keep = (uint64_t)0 - (borrow & (carry ^ 1));
     for (i = 0; i < 4; i++) {
         r->limbs[i] = reduced.limbs[i] ^ (keep & (reduced.limbs[i] ^ sum.limbs[i]));
     }
@@ -285,8 +349,12 @@ void bigint256_mod_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, con
 
 void bigint256_mod_sub(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m) {
     BigInt256 diff, mm;
-    uint64_t mask = (uint64_t)0 - bigint256_sub(&diff, a, b);
+    uint64_t mask;
     int i;
+    if (r == NULL || a == NULL || b == NULL || m == NULL) {
+        return;
+    }
+    mask = (uint64_t)0 - bigint256_sub(&diff, a, b);
     for (i = 0; i < 4; i++) {
         mm.limbs[i] = m->limbs[i] & mask;
     }
@@ -395,6 +463,9 @@ static BigInt256 mod_reduce_512(const uint64_t value[8], const BigInt256 *modulu
 
 void bigint256_mod_mul(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m) {
     uint64_t product[8];
+    if (r == NULL || a == NULL || b == NULL || m == NULL) {
+        return;
+    }
     smx_mul_4x4(product, a->limbs, b->limbs);
     *r = mod_reduce_512(product, m);
 }
@@ -403,9 +474,12 @@ void bigint256_mod_mul(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, con
 void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp,
                        const BigInt256 *m) {
     BigInt256 table[16], result;
-    int bits = bigint256_bit_length(exp);
-    int i, top;
+    int bits, i, top;
 
+    if (r == NULL || base == NULL || exp == NULL || m == NULL) {
+        return;
+    }
+    bits = bigint256_bit_length(exp);
     if (bits == 0) {
         *r = bigint256_one();
         return;
@@ -434,6 +508,9 @@ void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp
 void bigint256_mod_inverse(BigInt256 *r, const BigInt256 *a, const BigInt256 *m) {
     BigInt256 two = {{2, 0, 0, 0}};
     BigInt256 exponent;
+    if (r == NULL || a == NULL || m == NULL) {
+        return;
+    }
     bigint256_sub(&exponent, m, &two);
     bigint256_mod_pow(r, a, &exponent, m);
 }
@@ -441,9 +518,15 @@ void bigint256_mod_inverse(BigInt256 *r, const BigInt256 *a, const BigInt256 *m)
 /* ---- SM2 prime ---- */
 
 void bigint256_sm2_mod_mul_p(BigInt256 *r, const BigInt256 *a, const BigInt256 *b) {
+    if (r == NULL || a == NULL || b == NULL) {
+        return;
+    }
     fe_mul(r->limbs, a->limbs, b->limbs);
 }
 
 void bigint256_sm2_mod_square_p(BigInt256 *r, const BigInt256 *a) {
+    if (r == NULL || a == NULL) {
+        return;
+    }
     fe_sqr(r->limbs, a->limbs);
 }

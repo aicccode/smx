@@ -4,8 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Demo only: plain HTTP, so anyone on the path can read and alter the traffic, including
+ * the key exchange. A real deployment needs TLS, and authenticated keys.
+ */
 #define SERVER_URL "http://localhost:8080"
 #define IDA "c-client@demo.aicc"
+/* The largest response accepted; the protocol's messages are far smaller. */
+#define MAX_RESPONSE_BYTES (1024 * 1024)
 
 static int passed = 0, failed = 0;
 
@@ -37,12 +43,16 @@ static char *json_get_string(const char *json, const char *key) {
     p++;
     const char *end = p;
     while (*end && *end != '"') {
-        if (*end == '\\')
+        if (*end == '\\' && end[1] != '\0')
             end++;
         end++;
     }
+    if (*end != '"')
+        return NULL; /* unterminated string */
     size_t len = (size_t)(end - p);
     char *result = (char *)malloc(len + 1);
+    if (!result)
+        return NULL;
     memcpy(result, p, len);
     result[len] = '\0';
     return result;
@@ -71,6 +81,11 @@ typedef struct {
 static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t total = size * nmemb;
     ResponseBuffer *buf = (ResponseBuffer *)userp;
+    /* returning less than the size given makes curl abort the transfer */
+    if (nmemb != 0 && total / nmemb != size)
+        return 0;
+    if (total > MAX_RESPONSE_BYTES || buf->len > MAX_RESPONSE_BYTES - total)
+        return 0;
     char *tmp = (char *)realloc(buf->data, buf->len + total + 1);
     if (!tmp)
         return 0;
@@ -89,6 +104,10 @@ static char *post_json(const char *url, const char *json_body) {
 
     ResponseBuffer buf = {NULL, 0};
     buf.data = (char *)malloc(1);
+    if (!buf.data) {
+        curl_easy_cleanup(curl);
+        return NULL;
+    }
     buf.data[0] = '\0';
 
     struct curl_slist *headers = NULL;
@@ -99,6 +118,12 @@ static char *post_json(const char *url, const char *json_body) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+#endif
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
 
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
@@ -124,6 +149,8 @@ static char *json_escape(const char *s) {
             len++;
     }
     char *out = (char *)malloc(len + 1);
+    if (!out)
+        return NULL;
     char *q = out;
     for (p = s; *p; p++) {
         if (*p == '"' || *p == '\\')
@@ -146,9 +173,12 @@ int main(void) {
     char priA[65], pubA[131], ra_hex[65], rA_pub[131];
     sm2_gen_keypair(priA, pubA);
     sm2_gen_keypair(ra_hex, rA_pub);
-    printf("  A private: %.16s...\n", priA);
+    if (priA[0] == '\0' || ra_hex[0] == '\0') {
+        fprintf(stderr, "Could not get randomness from the operating system\n");
+        curl_global_cleanup();
+        return 1;
+    }
     printf("  A public:  %.20s...\n", pubA);
-    printf("  A ephemeral: %.16s...\n", ra_hex);
 
     int keyLen = 16;
 
@@ -166,7 +196,6 @@ int main(void) {
         curl_global_cleanup();
         return 1;
     }
-    printf("  Response: %s\n", init_resp);
 
     char *sessionId = json_get_string(init_resp, "sessionId");
     char *IDb = json_get_string(init_resp, "IDb");
@@ -178,6 +207,11 @@ int main(void) {
     check("init response has pB", pB_hex != NULL);
     check("init response has Rb", Rb_hex != NULL);
     check("init response has Sb", Sb_hex != NULL);
+    check("init response has IDb", IDb != NULL);
+    if (!sessionId || !pB_hex || !Rb_hex || !Sb_hex || !IDb || strlen(sessionId) > 128) {
+        fprintf(stderr, "Malformed init response\n");
+        goto cleanup;
+    }
 
     /* Step 3: Calculate Sa and Ka */
     printf("\n--- Step 3: Calculate Sa and Ka ---\n");
@@ -190,7 +224,11 @@ int main(void) {
     ECPoint rA = ec_point_from_hex_encoded(rA_pub);
 
     uint8_t sb_bytes[32];
-    hex_to_bytes(Sb_hex, sb_bytes, 32);
+    if (pB.infinity || rB.infinity || hex_to_bytes(Sb_hex, sb_bytes, 32) != 32) {
+        fprintf(stderr, "Invalid key material in init response\n");
+        check("init response key material is valid", 0);
+        goto cleanup;
+    }
 
     SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra, IDA, IDb, sb_bytes, 32);
     check("getSa success", resultA.success);
@@ -199,7 +237,6 @@ int main(void) {
         goto cleanup;
     }
     printf("  Sa: %.16s...\n", resultA.sa);
-    printf("  Ka: %s\n", resultA.ka);
 
     /* Step 4: Key Exchange Confirm */
     printf("\n--- Step 4: Key Exchange Confirm ---\n");
@@ -212,7 +249,6 @@ int main(void) {
         fprintf(stderr, "Failed to send confirm request\n");
         goto cleanup;
     }
-    printf("  Response: %s\n", confirm_resp);
 
     int confirmed = json_get_bool(confirm_resp, "success");
     check("key exchange confirmed", confirmed);
@@ -223,13 +259,21 @@ int main(void) {
         goto cleanup;
     }
 
-    printf("\n  Key exchange completed! Negotiated key: %s\n", resultA.ka);
+    printf("\n  Key exchange completed.\n");
 
     /* Step 5: Bidirectional Crypto Test */
     printf("\n--- Step 5: Bidirectional Crypto Test ---\n");
 
     uint8_t ka_bytes[16];
-    hex_to_bytes(resultA.ka, ka_bytes, 16);
+    if (hex_to_bytes(resultA.ka, ka_bytes, 16) != 16) {
+        fprintf(stderr, "Unexpected key length\n");
+        goto cleanup;
+    }
+    /*
+     * The protocol this demo interoperates with fixes a zero IV, which is safe only for one
+     * message per key. Real code must use a fresh random IV for each message, and
+     * authenticate the ciphertext: CBC alone gives no integrity.
+     */
     uint8_t zero_iv[16];
     memset(zero_iv, 0, 16);
 
@@ -239,14 +283,27 @@ int main(void) {
 
     const char *clientPlaintext = "Hello from C Client!";
     char *clientCiphertext = sm4_encrypt(&sm4, clientPlaintext);
+    if (!clientCiphertext) {
+        fprintf(stderr, "Encryption failed\n");
+        goto cleanup;
+    }
     printf("  Client plaintext:  %s\n", clientPlaintext);
     printf("  Client ciphertext: %s\n", clientCiphertext);
 
     /* Build crypto test request */
     char *escaped_plain = json_escape(clientPlaintext);
+    if (!escaped_plain) {
+        free(clientCiphertext);
+        goto cleanup;
+    }
     size_t crypto_body_len =
         256 + strlen(sessionId) + strlen(clientCiphertext) + strlen(escaped_plain);
     char *crypto_body = (char *)malloc(crypto_body_len);
+    if (!crypto_body) {
+        free(escaped_plain);
+        free(clientCiphertext);
+        goto cleanup;
+    }
     snprintf(crypto_body, crypto_body_len,
              "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\","
              "\"clientPlaintext\":\"%s\"}",
@@ -260,7 +317,6 @@ int main(void) {
         free(clientCiphertext);
         goto cleanup;
     }
-    printf("  Response: %s\n", crypto_resp);
 
     /* Verify server decrypted client message */
     int serverDecryptOk = json_get_bool(crypto_resp, "clientDecryptMatch");

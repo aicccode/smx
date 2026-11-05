@@ -167,7 +167,16 @@ void smx_sm3_compress(uint32_t v[8], const uint8_t *p, size_t n) {
     v[7] = v7;
 }
 
+/* SM3 hashes at most 2^64 - 1 bits; whole bytes give a limit of 2^61 - 1 bytes. */
+#define SM3_MAX_BYTES (((uint64_t)1 << 61) - 1)
+
+/* buff_len value marking a context that received too much input, or was never set up. */
+#define SM3_FAILED (-1)
+
 void sm3_init(SM3 *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
     memcpy(ctx->v, sm3_iv, sizeof(sm3_iv));
     ctx->buff_len = 0;
     ctx->data_bits_len = 0;
@@ -175,9 +184,27 @@ void sm3_init(SM3 *ctx) {
     memset(ctx->hash_hex, 0, sizeof(ctx->hash_hex));
 }
 
+/* Accounts for len more bytes; marks the context failed if it cannot represent them. */
+static int sm3_reserve(SM3 *ctx, size_t len) {
+    uint64_t used;
+    if (ctx->buff_len < 0 || ctx->buff_len >= 64) {
+        ctx->buff_len = SM3_FAILED;
+        return 0;
+    }
+    used = ctx->data_bits_len / 8;
+    if (used > SM3_MAX_BYTES || (uint64_t)len > SM3_MAX_BYTES - used) {
+        ctx->buff_len = SM3_FAILED;
+        return 0;
+    }
+    ctx->data_bits_len += (uint64_t)len * 8;
+    return 1;
+}
+
 void sm3_update_byte(SM3 *ctx, uint8_t b) {
+    if (ctx == NULL || !sm3_reserve(ctx, 1)) {
+        return;
+    }
     ctx->buff[ctx->buff_len++] = b;
-    ctx->data_bits_len += 8;
     if (ctx->buff_len == 64) {
         smx_sm3_compress(ctx->v, ctx->buff, 1);
         ctx->buff_len = 0;
@@ -187,15 +214,21 @@ void sm3_update_byte(SM3 *ctx, uint8_t b) {
 void sm3_update(SM3 *ctx, const uint8_t *data, size_t len) {
     size_t blocks;
 
-    if (len == 0) {
+    if (ctx == NULL || len == 0) {
         return;
     }
-    ctx->data_bits_len += (uint64_t)len * 8;
+    if (data == NULL) {
+        ctx->buff_len = SM3_FAILED; /* the digest must not pretend this input was hashed */
+        return;
+    }
+    if (!sm3_reserve(ctx, len)) {
+        return;
+    }
 
     if (ctx->buff_len != 0) {
         size_t room = 64 - (size_t)ctx->buff_len;
         size_t take = len < room ? len : room;
-        memcpy(ctx->buff + ctx->buff_len, data, take);
+        memmove(ctx->buff + ctx->buff_len, data, take);
         ctx->buff_len += (int)take;
         data += take;
         len -= take;
@@ -214,38 +247,55 @@ void sm3_update(SM3 *ctx, const uint8_t *data, size_t len) {
         len -= blocks * 64;
     }
     if (len > 0) {
-        memcpy(ctx->buff, data, len);
+        memmove(ctx->buff, data, len);
         ctx->buff_len = (int)len;
     }
 }
 
-void smx_sm3_finish_bytes(SM3 *ctx, uint8_t out[32]) {
+/* Returns 0, with the context reset and out zeroed, if the context had failed. */
+static int sm3_finalize(SM3 *ctx, uint8_t out[32]) {
     uint64_t total_bits = ctx->data_bits_len;
-    size_t pos = (size_t)ctx->buff_len;
+    int ok = ctx->buff_len >= 0 && ctx->buff_len < 64;
     int i;
 
-    ctx->buff[pos++] = 0x80;
-    if (pos > 56) {
-        memset(ctx->buff + pos, 0, 64 - pos);
+    if (ok) {
+        size_t pos = (size_t)ctx->buff_len;
+        ctx->buff[pos++] = 0x80;
+        if (pos > 56) {
+            memset(ctx->buff + pos, 0, 64 - pos);
+            smx_sm3_compress(ctx->v, ctx->buff, 1);
+            pos = 0;
+        }
+        memset(ctx->buff + pos, 0, 56 - pos);
+        smx_store_be64(ctx->buff + 56, total_bits);
         smx_sm3_compress(ctx->v, ctx->buff, 1);
-        pos = 0;
-    }
-    memset(ctx->buff + pos, 0, 56 - pos);
-    smx_store_be64(ctx->buff + 56, total_bits);
-    smx_sm3_compress(ctx->v, ctx->buff, 1);
-
-    for (i = 0; i < 8; i++) {
-        smx_store_be32(out + i * 4, ctx->v[i]);
+        for (i = 0; i < 8; i++) {
+            smx_store_be32(out + i * 4, ctx->v[i]);
+        }
+    } else {
+        memset(out, 0, 32);
     }
 
-    /* reset for reuse */
+    /* reset for reuse; the chaining state may derive from secrets */
     memcpy(ctx->v, sm3_iv, sizeof(sm3_iv));
     ctx->buff_len = 0;
     ctx->data_bits_len = 0;
+    smx_wipe(ctx->buff, sizeof(ctx->buff));
+    return ok;
+}
+
+void smx_sm3_finish_bytes(SM3 *ctx, uint8_t out[32]) {
+    (void)sm3_finalize(ctx, out);
 }
 
 void sm3_finish(SM3 *ctx) {
-    smx_sm3_finish_bytes(ctx, ctx->hash_bytes);
-    smx_hex_encode(ctx->hash_bytes, 32, ctx->hash_hex, 'A');
-    ctx->hash_hex[64] = '\0';
+    if (ctx == NULL) {
+        return;
+    }
+    if (sm3_finalize(ctx, ctx->hash_bytes)) {
+        smx_hex_encode(ctx->hash_bytes, 32, ctx->hash_hex, 'A');
+        ctx->hash_hex[64] = '\0';
+    } else {
+        memset(ctx->hash_hex, 0, sizeof(ctx->hash_hex));
+    }
 }

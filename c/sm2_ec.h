@@ -2,15 +2,15 @@
  * SM2 curve arithmetic in Jacobian coordinates (x = X/Z^2, y = Y/Z^3, Z = 0 is
  * the point at infinity), exploiting a = -3.
  *
- * Three scalar multiplications, chosen by whether the scalar is secret:
- *   ec_mul_g       constant time, k*G from fixed tables, no doublings
- *   ec_mul_ct      constant time, k*P with a fixed signed window
- *   ec_mul_vt      variable time wNAF, PUBLIC scalars only
+ * Scalar multiplications, chosen by whether the scalar is secret:
+ *   ec_mul_g          constant time, k*G from fixed tables, no doublings
+ *   ec_mul_ct         constant time, k*P with a fixed signed window
+ *   ec_mul_vt         variable time wNAF, PUBLIC scalars only
  *   ec_double_mul_vt  variable time s*G + t*P (Shamir), PUBLIC scalars only
  *
- * Constant time here means no branch and no memory access depends on the scalar,
- * with one documented exception in ec_mul_ct and ec_mul_g: the rerun taken when
- * an addition hits the P == Q case.
+ * All of them need a point in the prime-order group, or infinity; callers validate
+ * points first. Constant time here means that no branch and no memory access depends on
+ * the scalar.
  *
  * Internal header, included by sm2.c and the tests.
  */
@@ -218,21 +218,26 @@ static inline unsigned ec_booth_digit(const uint64_t k[4], int bits, int i, uint
     return (unsigned)((d >> 1) + (d & 1));
 }
 
-static inline void ec_mul_ct(Jac *r, const Jac *base, const uint64_t k[4]);
-
 /*
  * r = k*G. Windows of the 256-bit scalar index a per-window table, so there are
  * only mixed additions and no doublings. Every table entry of the window is read
  * and masked, so memory access does not depend on the digit.
  */
 static inline void ec_mul_g(Jac *r, const uint64_t k_in[4]) {
-    uint64_t k[4], same = 0;
+    uint64_t k[4];
     Jac acc;
     int i;
 
-    /* G has order n, and the no-exception argument below needs k < n */
+    /* the no-exception argument below needs k < n; G has order n, so this changes nothing */
     fn_reduce(k, k_in);
 
+    /*
+     * jac_add_affine never sees a point added to itself. Let S be the integer sum of the
+     * lower windows and D = +-d * 2^(bits * i) the next. Below the top window,
+     * |S| < 2^(bits * i) <= |D| and |S| + |D| < n, so S != D mod n. In the top window
+     * D can be 2^256, which needs bits 254 and 255 of k set, and then S - D = k - 2^257 is
+     * not a multiple of n either. The test sweeps k around 0 and n to back this up.
+     */
     jac_set_infinity(&acc);
     for (i = 0; i < SMX_COMB_WINDOWS; i++) {
         uint64_t negative;
@@ -247,37 +252,40 @@ static inline void ec_mul_g(Jac *r, const uint64_t k_in[4]) {
             }
         }
         fe_cond_neg(y, sel + 4, negative);
-        same |= jac_add_affine(&acc, &acc, sel, y, ~smx_mask_is_zero((uint64_t)mag));
+        (void)jac_add_affine(&acc, &acc, sel, y, ~smx_mask_is_zero((uint64_t)mag));
+        smx_wipe(sel, sizeof(sel));
+        smx_wipe(y, sizeof(y));
     }
-
-    /*
-     * Partial sums never equal the next window's multiple for 0 < k < n (their
-     * magnitudes differ), so this cannot fire. It is here because a wrong proof
-     * would otherwise yield a silently wrong result.
-     */
-    SMX_DECLASSIFY(&same, sizeof(same));
-    if (same) {
-        Jac g;
-        jac_set_affine(&g, EC_GX, EC_GY);
-        ec_mul_ct(&acc, &g, k);
-    }
+    smx_wipe(k, sizeof(k));
     *r = acc;
+    smx_wipe(&acc, sizeof(acc));
 }
 
-static inline uint64_t ec_mul_ct_run(Jac *r, const Jac *base, const uint64_t k[4], int complete) {
+/*
+ * r = k*base with a fixed signed window, for any 256-bit k. base must be in the
+ * prime-order group, or infinity.
+ *
+ * jac_add cannot add a point to itself, which can only happen on the last addition.
+ * Before that, with i >= 1, the accumulator is A * base with A a multiple of 2^bits and
+ * |A| <= n/32 + 1, and the digit d has |d| <= 2^(bits-1). A = +-d mod n then needs A = 0,
+ * the infinity case that jac_add handles. In the last addition it does occur, for example
+ * for k = n - 6, where it is -3P + -3P, so that one always uses the complete formula. No
+ * branch depends on the scalar.
+ */
+static inline void ec_mul_ct(Jac *r, const Jac *base, const uint64_t k_in[4]) {
     Jac table[EC_VAR_ENTRIES];
     Jac acc;
-    uint64_t same = 0;
+    uint64_t k[4];
     int i;
+
+    fn_reduce(k, k_in);
 
     table[0] = *base;
     for (i = 1; i < EC_VAR_ENTRIES; i++) {
         if ((i & 1) != 0) {
             jac_double(&table[i], &table[i / 2]);
-        } else if (complete) {
-            jac_add_complete(&table[i], &table[i - 1], base);
         } else {
-            same |= jac_add(&table[i], &table[i - 1], base);
+            (void)jac_add(&table[i], &table[i - 1], base);
         }
     }
 
@@ -305,32 +313,17 @@ static inline uint64_t ec_mul_ct_run(Jac *r, const Jac *base, const uint64_t k[4
             }
         }
         fe_cond_neg(sel.y, sel.y, negative);
-        if (complete) {
+        if (i == 0) {
             jac_add_complete(&acc, &acc, &sel);
         } else {
-            same |= jac_add(&acc, &acc, &sel);
+            (void)jac_add(&acc, &acc, &sel);
         }
+        smx_wipe(&sel, sizeof(sel));
     }
+    smx_wipe(k, sizeof(k));
     *r = acc;
-    return same;
-}
-
-/*
- * r = k*base for any 256-bit k. The scalar is not reduced, so results stay correct
- * for points outside the prime-order group, which the public API does not reject.
- *
- * The fast formulas cannot add a point to itself. That happens only for a point
- * of small order, for k >= n, or for a handful of scalars just below n (for
- * example n - 6, where the last addition is -3P + -3P). In those cases the whole
- * multiplication is rerun with complete additions. The branch therefore reveals
- * only that the input was one of those, never bits of an ordinary scalar.
- */
-static inline void ec_mul_ct(Jac *r, const Jac *base, const uint64_t k[4]) {
-    uint64_t same = ec_mul_ct_run(r, base, k, 0);
-    SMX_DECLASSIFY(&same, sizeof(same));
-    if (same) {
-        (void)ec_mul_ct_run(r, base, k, 1);
-    }
+    smx_wipe(&acc, sizeof(acc));
+    smx_wipe(table, sizeof(table));
 }
 
 /*

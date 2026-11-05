@@ -43,6 +43,12 @@ __extension__ typedef unsigned __int128 smx_u128;
 #define SMX_DECLASSIFY(ptr, size) ((void)0)
 #endif
 
+#if defined(__GNUC__)
+#define SMX_MAYBE_UNUSED __attribute__((unused))
+#else
+#define SMX_MAYBE_UNUSED
+#endif
+
 /* ---- wide arithmetic ---- */
 
 /* a + b + c, c in {0, 1}; *co receives the carry out. */
@@ -171,6 +177,19 @@ static inline void smx_sqr_4(uint64_t r[8], const uint64_t a[4]) {
     r[7] = t7 + h3 + c;
 }
 
+/* ---- secret hygiene ---- */
+
+/* Best-effort erase of a temporary secret; the barrier keeps the compiler from dropping it. */
+static inline void smx_wipe(void *p, size_t n) {
+    volatile unsigned char *v = (volatile unsigned char *)p;
+    while (n-- > 0) {
+        *v++ = 0;
+    }
+#if defined(__GNUC__)
+    __asm__ __volatile__("" : : "r"(p) : "memory");
+#endif
+}
+
 /* ---- byte order ---- */
 
 static inline uint32_t smx_load_be32(const uint8_t *p) {
@@ -198,8 +217,11 @@ static inline void smx_store_be64(uint8_t *p, uint64_t v) {
 /* Writes 2 * len characters and no terminator. `alpha` is 'a' or 'A'. */
 void smx_hex_encode(const uint8_t *data, size_t len, char *out, char alpha);
 
-/* Decodes exactly 2 * len characters; a non-hex character decodes as nibble 0. */
-void smx_hex_decode(const char *hex, size_t len, uint8_t *out);
+/*
+ * Decodes exactly 2 * len characters. Returns 1 if they were all hex digits, otherwise 0.
+ * It reads everything either way, so the time does not depend on where a bad digit is.
+ */
+int smx_hex_decode(const char *hex, size_t len, uint8_t *out);
 
 /* ---- SM3 internals (sm3.c), for hashing that never needs hash_hex ---- */
 
@@ -207,6 +229,7 @@ void smx_hex_decode(const char *hex, size_t len, uint8_t *out);
 void smx_sm3_compress(uint32_t v[8], const uint8_t *blocks, size_t n);
 
 /* Same as sm3_finish, but only fills out[32]; the context is reset for reuse. */
+/* The SM2 code never feeds it enough data to reach the 2^61-byte limit. */
 void smx_sm3_finish_bytes(SM3 *ctx, uint8_t out[32]);
 
 #endif /* SMX_INTERNAL_H */

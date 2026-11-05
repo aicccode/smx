@@ -166,6 +166,23 @@ static void test_sm4_standard(void) {
     check_str("GB/T 32907 1,000,000 iterations", hex, "595298c7c6fd271f0402f804c33d3f66");
 }
 
+/*
+ * The baseline hashed any key that was not 16 bytes. That path is gone, so these vectors
+ * supply what it derived, keeping the captured ciphertext meaningful.
+ */
+static void derive_old_text_key(const char *text, uint8_t out[16]) {
+    size_t len = strlen(text);
+    if (len == 16) {
+        memcpy(out, text, 16);
+    } else {
+        SM3 h;
+        sm3_init(&h);
+        sm3_update(&h, (const uint8_t *)text, len);
+        sm3_finish(&h);
+        memcpy(out, h.hash_hex, 16);
+    }
+}
+
 static void test_sm4_captured(void) {
     uint8_t *buf = (uint8_t *)malloc(1048577);
     size_t k;
@@ -177,10 +194,12 @@ static void test_sm4_captured(void) {
         size_t n;
         char *c, *p;
         uint8_t saved;
+        uint8_t key[16], iv[16];
 
+        derive_old_text_key(kat_sm4[k].key, key);
+        derive_old_text_key(kat_sm4[k].iv, iv);
         sm4_init(&ctx);
-        sm4_set_key(&ctx, (const uint8_t *)kat_sm4[k].key, strlen(kat_sm4[k].key),
-                    (const uint8_t *)kat_sm4[k].iv, strlen(kat_sm4[k].iv));
+        sm4_set_key(&ctx, key, 16, iv, 16);
         sm3_init(&h);
         for (n = 0; n <= 600; n++) {
             saved = buf[n];
@@ -224,9 +243,7 @@ static void test_sm4_bad_input(void) {
 
     check("SM4 rejects non-block ciphertext", sm4_decrypt(&ctx, "00112233") == NULL);
 
-    p = sm4_decrypt(&ctx, "");
-    check("SM4 empty ciphertext gives empty string", p != NULL && p[0] == '\0');
-    free(p);
+    check("SM4 rejects empty ciphertext", sm4_decrypt(&ctx, "") == NULL);
 
     /* flipping the last ciphertext nibble must not crash and must not return the plaintext */
     c = sm4_encrypt(&ctx, "padding oracle probe");
@@ -411,7 +428,14 @@ static void test_points_captured(void) {
         BigInt256 k = bigint256_from_hex(kat_pub[i].k);
         ECPoint p = sm2_get_public_key(&k);
         ECPoint q = ec_point_multiply(ec_point_generator(), &k);
-        check_point("d*G", &p, kat_pub[i].pub);
+        BigInt256 n_minus_1 = SM2_N;
+        n_minus_1.limbs[0] -= 1;
+        /* sm2_get_public_key now refuses what is not a private key: 0 and >= n - 1 */
+        if (bigint256_is_zero(&k) || bigint256_compare(&k, &n_minus_1) >= 0) {
+            check("public key of an invalid private key", p.infinity);
+        } else {
+            check_point("d*G", &p, kat_pub[i].pub);
+        }
         check_point("ec_point_multiply(G)", &q, kat_pub[i].pub);
     }
     for (i = 0; i < COUNT_OF(kat_mul); i++) {

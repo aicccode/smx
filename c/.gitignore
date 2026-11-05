@@ -1,3 +1,9 @@
 bench
 test_kat
 test_internal
+test_security
+fuzz_all
+crash-*
+leak-*
+timeout-*
+oom-*

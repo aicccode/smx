@@ -48,14 +48,25 @@ static void test_sm3_empty(void) {
 /* ========== SM4 Tests ========== */
 
 static void test_sm4_encrypt_decrypt(void) {
-    const char *key = "this is the key";
-    const char *iv = "this is the iv";
+    /*
+     * The first 16 hex characters of SM3("this is the key") and SM3("this is the iv"): what
+     * the removed text-key path derived, so the expected ciphertext stays what it was.
+     */
+    SM3 key_hash, iv_hash;
+    SM4 sm4;
     const char *plaintext = "\xe5\x9b\xbd\xe5\xaf\x86SM4\xe5\xaf\xb9\xe7\xa7\xb0\xe5\x8a\xa0\xe5"
                             "\xaf\x86\xe7\xae\x97\xe6\xb3\x95"; /* 国密SM4对称加密算法 UTF-8 */
 
-    SM4 sm4;
+    sm3_init(&key_hash);
+    sm3_update(&key_hash, (const uint8_t *)"this is the key", 15);
+    sm3_finish(&key_hash);
+    sm3_init(&iv_hash);
+    sm3_update(&iv_hash, (const uint8_t *)"this is the iv", 14);
+    sm3_finish(&iv_hash);
+
     sm4_init(&sm4);
-    sm4_set_key(&sm4, (const uint8_t *)key, strlen(key), (const uint8_t *)iv, strlen(iv));
+    sm4_set_key(&sm4, (const uint8_t *)key_hash.hash_hex, 16, (const uint8_t *)iv_hash.hash_hex,
+                16);
 
     char *ciphertext = sm4_encrypt(&sm4, plaintext);
     assert_str_eq("SM4 encrypt", ciphertext,
