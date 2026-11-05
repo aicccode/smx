@@ -46,7 +46,9 @@ __extension__ typedef unsigned __int128 smx_u128;
 #if defined(__GNUC__)
 #define SMX_MAYBE_UNUSED __attribute__((unused))
 #define SMX_NOINLINE __attribute__((noinline))
+#define SMX_ALWAYS_INLINE __attribute__((always_inline))
 #else
+#define SMX_ALWAYS_INLINE
 #define SMX_MAYBE_UNUSED
 #define SMX_NOINLINE
 #endif

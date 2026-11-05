@@ -37,7 +37,8 @@ test: test_all test_kat test_internal test_security
 # Runs every test against each compile-time fallback: the portable 128-bit-free
 # multiply, no x86 SIMD at all, and every SM4 tier.
 FALLBACKS = -DSMX_NO_INT128 -DSMX_NO_SIMD "-DSMX_NO_INT128 -DSMX_NO_SIMD" \
-	-DSMX_SM4_MAX_TIER=0 -DSMX_SM4_MAX_TIER=1 -DSMX_SM4_MAX_TIER=2 -DSMX_SM4_MAX_TIER=3
+	-DSMX_SM4_MAX_TIER=0 -DSMX_SM4_MAX_TIER=1 -DSMX_SM4_MAX_TIER=2 -DSMX_SM4_MAX_TIER=3 \
+	-DSMX_SM3_NO_BMI2
 check-fallbacks:
 	@set -e; for f in $(FALLBACKS); do \
 		echo "=== $$f"; \
