@@ -1,7 +1,7 @@
 /**
  * Benchmark for SM2/SM3/SM4 using only the public API and no dependencies.
  *
- *   node bench/bench.js [libraryRoot] [--rounds=N] [--ms=N] [--json]
+ *   node bench/bench.js [libraryRoot] [--rounds=N] [--ms=N] [--json] [--only=regex]
  *
  * libraryRoot defaults to this package, so the same script can measure another
  * copy of the library. Each case reports the best of N timed rounds.
@@ -22,6 +22,8 @@ const root = resolve(
 const ROUNDS = flag('rounds', 5)
 const ROUND_MS = flag('ms', 300)
 const JSON_OUT = args.includes('--json')
+const ONLY = args.find((a) => a.startsWith('--only='))?.slice(7)
+const onlyRe = ONLY ? new RegExp(ONLY) : null
 
 const load = (p) => import(pathToFileURL(resolve(root, p)).href)
 const { SM3 } = await load('sm3/sm3.js')
@@ -33,6 +35,7 @@ let sink = 0
 const results = []
 
 function bench(name, fn, bytes = 0) {
+  if (onlyRe && !onlyRe.test(name)) return
   let best = 0
   for (let r = 0; r < ROUNDS; r++) {
     let n = 0

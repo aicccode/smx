@@ -89,6 +89,8 @@ function equalBytes(a, b) {
 function kdfXor(x2, y2, data) {
   if (data.length > MAX_KDF_BYTES)
     throw new RangeError('KDF output is too long')
+  // x2 || y2 is exactly one block: hash it once and continue from that state.
+  const prefix = new SM3().update(x2).update(y2)
   const sm3 = new SM3()
   const counter = new Uint8Array(4)
   let ct = 1
@@ -99,8 +101,7 @@ function kdfXor(x2, y2, data) {
     counter[2] = ct >>> 8
     counter[3] = ct
     const block = sm3
-      .update(x2)
-      .update(y2)
+      ._copyStateFrom(prefix)
       .update(counter)
       .finish()
       .getHashBytes()
@@ -113,6 +114,7 @@ function kdfXor(x2, y2, data) {
     offset += end
   }
   sm3._wipe()
+  prefix._wipe()
   counter.fill(0)
   return any === 0
 }
@@ -246,24 +248,22 @@ function exchangeKdf(keylen, x, y, Za, Zb) {
   const result = new Uint8Array(keylen)
   const iterations = Math.ceil(keylen / 32)
   const counter = new Uint8Array(4)
+  // x || y || Za || Zb is exactly two blocks: hash it once.
+  const prefix = getSM3().update(x).update(y).update(Za).update(Zb)
+  const sm3 = getSM3()
   for (let i = 0; i < iterations; i++) {
     const ct = i + 1
     counter[0] = ct >>> 24
     counter[1] = ct >>> 16
     counter[2] = ct >>> 8
     counter[3] = ct
-    const sm3 = getSM3()
-      .update(x)
-      .update(y)
-      .update(Za)
-      .update(Zb)
-      .update(counter)
-    const block = sm3.digest()
-    sm3._wipe()
+    const block = sm3._copyStateFrom(prefix).update(counter).digest()
     const copyLen = i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
     for (let j = 0; j < copyLen; j++) result[i * 32 + j] = block[j]
     block.fill(0)
   }
+  sm3._wipe()
+  prefix._wipe()
   return result
 }
 
