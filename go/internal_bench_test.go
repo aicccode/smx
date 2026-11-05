@@ -73,7 +73,7 @@ func BenchmarkSM4Block(b *testing.B) {
 	x0, x1, x2, x3 := uint32(1), uint32(2), uint32(3), uint32(4)
 	b.SetBytes(16)
 	for i := 0; i < b.N; i++ {
-		x0, x1, x2, x3 = sm4EncryptWords(&s.rk, x0, x1, x2, x3)
+		x0, x1, x2, x3 = sm4EncryptWords(&s.keys.rk, x0, x1, x2, x3)
 	}
 	sinkString = string(rune(x0 ^ x1 ^ x2 ^ x3))
 }

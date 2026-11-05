@@ -1,6 +1,7 @@
 package smx
 
 import (
+	"encoding/hex"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -15,7 +16,7 @@ var (
 )
 
 func hexMust(s string) []byte {
-	b, err := hexToBytes(s)
+	b, err := hex.DecodeString(s)
 	if err != nil {
 		panic(err)
 	}
@@ -316,9 +317,8 @@ func TestBigIntModDifferential(t *testing.T) {
 			checkLimbs(t, "ModPow", x.ModPow(&e, &m).limbs, want, a, eb, mb)
 		}
 		var zero BigInt256
-		if got := x.ModPow(&zero, &m); !got.IsOne() {
-			t.Fatalf("ModPow(%x, 0, %x) = %x, want 1", a, mb, got.limbs)
-		}
+		wantOne := new(big.Int).Mod(big.NewInt(1), mb) // 0 when m is 1
+		checkLimbs(t, "ModPow(a, 0, m)", x.ModPow(&zero, &m).limbs, wantOne, a, mb)
 	}
 
 	// A zero or nil modulus gives zero rather than a crash.

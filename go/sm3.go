@@ -2,6 +2,7 @@ package smx
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/bits"
@@ -29,9 +30,25 @@ var sm3T = func() (t [64]uint32) {
 // sm3MaxBytes is the longest message SM3 defines: its length field holds 2^64 - 1 bits.
 const sm3MaxBytes = 1<<61 - 1
 
+// sm3FinishState says whether a digest can be read.
+type sm3FinishState uint8
+
+const (
+	sm3Open     sm3FinishState = iota // a message is in progress
+	sm3Finished                       // hashBytes holds the digest of the last message
+	sm3Failed                         // the last message was too long and has no digest
+)
+
+var (
+	errSM3NotFinished = errors.New("sm3: no digest: call Finish after the last Update")
+	errSM3TooLong     = errors.New("sm3: message longer than 2^61 - 1 bytes")
+)
+
 // SM3 implements the SM3 cryptographic hash function. An instance is reusable: Finish
-// stores the digest and resets the state for the next message. The zero value is ready
-// to use. An instance must not be shared between goroutines without synchronization.
+// stores the digest and the next Update starts a new message, which also discards that
+// digest. Calling Finish again with no Update in between keeps the digest. The zero value
+// is ready to use. An instance must not be shared between goroutines without
+// synchronization.
 type SM3 struct {
 	v           [8]uint32
 	buff        [sm3BlockSize]byte
@@ -39,8 +56,8 @@ type SM3 struct {
 	dataBitsLen uint64
 	hashBytes   [32]byte
 	ready       bool // v holds a valid chaining state
-	finished    bool // hashBytes holds a digest
 	tooLong     bool // the current message passed the 2^61 - 1 byte limit
+	state       sm3FinishState
 }
 
 // NewSM3 creates a new SM3 hash instance.
@@ -61,6 +78,10 @@ func (s SM3) Format(f fmt.State, _ rune) {
 
 // prepare makes the zero value usable and counts n more bytes of message.
 func (s *SM3) prepare(n uint64) {
+	if s.state != sm3Open {
+		s.state = sm3Open
+		s.hashBytes = [32]byte{}
+	}
 	if !s.ready {
 		s.v = sm3IV
 		s.ready = true
@@ -111,24 +132,35 @@ func (s *SM3) Update(data []byte) {
 }
 
 // Finish finalizes the hash computation and resets the instance for reuse. A message
-// over 2^61 - 1 bytes has no digest: afterwards HashBytes returns zeros and
-// HashHexUpper returns an empty string, rather than a digest of a wrapped length.
+// over 2^61 - 1 bytes has no digest, rather than a digest of a wrapped length.
 func (s *SM3) Finish() {
-	if s == nil {
+	if s == nil || s.state != sm3Open {
 		return
 	}
 	s.prepare(0)
-	failed := s.tooLong
+	s.state = sm3Finished
 	s.sum(&s.hashBytes)
-	if failed {
+	if s.tooLong {
+		s.state = sm3Failed
 		s.hashBytes = [32]byte{}
 	}
-	s.finished = !failed
 	s.v = sm3IV
 	s.buffLen = 0
 	s.dataBitsLen = 0
 	s.tooLong = false
 	clear(s.buff[:])
+}
+
+// Digest returns the digest computed by Finish, or an error if there is none: Finish has
+// not been called since the last Update, or the message was too long.
+func (s *SM3) Digest() ([32]byte, error) {
+	switch {
+	case s == nil || s.state == sm3Open:
+		return [32]byte{}, errSM3NotFinished
+	case s.state == sm3Failed:
+		return [32]byte{}, errSM3TooLong
+	}
+	return s.hashBytes, nil
 }
 
 // sum pads the buffered data and writes the digest to out. The chaining value is
@@ -151,8 +183,8 @@ func (s *SM3) sum(out *[32]byte) {
 	}
 }
 
-// HashBytes returns the 32-byte digest computed by the last Finish, or all zeros if
-// Finish has not been called.
+// HashBytes returns the digest computed by Finish, or all zeros if there is none, which
+// is never a real digest of interest. Digest reports that case as an error.
 func (s *SM3) HashBytes() [32]byte {
 	if s == nil {
 		return [32]byte{}
@@ -160,10 +192,10 @@ func (s *SM3) HashBytes() [32]byte {
 	return s.hashBytes
 }
 
-// HashHexUpper returns the digest computed by the last Finish as an uppercase hex
-// string, or an empty string if Finish has not been called.
+// HashHexUpper returns the digest computed by Finish as an uppercase hex string, or an
+// empty string if there is none.
 func (s *SM3) HashHexUpper() string {
-	if s == nil || !s.finished {
+	if s == nil || s.state != sm3Finished {
 		return ""
 	}
 	out := make([]byte, 64)

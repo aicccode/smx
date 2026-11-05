@@ -361,7 +361,7 @@ func (a BigInt256) ModPow(exp, m *BigInt256) BigInt256 {
 
 	bitLen := exp.BitLength()
 	if bitLen == 0 {
-		return bigOne
+		return table[0].ModMul(&bigOne, m) // 1 mod m, which is 0 for m == 1
 	}
 	// Align the windows to multiples of 4 bits from the bottom.
 	top := (bitLen - 1) / 4 * 4

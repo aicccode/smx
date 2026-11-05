@@ -67,6 +67,9 @@ func TestHexToBytesDifferential(t *testing.T) {
 	for _, s := range hexInputs(rng) {
 		got, gotErr := hexToBytes(s)
 		want, wantErr := hex.DecodeString(s)
+		if wantErr == nil && s != strings.ToLower(s) {
+			wantErr = errInvalidHex // uppercase is not canonical
+		}
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("hexToBytes(%q) error = %v, want %v", s, gotErr, wantErr)
 		}
@@ -120,6 +123,39 @@ func TestBigIntFromHexDifferential(t *testing.T) {
 	}
 	if got := x.ToHexLower(); got != "0123456789abcdeffedcba98765432100123456789abcdeffedcba9876543210" {
 		t.Errorf("ToHexLower = %s", got)
+	}
+}
+
+// Key parsing takes either case; decodeHexLowerInto takes lowercase only.
+func TestDecodeHexCase(t *testing.T) {
+	rng := rand.New(rand.NewSource(25))
+	for i := 0; i < 4000; i++ {
+		raw := make([]byte, rng.Intn(40))
+		rng.Read(raw)
+		lower := hex.EncodeToString(raw)
+		upper := strings.ToUpper(lower)
+		got := make([]byte, len(raw))
+		if !decodeHexLowerInto(got, lower) || string(got) != string(raw) {
+			t.Fatalf("lowercase %s rejected", lower)
+		}
+		if !decodeHexInto(got, upper) || string(got) != string(raw) {
+			t.Fatalf("uppercase %s rejected by the either-case decoder", upper)
+		}
+		if decodeHexLowerInto(got, upper) != (lower == upper) {
+			t.Fatalf("uppercase %s accepted by the lowercase decoder", upper)
+		}
+	}
+	// One uppercase letter at every position, including the unaligned tail.
+	for n := 1; n < 40; n++ {
+		s := []byte(strings.Repeat("a", 2*n))
+		dst := make([]byte, n)
+		for pos := range s {
+			s[pos] = 'F'
+			if decodeHexLowerInto(dst, string(s)) {
+				t.Fatalf("length %d: uppercase at %d accepted", n, pos)
+			}
+			s[pos] = 'a'
+		}
 	}
 }
 

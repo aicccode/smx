@@ -16,6 +16,11 @@
 // memory accesses are avoided by construction and checked in the compiled output, but
 // the Go compiler gives no constant-time guarantee. Secrets are overwritten on a
 // best-effort basis only: the runtime may copy stacks, and strings cannot be erased.
+//
+// Secret types redact themselves in fmt and encoding/json. fmt cannot call a method on a
+// value in an unexported struct field, so it prints such a BigInt256, FpElement, ECPoint
+// or SM3 raw, as it does any SM2KeySwapParams there. Hold them by pointer or in an
+// exported field if the enclosing struct might ever be printed.
 package smx
 
 import (
@@ -82,9 +87,9 @@ func bytesToHex(b []byte) string {
 var errInvalidHex = errors.New("smx: invalid hex")
 
 // hexDigits8 converts eight ASCII hex digits, the first in the low byte, to four bytes,
-// with arithmetic instead of table lookups. The second result has bits set if any
-// digit was invalid.
-func hexDigits8(v uint64) (uint32, uint64) {
+// with arithmetic instead of table lookups. invalid has bits set if any digit was not
+// a hex digit, and upper has bits set if any letter was uppercase.
+func hexDigits8(v uint64) (word uint32, invalid, upper uint64) {
 	const (
 		ones  = 0x0101010101010101
 		highs = 0x8080808080808080
@@ -93,26 +98,28 @@ func hexDigits8(v uint64) (uint32, uint64) {
 	alpha := (v | (0x20 * ones)) ^ (0x60 * ones)           // 1..6 for 'a'..'f' and 'A'..'F'
 	notDigit := digit + 0x76*ones                          // top bit set above 9
 	notAlpha := (alpha + 0x79*ones) | ^(alpha + 0x7F*ones) // top bit set outside 1..6
-	invalid := (notDigit&notAlpha | v) & highs
+	invalid = (notDigit&notAlpha | v) & highs
+	upper = (v >> 1) &^ v & (0x20 * ones) // bit 6 set with bit 5 clear
 
 	nibbles := (v & (0x0F * ones)) + 9*((v>>6)&ones)
 	w := (nibbles<<4 | nibbles>>8) & 0x00FF00FF00FF00FF
 	w = (w | w>>8) & 0x0000FFFF0000FFFF
-	return uint32(w | w>>16), invalid
+	return uint32(w | w>>16), invalid, upper
 }
 
-// decodeHexInto decodes s into dst, which must hold exactly len(s)/2 bytes, and
-// reports whether every digit was valid. The length of s must be even. Validity is
-// accumulated rather than tested per digit, so valid input takes a data-independent path.
-func decodeHexInto(dst []byte, s string) bool {
+// decodeHex decodes s into dst, which must hold exactly len(s)/2 bytes, and reports
+// whether every digit was acceptable. The length of s must be even. A set upperMask also
+// refuses uppercase digits. Validity is accumulated rather than tested per digit, so
+// valid input takes a data-independent path.
+func decodeHex(dst []byte, s string, upperMask uint64) bool {
 	if len(s) != 2*len(dst) {
 		return false
 	}
 	src := stringAsBytes(s)
-	var invalid uint64
+	var bad uint64
 	for len(dst) >= 4 {
-		word, bad := hexDigits8(binary.LittleEndian.Uint64(src))
-		invalid |= bad
+		word, invalid, upper := hexDigits8(binary.LittleEndian.Uint64(src))
+		bad |= invalid | upper&upperMask
 		binary.LittleEndian.PutUint32(dst, word)
 		dst, src = dst[4:], src[8:]
 	}
@@ -120,25 +127,38 @@ func decodeHexInto(dst []byte, s string) bool {
 		// Up to six digits are left: pad them with valid digits.
 		tail := [8]byte{'0', '0', '0', '0', '0', '0', '0', '0'}
 		copy(tail[:], src)
-		word, bad := hexDigits8(binary.LittleEndian.Uint64(tail[:]))
-		invalid |= bad
+		word, invalid, upper := hexDigits8(binary.LittleEndian.Uint64(tail[:]))
+		bad |= invalid | upper&upperMask
 		var out [4]byte
 		binary.LittleEndian.PutUint32(out[:], word)
 		copy(dst, out[:])
+		wipeBytes(tail[:])
+		wipeBytes(out[:])
 	}
-	return invalid == 0
+	return bad == 0
 }
 
-// hexToBytes converts canonical hex to bytes: an even number of hex digits in either
-// case, and nothing else. All digits are always examined, so an invalid position does
-// not show in the timing.
+// decodeHexInto accepts digits of either case, for keys: some generators emit uppercase.
+func decodeHexInto(dst []byte, s string) bool {
+	return decodeHex(dst, s, 0)
+}
+
+// decodeHexLowerInto accepts only lowercase digits. It is for signatures and ciphertexts,
+// which this library always emits in lowercase: each value has one accepted encoding,
+// so a replay or deduplication cache keyed on the string cannot be bypassed.
+func decodeHexLowerInto(dst []byte, s string) bool {
+	return decodeHex(dst, s, ^uint64(0))
+}
+
+// hexToBytes converts canonical hex to bytes: an even number of lowercase hex digits,
+// and nothing else. All digits are always examined, so an invalid position does not
+// show in the timing.
 func hexToBytes(s string) ([]byte, error) {
 	if len(s)%2 != 0 {
 		return nil, errInvalidHex
 	}
 	out := make([]byte, len(s)/2)
-	if !decodeHexInto(out, s) {
-		clear(out)
+	if !decodeHexLowerInto(out, s) {
 		return nil, errInvalidHex
 	}
 	return out, nil

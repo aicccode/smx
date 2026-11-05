@@ -42,6 +42,7 @@ func TestSM4PathsAllVectors(t *testing.T) {
 		TestSM4DecryptErrors(t)
 		TestSM4EncryptDecrypt(t)
 		TestVectorsSM4(t)
+		TestSM4UnpadSameWork(t)
 	})
 }
 
@@ -61,18 +62,18 @@ func TestSM4PathsDifferential(t *testing.T) {
 			rng.Read(plain)
 
 			wantEnc := append([]byte(nil), plain...)
-			sm4CBCEncryptGeneric(&s.rk, &s.iv, wantEnc)
+			sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, wantEnc)
 			wantDec := append([]byte(nil), plain...)
-			sm4CBCDecryptGeneric(&s.drk, &s.iv, wantDec)
+			sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, wantDec)
 
 			withSM4Paths(t, func(t *testing.T) {
 				got := append([]byte(nil), plain...)
-				sm4CBCEncrypt(&s.rk, &s.iv, got)
+				sm4CBCEncrypt(&s.keys.rk, &s.keys.iv, got)
 				if !bytes.Equal(got, wantEnc) {
 					t.Fatalf("encrypt: %d blocks differ", blocks)
 				}
 				got = append([]byte(nil), plain...)
-				sm4CBCDecrypt(&s.drk, &s.iv, got)
+				sm4CBCDecrypt(&s.keys.drk, &s.keys.iv, got)
 				if !bytes.Equal(got, wantDec) {
 					t.Fatalf("decrypt: %d blocks differ", blocks)
 				}
@@ -82,7 +83,7 @@ func TestSM4PathsDifferential(t *testing.T) {
 				for i := range guarded[len(plain):] {
 					guarded[len(plain)+i] = 0xA5
 				}
-				sm4CBCDecrypt(&s.drk, &s.iv, guarded[:len(plain)])
+				sm4CBCDecrypt(&s.keys.drk, &s.keys.iv, guarded[:len(plain)])
 				for _, b := range guarded[len(plain):] {
 					if b != 0xA5 {
 						t.Fatalf("decrypt: wrote past %d blocks", blocks)
@@ -118,7 +119,7 @@ func benchSM4Routine(b *testing.B, blocks int, routine func(rk *[32]uint32, dst,
 	buf := benchData(blocks * 16)
 	b.SetBytes(int64(blocks * 16))
 	for i := 0; i < b.N; i++ {
-		routine(&s.rk, &buf[0], &buf[0])
+		routine(&s.keys.rk, &buf[0], &buf[0])
 	}
 }
 

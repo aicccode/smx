@@ -1,10 +1,14 @@
 package smx
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -312,7 +316,7 @@ func checkSM4Rejected(t *testing.T, key, iv []byte) {
 	if _, err := s.Encrypt("x"); err == nil {
 		t.Errorf("Encrypt ran after bad key %d, IV %d bytes", len(key), len(iv))
 	}
-	if s.keySet || s.rk != ([32]uint32{}) {
+	if s.keys != nil {
 		t.Error("key material kept after failed SetKey")
 	}
 }
@@ -395,21 +399,21 @@ func TestSM4BatchMatchesSingle(t *testing.T) {
 	want := batch
 	for off := 0; off < len(want); off += 16 {
 		w := want[off : off+16]
-		x0, x1, x2, x3 := sm4EncryptWords(&s.rk, be32(w), be32(w[4:]), be32(w[8:]), be32(w[12:]))
+		x0, x1, x2, x3 := sm4EncryptWords(&s.keys.rk, be32(w), be32(w[4:]), be32(w[8:]), be32(w[12:]))
 		put32(w, x0)
 		put32(w[4:], x1)
 		put32(w[8:], x2)
 		put32(w[12:], x3)
 	}
-	sm4CryptBatch(&s.rk, &batch)
+	sm4CryptBatch(&s.keys.rk, &batch)
 	if batch != want {
 		t.Fatal("batch differs from single-block rounds")
 	}
 	for blocks := 1; blocks <= 70; blocks++ {
 		plain := benchData(blocks * 16)
 		ct := append([]byte(nil), plain...)
-		sm4CBCEncryptGeneric(&s.rk, &s.iv, ct)
-		sm4CBCDecryptGeneric(&s.drk, &s.iv, ct)
+		sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, ct)
+		sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, ct)
 		if string(ct) != string(plain) {
 			t.Fatalf("%d blocks: round trip failed", blocks)
 		}
@@ -440,9 +444,12 @@ func TestPKCS7Exhaustive(t *testing.T) {
 	}
 	check := func(b []byte) {
 		wantLen, wantOK := reference(b)
-		gotLen, gotOK := pkcs7PadLen(b)
-		if gotOK != wantOK || (gotOK && gotLen != wantLen) {
-			t.Fatalf("pkcs7PadLen(%x) = %d, %v", b, gotLen, gotOK)
+		gotLen, mask := pkcs7Check(b)
+		if mask != 0 && mask != ^uint64(0) {
+			t.Fatalf("pkcs7Check(%x) mask = %x", b, mask)
+		}
+		if (mask != 0) != wantOK || (wantOK && int(gotLen) != wantLen) {
+			t.Fatalf("pkcs7Check(%x) = %d, %x", b, gotLen, mask)
 		}
 	}
 	for last := 0; last < 256; last++ {
@@ -687,6 +694,13 @@ func TestSM3Limits(t *testing.T) {
 	if h.HashHexUpper() != "" || h.HashBytes() != ([32]byte{}) {
 		t.Error("digest produced past the length limit")
 	}
+	if _, err := h.Digest(); err != errSM3TooLong {
+		t.Errorf("Digest past the limit: %v", err)
+	}
+	h.Finish() // must not turn the failure into the digest of an empty message
+	if h.HashHexUpper() != "" {
+		t.Error("second Finish hid the length failure")
+	}
 	h = SM3{v: sm3IV, ready: true, dataBitsLen: (sm3MaxBytes - 1) * 8}
 	h.Update(make([]byte, 2))
 	h.Finish()
@@ -755,6 +769,199 @@ func TestExportedCurveVariablesAreNotTrusted(t *testing.T) {
 	}
 	if !ECPointGenerator().IsOnCurve() {
 		t.Error("generator changed")
+	}
+}
+
+// The bad-padding path must run the same step over the same bytes as the good one: here,
+// the masking pass that keeps or erases the whole buffer. An early return would leave
+// the bad buffer intact, which this detects.
+func TestSM4UnpadSameWork(t *testing.T) {
+	for _, n := range []int{16, 32, 48, 256, 1024} {
+		good := bytes.Repeat([]byte{0xA5}, n)
+		for i := n - 3; i < n; i++ {
+			good[i] = 3
+		}
+		plain, ok := sm4Unpad(good)
+		if !ok || len(plain) != n-3 || plain[0] != 0xA5 {
+			t.Fatalf("n=%d: good padding: %d bytes, %v", n, len(plain), ok)
+		}
+		for _, badByte := range []byte{0, 17, 0xFF} {
+			bad := bytes.Repeat([]byte{0xA5}, n)
+			bad[n-1] = badByte
+			if _, ok := sm4Unpad(bad); ok {
+				t.Fatalf("n=%d: bad padding %#x accepted", n, badByte)
+			}
+			if !bytes.Equal(bad, make([]byte, n)) {
+				t.Fatalf("n=%d: bad padding %#x skipped the masking pass", n, badByte)
+			}
+		}
+		// A wrong byte inside otherwise plausible padding.
+		bad := bytes.Repeat([]byte{4}, n)
+		bad[n-3] = 9
+		if _, ok := sm4Unpad(bad); ok || !bytes.Equal(bad, make([]byte, n)) {
+			t.Fatalf("n=%d: inconsistent padding handled differently", n)
+		}
+	}
+	for _, n := range []int{0, 1, 7, 8, 9, 15, 16, 17, 100} {
+		b := bytes.Repeat([]byte{0xC3}, n)
+		maskBytes(b, ^uint64(0))
+		if !bytes.Equal(b, bytes.Repeat([]byte{0xC3}, n)) {
+			t.Fatalf("maskBytes keep, %d bytes", n)
+		}
+		maskBytes(b, 0)
+		if !bytes.Equal(b, make([]byte, n)) {
+			t.Fatalf("maskBytes erase, %d bytes", n)
+		}
+	}
+}
+
+// One signature or ciphertext has one accepted string form. Keys take either case.
+func TestCanonicalLowercase(t *testing.T) {
+	v := loadSecurityVectors(t)
+	sig := v.SM2.R + "h" + v.SM2.S
+	if !SM2Verify(v.SM2.UserID, sig, v.SM2.Message, v.SM2.PublicKey) {
+		t.Fatal("valid signature rejected")
+	}
+	for _, bad := range []string{strings.ToUpper(v.SM2.R) + "h" + v.SM2.S, v.SM2.R + "h" + strings.ToUpper(v.SM2.S),
+		strings.ToUpper(sig), v.SM2.R[:63] + strings.ToUpper(v.SM2.R[63:]) + "h" + v.SM2.S} {
+		if bad != sig && SM2Verify(v.SM2.UserID, bad, v.SM2.Message, v.SM2.PublicKey) {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	ct := v.SM2.Ciphertext
+	for name, bad := range map[string]string{
+		"all": strings.ToUpper(ct),
+		"c1":  strings.ToUpper(ct[:130]) + ct[130:],
+		"c3":  ct[:130] + strings.ToUpper(ct[130:194]) + ct[194:],
+		"c2":  ct[:194] + strings.ToUpper(ct[194:]),
+	} {
+		if bad == ct {
+			t.Fatalf("%s: test value has no letters", name)
+		}
+		if _, err := SM2Decrypt(bad, v.SM2.PrivateKey); err == nil {
+			t.Errorf("%s: uppercase ciphertext accepted", name)
+		}
+	}
+	// Keys stay case-insensitive.
+	upperKey := strings.ToUpper(v.SM2.PrivateKey)
+	if got, err := SM2Decrypt(ct, upperKey); err != nil || got != v.SM2.Plaintext {
+		t.Errorf("uppercase private key: %q, %v", got, err)
+	}
+	if !SM2Verify(v.SM2.UserID, sig, v.SM2.Message, strings.ToUpper(v.SM2.PublicKey)) {
+		t.Error("uppercase public key rejected")
+	}
+	// The library's own output is lowercase.
+	own, err := SM2Sign("id", "m", v.SM2.PrivateKey)
+	if err != nil || own != strings.ToLower(own) {
+		t.Errorf("SM2Sign output %s, %v", own, err)
+	}
+	enc, err := SM2Encrypt("m", v.SM2.PublicKey)
+	if err != nil || enc != strings.ToLower(enc) {
+		t.Errorf("SM2Encrypt output %s, %v", enc, err)
+	}
+}
+
+func TestModPowZeroExponent(t *testing.T) {
+	one, seven := BigInt256{limbs: [4]uint64{1}}, BigInt256{limbs: [4]uint64{7}}
+	var zero BigInt256
+	if got := zero.ModPow(&zero, &one); !got.IsZero() {
+		t.Errorf("0^0 mod 1 = %s", got.ToHex())
+	}
+	if got := zero.ModPow(&zero, &seven); !got.IsOne() {
+		t.Errorf("0^0 mod 7 = %s", got.ToHex())
+	}
+	p := BigInt256{limbs: curveP}
+	if got := zero.ModPow(&zero, &p); !got.IsOne() {
+		t.Errorf("0^0 mod p = %s", got.ToHex())
+	}
+}
+
+// Keys must not reach output through any serializer or a struct holding the type.
+func TestSecretsStayOutOfSerializers(t *testing.T) {
+	v := loadSecurityVectors(t)
+	dB := BigInt256FromHex(v.SM2.PrivateKey)
+	rb := BigInt256FromHex(v.SM2.NonceK)
+	pub := SM2DecodePoint(v.SM2.PublicKey)
+	r := SM2GetSb(16, pub, pub, pub, &dB, pub, &rb, "a", "b")
+	if !r.Success {
+		t.Fatal(r.Message)
+	}
+	x := r.V.X.value.ToHexLower()
+	leaks := func(where, out string) {
+		t.Helper()
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, r.Kb) || strings.Contains(lower, x) {
+			t.Errorf("%s leaks a secret: %s", where, out)
+		}
+		for _, l := range append(r.V.X.value.limbs[:], dB.limbs[:]...) {
+			if strings.Contains(out, fmt.Sprint(l)) {
+				t.Errorf("%s leaks a limb: %s", where, out)
+			}
+		}
+	}
+	type exported struct {
+		Params SM2KeySwapParams
+		Point  ECPoint
+		Elem   FpElement
+		Key    BigInt256
+		Ptr    *BigInt256
+	}
+	holder := exported{r, *r.V, r.V.X, dB, &dB}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x", "%d"} {
+		for name, value := range map[string]any{
+			"params": r, "V pointer": r.V, "V": *r.V, "X": r.V.X, "key": dB, "holder": holder,
+			"slice": []BigInt256{dB}, "map": map[string]ECPoint{"v": *r.V},
+		} {
+			leaks(name+" "+verb, fmt.Sprintf(verb, value))
+		}
+	}
+	js, err := json.Marshal(holder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaks("json", string(js))
+	if strings.Contains(string(js), "Kb") {
+		t.Errorf("json has Kb: %s", js)
+	}
+	xm, err := xml.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaks("xml", string(xm))
+	if err := gob.NewEncoder(io.Discard).Encode(r); err == nil {
+		t.Error("gob encoded the secrets")
+	}
+
+	// fmt cannot call methods in an unexported field. SM4 keys sit behind a pointer there.
+	type unexported struct{ c SM4 }
+	s := NewSM4()
+	s.SetKey([]byte("0123456789abcdef"), []byte("fedcba9876543210"))
+	roundKey := s.keys.rk[0]
+	if out := fmt.Sprintf("%+v", unexported{*s}); strings.Contains(out, fmt.Sprint(roundKey)) || strings.Contains(out, "rk") {
+		t.Errorf("SM4 in an unexported field leaks: %s", out)
+	}
+	if out := fmt.Sprintf("%+v", unexported{*s}); !strings.Contains(out, "0x") {
+		t.Errorf("expected only an address: %s", out)
+	}
+}
+
+// A copy made before re-keying must fail, not run with a wiped all-zero key.
+func TestSM4StaleCopyFails(t *testing.T) {
+	a := NewSM4()
+	a.SetKey([]byte("0123456789abcdef"), []byte("fedcba9876543210"))
+	b := *a
+	if _, err := b.Encrypt("x"); err != nil {
+		t.Fatalf("copy before re-key: %v", err)
+	}
+	a.SetKey([]byte("fedcba9876543210"), []byte("0123456789abcdef"))
+	if _, err := b.Encrypt("x"); err != errSM4KeyNotSet {
+		t.Errorf("stale copy Encrypt: %v", err)
+	}
+	if _, err := b.Decrypt(strings.Repeat("00", 16)); err != errSM4KeyNotSet {
+		t.Errorf("stale copy Decrypt: %v", err)
+	}
+	if _, err := a.Encrypt("x"); err != nil {
+		t.Errorf("re-keyed instance: %v", err)
 	}
 }
 

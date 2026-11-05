@@ -83,32 +83,62 @@ func TestSM3CapturedVectors(t *testing.T) {
 }
 
 func TestSM3LifeCycle(t *testing.T) {
-	h := NewSM3()
-	if got := h.HashHexUpper(); got != "" {
-		t.Errorf("hex before Finish = %q, want empty", got)
-	}
-	if got := h.HashBytes(); got != ([32]byte{}) {
-		t.Errorf("bytes before Finish = %x, want zero", got)
-	}
 	const abc = "66C7F0F462EEEDD9D1F2D46BDC10E4E24167C4875CF2F7A2297DA02B8F4BA8E0"
-	h.Update([]byte("abc"))
-	h.Finish()
-	// Finish keeps the digest available and resets the instance for reuse.
-	h.Update([]byte("ignored until the next Finish"))
-	if got := h.HashHexUpper(); got != abc {
-		t.Errorf("hex after further Update = %s", got)
+	const empty = "1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B"
+
+	noDigest := func(h *SM3, when string) {
+		t.Helper()
+		if got := h.HashHexUpper(); got != "" {
+			t.Errorf("%s: hex = %q, want empty", when, got)
+		}
+		if got := h.HashBytes(); got != ([32]byte{}) {
+			t.Errorf("%s: bytes = %x, want zero", when, got)
+		}
+		if _, err := h.Digest(); err != errSM3NotFinished {
+			t.Errorf("%s: Digest error = %v", when, err)
+		}
 	}
+	h := NewSM3()
+	noDigest(h, "before Finish")
+	h.Update([]byte("abc"))
+	noDigest(h, "after Update")
+	h.Finish()
+	if got, err := h.Digest(); err != nil || strings.ToUpper(hex.EncodeToString(got[:])) != abc {
+		t.Errorf("Digest = %x, %v", got, err)
+	}
+
+	// Finish twice keeps the digest, rather than replacing it with that of "".
+	h.Finish()
+	if got := h.HashHexUpper(); got != abc {
+		t.Errorf("after second Finish = %s", got)
+	}
+	// Update after Finish starts a new message, and the old digest is no longer readable.
+	h.Update([]byte("x"))
+	noDigest(h, "after Update following Finish")
 	h = NewSM3()
 	h.Update([]byte("first"))
 	h.Finish()
-	h.Update([]byte("abc"))
+	h.UpdateByte('a')
+	noDigest(h, "after UpdateByte following Finish")
+	h.Update([]byte("bc"))
 	h.Finish()
 	if got := h.HashHexUpper(); got != abc {
 		t.Errorf("reused instance = %s", got)
 	}
+	// An empty Update starts a new, empty message.
+	h.Update(nil)
+	noDigest(h, "after empty Update")
+	h.Finish()
+	if got := h.HashHexUpper(); got != empty {
+		t.Errorf("empty message after reuse = %s", got)
+	}
 	bytes := h.HashBytes()
-	if strings.ToUpper(hex.EncodeToString(bytes[:])) != abc {
+	if strings.ToUpper(hex.EncodeToString(bytes[:])) != empty {
 		t.Errorf("HashBytes = %x", bytes)
+	}
+	var nilHash *SM3
+	if _, err := nilHash.Digest(); err != errSM3NotFinished {
+		t.Errorf("nil Digest: %v", err)
 	}
 }
 
@@ -198,9 +228,15 @@ func TestSM4DecryptErrors(t *testing.T) {
 			t.Errorf("Decrypt(%q) error = %v", in, err)
 		}
 	}
-	// Either case of hex digit is accepted.
-	if got, err := s.Decrypt(strings.ToUpper(ct)); err != nil || got != "hello" {
+	// Only the lowercase form this library emits is accepted.
+	if !strings.ContainsAny(ct, "abcdef") {
+		t.Fatal("test ciphertext has no letters")
+	}
+	if got, err := s.Decrypt(strings.ToUpper(ct)); err != errSM4Decrypt {
 		t.Errorf("uppercase: %q, %v", got, err)
+	}
+	if got, err := s.Decrypt(ct); err != nil || got != "hello" {
+		t.Errorf("lowercase: %q, %v", got, err)
 	}
 }
 

@@ -1,5 +1,10 @@
 package smx
 
+import (
+	"fmt"
+	"io"
+)
+
 // SM2_P is the prime for the SM2 curve: p = 2^256 - 2^224 - 2^96 + 2^64 - 1.
 //
 // The exported curve variables are for reading only. The library itself never reads
@@ -13,6 +18,12 @@ var curveP = [4]uint64{p0, p1, p2, p3}
 // fully reduced; curve operations convert to the faster internal Montgomery form.
 type FpElement struct {
 	value BigInt256
+}
+
+// Format keeps values that may be secret out of logs: every fmt verb prints a placeholder.
+// Use ToHex to get the value deliberately.
+func (a FpElement) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, "FpElement{redacted}")
 }
 
 // NewFpElement reduces v modulo p. Any 256-bit value is below 2p. Point decoders do not

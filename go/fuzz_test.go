@@ -50,6 +50,9 @@ func FuzzHexDecode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		got, gotErr := hexToBytes(s)
 		want, wantErr := hex.DecodeString(s)
+		if wantErr == nil && s != strings.ToLower(s) {
+			wantErr = errInvalidHex // uppercase is not canonical
+		}
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("hexToBytes(%q): %v vs %v", s, gotErr, wantErr)
 		}
@@ -116,9 +119,14 @@ func FuzzSM2Verify(f *testing.F) {
 	f.Add("", "", "", "")
 	f.Add("id", "h", "m", "04")
 	f.Fuzz(func(t *testing.T, id, signature, msg, pub string) {
-		if SM2Verify(id, signature, msg, pub) && (id != "1234567812345678" || msg != "message digest") {
-			// A forgery found by the fuzzer would be a total break.
-			t.Fatalf("verified id=%q sig=%q msg=%q pub=%q", id, signature, msg, pub)
+		if SM2Verify(id, signature, msg, pub) {
+			if id != "1234567812345678" || msg != "message digest" {
+				// A forgery found by the fuzzer would be a total break.
+				t.Fatalf("verified id=%q sig=%q msg=%q pub=%q", id, signature, msg, pub)
+			}
+			if signature != strings.ToLower(signature) {
+				t.Fatalf("accepted a non-canonical signature %q", signature)
+			}
 		}
 	})
 }
@@ -223,12 +231,12 @@ func FuzzSM4(f *testing.F) {
 		// All paths agree.
 		raw, _ := hex.DecodeString(ct)
 		same := append([]byte(nil), raw...)
-		sm4CBCDecryptGeneric(&s.drk, &s.iv, same)
+		sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, same)
 		if string(same[:len(plain)]) != plain {
 			t.Fatal("portable decryption differs")
 		}
 		back := append([]byte(nil), same...)
-		sm4CBCEncryptGeneric(&s.rk, &s.iv, back)
+		sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, back)
 		if string(back) != string(raw) {
 			t.Fatal("portable encryption differs")
 		}
@@ -243,7 +251,11 @@ func FuzzPKCS7(f *testing.F) {
 		if len(data) < 16 {
 			return
 		}
-		got, ok := pkcs7PadLen(data)
+		gotLen, mask := pkcs7Check(data)
+		got, ok := int(gotLen), mask != 0
+		if mask != 0 && mask != ^uint64(0) {
+			t.Fatalf("mask %x", mask)
+		}
 		p := int(data[len(data)-1])
 		want := p >= 1 && p <= 16
 		if want {

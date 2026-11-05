@@ -1,13 +1,19 @@
 // Command client-go demonstrates SM2 key exchange and SM4 encryption against the demo
 // server.
 //
-// DEMO ONLY: it talks plain HTTP with no server authentication beyond the protocol, uses
-// a fixed all-zero IV as the protocol defines, and SM4-CBC gives no integrity. A real
-// deployment needs TLS, a fresh random IV per message and authenticated ciphertexts.
+// DEMO ONLY: it talks plain HTTP, uses a fixed all-zero IV as the protocol defines, and
+// SM4-CBC gives no integrity. A real deployment needs TLS, a fresh random IV per message
+// and authenticated ciphertexts.
+//
+// The server's public key arrives in the same unauthenticated response as everything
+// else, so by default an impostor can complete the exchange and read the traffic. Set
+// SM2_DEMO_SERVER_PUBKEY to the server's public key hex to pin it: any other key is then a
+// hard failure. Without it the client warns that the server is UNAUTHENTICATED.
 package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,7 +22,9 @@ import (
 	"net/http"
 	"os"
 	"smx"
+	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -25,10 +33,13 @@ const (
 
 	// maxResponseBytes bounds what a misbehaving server can make the client read.
 	maxResponseBytes = 1 << 20
-	requestTimeout   = 30 * time.Second
-)
 
-var httpClient = &http.Client{Timeout: requestTimeout}
+	// overallDeadline bounds the whole run, including servers that send one byte at a time.
+	overallDeadline = 60 * time.Second
+
+	// pinnedKeyEnv names the variable holding the expected server public key.
+	pinnedKeyEnv = "SM2_DEMO_SERVER_PUBKEY"
+)
 
 type initRequest struct {
 	IDa    string `json:"IDa"`
@@ -67,12 +78,17 @@ type cryptoTestResponse struct {
 	ServerCiphertext   string `json:"serverCiphertext"`
 }
 
-func postJSON(url string, req any, resp any) error {
+func postJSON(ctx context.Context, url string, req any, resp any) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	httpResp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
@@ -94,15 +110,59 @@ func postJSON(url string, req any, resp any) error {
 	return nil
 }
 
+// sanitize removes what could drive a terminal from text that came from the server:
+// control and format characters, including escape sequences and direction overrides, and
+// invalid UTF-8. Line breaks in our own messages are added after this.
+func sanitize(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == unicode.ReplacementChar || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(text, ""))
+}
+
+// loadPinnedKey reads the optional pinned server key. It returns nil if none is set, and
+// an error if the value is not a valid public key.
+func loadPinnedKey(value string) (*smx.ECPoint, error) {
+	if value == "" {
+		return nil, nil
+	}
+	pinned, err := smx.SM2ParsePublicKey(value)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a valid public key: %w", pinnedKeyEnv, err)
+	}
+	return &pinned, nil
+}
+
+// checkServerKey fails if a key is pinned and the server presented a different one.
+func checkServerKey(pinned *smx.ECPoint, presented smx.ECPoint) error {
+	if pinned != nil && !pinned.Equal(presented) {
+		return errors.New("server public key does not match " + pinnedKeyEnv + ": refusing to continue")
+	}
+	return nil
+}
+
 // fail prints a message that must not contain secrets and exits.
 func fail(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	fmt.Fprintln(os.Stderr, sanitize(fmt.Sprintf(format, args...)))
 	os.Exit(1)
 }
 
 func main() {
 	fmt.Println("=== SM2 Key Exchange Demo (Go Client) ===")
 	fmt.Println()
+
+	ctx, cancel := context.WithTimeout(context.Background(), overallDeadline)
+	defer cancel()
+
+	pinned, err := loadPinnedKey(os.Getenv(pinnedKeyEnv))
+	if err != nil {
+		fail("%v", err)
+	}
+	if pinned == nil {
+		fmt.Printf("WARNING: server is UNAUTHENTICATED: %s is not set, so an impostor could complete this exchange.\n\n", pinnedKeyEnv)
+	}
 
 	// Generate A-side certificate keypair
 	daHex, paHex, err := smx.SM2GenerateKeyPair()
@@ -134,11 +194,11 @@ func main() {
 	fmt.Printf("Request: %s\n", reqJSON)
 
 	var initResp initResponse
-	if err := postJSON(serverURL+"/api/keyswap/init", initReq, &initResp); err != nil {
+	if err := postJSON(ctx, serverURL+"/api/keyswap/init", initReq, &initResp); err != nil {
 		fail("Failed to connect to server: %v\nMake sure the Java server is running on port 8080", err)
 	}
 	respJSON, _ := json.Marshal(initResp)
-	fmt.Printf("Response: %s\n", respJSON)
+	fmt.Printf("Response: %s\n", sanitize(string(respJSON)))
 
 	// Step 2: Calculate Sa and Ka
 	fmt.Println("\n--- Step 2: Calculate Sa and Ka ---")
@@ -146,6 +206,9 @@ func main() {
 	pB, err := smx.SM2ParsePublicKey(initResp.PB)
 	if err != nil {
 		fail("Server sent an invalid pB: %v", err)
+	}
+	if err := checkServerKey(pinned, pB); err != nil {
+		fail("%v", err)
 	}
 	rB, err := smx.SM2ParsePublicKey(initResp.RB)
 	if err != nil {
@@ -178,17 +241,21 @@ func main() {
 	fmt.Printf("Request: %s\n", cReqJSON)
 
 	var confirmResp confirmResponse
-	if err := postJSON(serverURL+"/api/keyswap/confirm", confirmReq, &confirmResp); err != nil {
+	if err := postJSON(ctx, serverURL+"/api/keyswap/confirm", confirmReq, &confirmResp); err != nil {
 		fail("Failed to send confirm request: %v", err)
 	}
 	cRespJSON, _ := json.Marshal(confirmResp)
-	fmt.Printf("Response: %s\n", cRespJSON)
+	fmt.Printf("Response: %s\n", sanitize(string(cRespJSON)))
 
 	if !confirmResp.Success {
 		fail("Key exchange confirmation failed")
 	}
 
-	fmt.Println("\nKey exchange completed successfully!")
+	if pinned != nil {
+		fmt.Println("\nKey exchange completed with the pinned server key.")
+	} else {
+		fmt.Println("\nKey exchange completed, but the server is UNAUTHENTICATED.")
+	}
 
 	// Step 4: Bidirectional Crypto Test
 	fmt.Println("\n--- Step 4: Bidirectional Crypto Test ---")
@@ -223,11 +290,11 @@ func main() {
 	fmt.Printf("\nRequest: %s\n", crReqJSON)
 
 	var cryptoResp cryptoTestResponse
-	if err := postJSON(serverURL+"/api/crypto/test", cryptoReq, &cryptoResp); err != nil {
+	if err := postJSON(ctx, serverURL+"/api/crypto/test", cryptoReq, &cryptoResp); err != nil {
 		fail("Failed to send crypto request: %v", err)
 	}
 	crRespJSON, _ := json.Marshal(cryptoResp)
-	fmt.Printf("Response: %s\n", crRespJSON)
+	fmt.Printf("Response: %s\n", sanitize(string(crRespJSON)))
 
 	// Verify server correctly decrypted client's message
 	serverDecryptOk := cryptoResp.ClientDecryptMatch
@@ -248,8 +315,8 @@ func main() {
 	} else {
 		fmt.Println("[Client decrypted server message]: FAIL")
 	}
-	fmt.Printf("  Server plaintext: %s\n", cryptoResp.ServerPlaintext)
-	fmt.Printf("  Client decrypted: %s\n", serverDecrypted)
+	fmt.Printf("  Server plaintext: %s\n", sanitize(cryptoResp.ServerPlaintext))
+	fmt.Printf("  Client decrypted: %s\n", sanitize(serverDecrypted))
 
 	if serverDecryptOk && clientDecryptOk {
 		fmt.Println("\nBidirectional Crypto test PASSED!")

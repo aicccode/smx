@@ -1,6 +1,10 @@
 package smx
 
-import "math/bits"
+import (
+	"fmt"
+	"io"
+	"math/bits"
+)
 
 // SM2 curve constants. These variables are for reading only: the library never reads
 // them, so changing one cannot alter its behavior.
@@ -40,6 +44,13 @@ var (
 type ECPoint struct {
 	X, Y     FpElement
 	Infinity bool
+}
+
+// Format keeps coordinates out of logs, because a point can be the secret shared point of
+// a key exchange: every fmt verb prints a placeholder. Use ToHexEncoded to get the value
+// deliberately.
+func (p ECPoint) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, "ECPoint{redacted}")
 }
 
 // Private copies of the curve constants, the ones the library uses.
@@ -120,6 +131,19 @@ func parseHexPoint(s string) (ECPoint, bool) {
 	}
 	var buf [65]byte
 	if !decodeHexInto(buf[:], s) {
+		return ECPointInfinity(), false
+	}
+	return parseEncodedPoint(buf[:])
+}
+
+// parseCanonicalHexPoint is parseHexPoint with lowercase digits only, for the C1 of a
+// ciphertext.
+func parseCanonicalHexPoint(s string) (ECPoint, bool) {
+	if len(s) != 130 {
+		return ECPointInfinity(), false
+	}
+	var buf [65]byte
+	if !decodeHexLowerInto(buf[:], s) {
 		return ECPointInfinity(), false
 	}
 	return parseEncodedPoint(buf[:])

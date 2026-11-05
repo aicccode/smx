@@ -42,13 +42,14 @@ var (
 // later replaces crypto/rand.Reader can change where nonces come from.
 var sm2RandReader io.Reader = rand.Reader
 
-// SM2KeySwapParams holds key exchange protocol state. Ka, Kb and V are secret.
+// SM2KeySwapParams holds key exchange protocol state. Ka, Kb and V are secret, so fmt,
+// encoding/json and encoding/xml leave them out and encoding/gob refuses the type.
 type SM2KeySwapParams struct {
 	Sa      string
 	Sb      string
-	Ka      string
-	Kb      string
-	V       *ECPoint
+	Ka      string   `json:"-" xml:"-"`
+	Kb      string   `json:"-" xml:"-"`
+	V       *ECPoint `json:"-" xml:"-"`
 	Za      []byte
 	Zb      []byte
 	Success bool
@@ -58,6 +59,11 @@ type SM2KeySwapParams struct {
 // Format keeps the shared secrets out of logs: every fmt verb prints only the outcome.
 func (p SM2KeySwapParams) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "SM2KeySwapParams{Success:%t Message:%q}", p.Success, p.Message)
+}
+
+// GobEncode refuses to serialize the shared secrets.
+func (p SM2KeySwapParams) GobEncode() ([]byte, error) {
+	return nil, errors.New("SM2KeySwapParams holds secrets and cannot be serialized")
 }
 
 // parsePrivateKey parses exactly 64 hex digits holding a value in [1, n-2]. The digits
@@ -190,14 +196,15 @@ func sm2EncryptWithNonce(plaintext string, pub *ECPoint, k *BigInt256) (string, 
 	return bytesAsString(out), true
 }
 
-// SM2Decrypt decrypts ciphertext using the private key.
+// SM2Decrypt decrypts ciphertext, which must be lowercase hex as SM2Encrypt emits it,
+// using the private key. The private key may use either case.
 func SM2Decrypt(ciphertext, privateKey string) (string, error) {
 	const minLen = sm2PointHexLen + sm2C3HexLen + 2
 	if len(ciphertext) < minLen {
 		return "", errors.New("ciphertext too short")
 	}
 
-	c1, ok := parseHexPoint(ciphertext[:sm2PointHexLen])
+	c1, ok := parseCanonicalHexPoint(ciphertext[:sm2PointHexLen])
 	if !ok {
 		return "", errors.New("invalid C1 point")
 	}
@@ -320,14 +327,15 @@ func sm2SignWithNonce(userID, message string, d, k *BigInt256) (string, bool) {
 	return bytesAsString(out), true
 }
 
-// parseSignature reads the exact format of SM2Sign: 64 hex digits, "h", 64 hex digits,
-// with r and s each in [1, n-1].
+// parseSignature reads the exact format of SM2Sign: 64 lowercase hex digits, "h", 64
+// lowercase hex digits, with r and s each in [1, n-1]. A signature has one accepted
+// encoding, so a replay or deduplication cache keyed on the string cannot be bypassed.
 func parseSignature(signature string) (r, s BigInt256, ok bool) {
 	if len(signature) != sm2SignatureHexLen || signature[64] != 'h' {
 		return r, s, false
 	}
 	var rawR, rawS [32]byte
-	if !decodeHexInto(rawR[:], signature[:64]) || !decodeHexInto(rawS[:], signature[65:]) {
+	if !decodeHexLowerInto(rawR[:], signature[:64]) || !decodeHexLowerInto(rawS[:], signature[65:]) {
 		return r, s, false
 	}
 	r, s = BigInt256FromBEBytes(rawR[:]), BigInt256FromBEBytes(rawS[:])

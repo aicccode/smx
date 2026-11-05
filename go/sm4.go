@@ -47,11 +47,27 @@ var (
 //
 // After SetKey, Encrypt and Decrypt only read the instance, so they may run concurrently.
 // SetKey must not run concurrently with them.
+//
+// Every key lives behind a pointer, so fmt prints only an address even for an SM4 value in
+// an unexported field of a caller's struct, where it cannot call Format. A value copied
+// before a later SetKey stops working rather than silently using a wiped key.
 type SM4 struct {
-	rk     [32]uint32 // encryption round keys
-	drk    [32]uint32 // decryption round keys, rk reversed
-	iv     [16]byte
-	keySet bool
+	keys *sm4Keys
+}
+
+type sm4Keys struct {
+	rk  [32]uint32 // encryption round keys
+	drk [32]uint32 // decryption round keys, rk reversed
+	iv  [16]byte
+	set bool
+}
+
+// keyed returns the key material, or nil if no valid key is set.
+func (s *SM4) keyed() *sm4Keys {
+	if s == nil || s.keys == nil || !s.keys.set {
+		return nil
+	}
+	return s.keys
 }
 
 // NewSM4 creates a new SM4 instance. It cannot encrypt or decrypt until a key is set.
@@ -73,13 +89,18 @@ func (s *SM4) TrySetKey(key, iv []byte) error {
 	if s == nil {
 		return errSM4KeyNotSet
 	}
-	*s = SM4{}
+	if s.keys != nil {
+		*s.keys = sm4Keys{}
+		s.keys = nil
+	}
 	if len(key) != sm4BlockSize || len(iv) != sm4BlockSize {
 		return errSM4KeyNotSet
 	}
-	s.expandKey(key)
-	copy(s.iv[:], iv)
-	s.keySet = true
+	keys := new(sm4Keys)
+	keys.expand(key)
+	copy(keys.iv[:], iv)
+	keys.set = true
+	s.keys = keys
 	return nil
 }
 
@@ -101,7 +122,7 @@ func sm4Tau(a uint32) uint32 {
 
 // expandKey computes the round keys. It uses the circuit on every path, so the key
 // schedule makes no secret-indexed memory access.
-func (s *SM4) expandKey(key []byte) {
+func (s *sm4Keys) expand(key []byte) {
 	k0 := binary.BigEndian.Uint32(key[0:]) ^ sm4FK[0]
 	k1 := binary.BigEndian.Uint32(key[4:]) ^ sm4FK[1]
 	k2 := binary.BigEndian.Uint32(key[8:]) ^ sm4FK[2]
@@ -290,7 +311,8 @@ func sm4PaddedSize(n int) (int, bool) {
 // Encrypt encrypts a plaintext string and returns ciphertext as hex. See the SM4 type
 // for the IV and integrity requirements.
 func (s *SM4) Encrypt(plaintext string) (string, error) {
-	if s == nil || !s.keySet {
+	keys := s.keyed()
+	if keys == nil {
 		return "", errSM4KeyNotSet
 	}
 	size, ok := sm4PaddedSize(len(plaintext))
@@ -307,35 +329,62 @@ func (s *SM4) Encrypt(plaintext string) (string, error) {
 	for i := len(plaintext); i < size; i++ {
 		raw[i] = byte(padLen)
 	}
-	sm4CBCEncrypt(&s.rk, &s.iv, raw)
+	sm4CBCEncrypt(&keys.rk, &keys.iv, raw)
 	encodeHexTo(out, raw, lowerHex)
 	return bytesAsString(out), nil
 }
 
-// Decrypt decrypts a hex ciphertext string and returns plaintext. Every malformed
-// ciphertext gets the same error. A successful Decrypt does not show the ciphertext is
-// authentic; see the SM4 type.
+// Decrypt decrypts a canonical (lowercase) hex ciphertext string and returns plaintext.
+// Every malformed ciphertext gets the same error. A successful Decrypt does not show the
+// ciphertext is authentic; see the SM4 type.
+//
+// The string holds the plaintext bytes exactly as decrypted: there is no UTF-8 step, so
+// binary plaintext is safe and nothing here runs only on valid padding. A caller that
+// validates the result, and so spends time only after success, adds a timing signal of
+// its own; authenticate ciphertexts first. Timing still depends on the ciphertext length.
 func (s *SM4) Decrypt(ciphertext string) (string, error) {
-	if s == nil || !s.keySet {
+	keys := s.keyed()
+	if keys == nil {
 		return "", errSM4KeyNotSet
 	}
 	buf, err := hexToBytes(ciphertext)
 	if err != nil || len(buf) == 0 || len(buf)%sm4BlockSize != 0 {
 		return "", errSM4Decrypt
 	}
-	sm4CBCDecrypt(&s.drk, &s.iv, buf)
-	padLen, valid := pkcs7PadLen(buf)
+	sm4CBCDecrypt(&keys.drk, &keys.iv, buf)
+	plain, valid := sm4Unpad(buf)
 	if !valid {
-		wipeBytes(buf)
 		return "", errSM4Decrypt
 	}
-	return bytesAsString(buf[:len(buf)-padLen]), nil
+	return bytesAsString(plain), nil
 }
 
-// pkcs7PadLen returns the padding length of a non-empty whole-block buffer. It always
-// reads the last 16 bytes and combines the checks with masks, so its timing does
-// not depend on the padding. The caller may branch only on the final result.
-func pkcs7PadLen(input []byte) (int, bool) {
+// sm4Unpad validates the padding and returns the plaintext. It does the same work on both
+// outcomes: the whole buffer goes through maskBytes, which keeps it for valid padding and
+// erases it otherwise. Erasing only on failure would be a padding oracle.
+func sm4Unpad(buf []byte) ([]byte, bool) {
+	padLen, good := pkcs7Check(buf)
+	maskBytes(buf, good)
+	return buf[:len(buf)-int(uint64(padLen)&good)], good != 0
+}
+
+// maskBytes ANDs every byte of b with mask, which is all ones or zero. No branch and no
+// memory access depends on the mask.
+func maskBytes(b []byte, mask uint64) {
+	for len(b) >= 8 {
+		binary.LittleEndian.PutUint64(b, binary.LittleEndian.Uint64(b)&mask)
+		b = b[8:]
+	}
+	for i := range b {
+		b[i] &= byte(mask)
+	}
+}
+
+// pkcs7Check returns the padding length of a non-empty whole-block buffer, and a mask
+// that is all ones if the padding is valid and zero otherwise. It always reads the last
+// 16 bytes and combines the checks with masks, so its timing does not depend on the
+// padding.
+func pkcs7Check(input []byte) (uint32, uint64) {
 	tail := input[len(input)-sm4BlockSize:]
 	padLen := uint32(tail[sm4BlockSize-1])
 
@@ -349,5 +398,5 @@ func pkcs7PadLen(input []byte) (int, bool) {
 		// A non-zero mismatch wraps to set the top bit.
 		bad |= (uint32(0) - mismatch) & inPad
 	}
-	return int(padLen), bad>>31 == 0
+	return padLen, uint64(bad>>31) - 1
 }
