@@ -1,36 +1,8 @@
-import { SM3 } from '../sm3/sm3.js'
-import {
-  stringToBytes,
-  bytesToString,
-  bytesToHex,
-  hexToBytes,
-} from '../common/utils.js'
+import { decodeHex, requireWellFormedString } from '../common/hex.js'
+import { bytesToString, bytesToHex, stringToBytes } from '../common/utils.js'
+import { sboxPlanes, sboxWord } from './sbox-circuit.js'
 
 // ---- SM4 常量 ----
-
-/** S 盒 */
-const SBOX = new Uint8Array([
-  0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28,
-  0xfb, 0x2c, 0x05, 0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44,
-  0x13, 0x26, 0x49, 0x86, 0x06, 0x99, 0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98,
-  0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62, 0xe4, 0xb3, 0x1c, 0xa9,
-  0xc9, 0x08, 0xe8, 0x95, 0x80, 0xdf, 0x94, 0xfa, 0x75, 0x8f, 0x3f, 0xa6, 0x47,
-  0x07, 0xa7, 0xfc, 0xf3, 0x73, 0x17, 0xba, 0x83, 0x59, 0x3c, 0x19, 0xe6, 0x85,
-  0x4f, 0xa8, 0x68, 0x6b, 0x81, 0xb2, 0x71, 0x64, 0xda, 0x8b, 0xf8, 0xeb, 0x0f,
-  0x4b, 0x70, 0x56, 0x9d, 0x35, 0x1e, 0x24, 0x0e, 0x5e, 0x63, 0x58, 0xd1, 0xa2,
-  0x25, 0x22, 0x7c, 0x3b, 0x01, 0x21, 0x78, 0x87, 0xd4, 0x00, 0x46, 0x57, 0x9f,
-  0xd3, 0x27, 0x52, 0x4c, 0x36, 0x02, 0xe7, 0xa0, 0xc4, 0xc8, 0x9e, 0xea, 0xbf,
-  0x8a, 0xd2, 0x40, 0xc7, 0x38, 0xb5, 0xa3, 0xf7, 0xf2, 0xce, 0xf9, 0x61, 0x15,
-  0xa1, 0xe0, 0xae, 0x5d, 0xa4, 0x9b, 0x34, 0x1a, 0x55, 0xad, 0x93, 0x32, 0x30,
-  0xf5, 0x8c, 0xb1, 0xe3, 0x1d, 0xf6, 0xe2, 0x2e, 0x82, 0x66, 0xca, 0x60, 0xc0,
-  0x29, 0x23, 0xab, 0x0d, 0x53, 0x4e, 0x6f, 0xd5, 0xdb, 0x37, 0x45, 0xde, 0xfd,
-  0x8e, 0x2f, 0x03, 0xff, 0x6a, 0x72, 0x6d, 0x6c, 0x5b, 0x51, 0x8d, 0x1b, 0xaf,
-  0x92, 0xbb, 0xdd, 0xbc, 0x7f, 0x11, 0xd9, 0x5c, 0x41, 0x1f, 0x10, 0x5a, 0xd8,
-  0x0a, 0xc1, 0x31, 0x88, 0xa5, 0xcd, 0x7b, 0xbd, 0x2d, 0x74, 0xd0, 0x12, 0xb8,
-  0xe5, 0xb4, 0xb0, 0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9,
-  0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84, 0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d,
-  0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
-])
 
 /** 系统参数 FK */
 const FK = new Int32Array([0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc])
@@ -45,99 +17,133 @@ const CK = new Int32Array([
   0x484f565d, 0x646b7279,
 ])
 
-// ---- 内部函数 ----
+const BLOCK_BYTES = 16
+const KEY_BYTES = 16
+const LANES = 8
+const LANE_BYTES = LANES * BLOCK_BYTES
+const DECRYPT_ERROR = 'SM4 decryption failed'
 
-/**
- * T 表：S 盒与线性变换 L 的组合，每个输入字节一张 256 项的表，加解密的每轮只需
- * 四次查表。
- *
- * 缓存时序说明：与 S 盒实现一样，查表下标依赖密钥和数据。这些表更大，占用更多缓
- * 存行，因此缓存时序侧信道的风险不低于基线。JavaScript 没有 AES-NI/GFNI 这样的硬
- * 件路径，也无法提供常数时间保证；对本地攻击者敏感的场景应使用原生实现。
- */
-const T0 = new Int32Array(256)
-const T1 = new Int32Array(256)
-const T2 = new Int32Array(256)
-const T3 = new Int32Array(256)
-for (let i = 0; i < 256; i++) {
-  const b = SBOX[i]
-  // L(b) = b ^ (b <<< 2) ^ (b <<< 10) ^ (b <<< 18) ^ (b <<< 24)，b 在最低字节
-  const l = b ^ (b << 2) ^ (b << 10) ^ (b << 18) ^ (b << 24)
-  T3[i] = l
-  T2[i] = (l << 8) | (l >>> 24)
-  T1[i] = (l << 16) | (l >>> 16)
-  T0[i] = (l << 24) | (l >>> 8)
-}
+// ---- 内部函数 ----
 
 /** 32 位大端读取 */
 function readWord(b, o) {
   return (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]
 }
 
-/** 合成置换 T'（密钥扩展）：S 盒替换后接 L' */
-function tPrime(a) {
-  const b =
-    (SBOX[a >>> 24] << 24) |
-    (SBOX[(a >>> 16) & 0xff] << 16) |
-    (SBOX[(a >>> 8) & 0xff] << 8) |
-    SBOX[a & 0xff]
+function writeWord(out, o, x) {
+  out[o] = x >>> 24
+  out[o + 1] = x >>> 16
+  out[o + 2] = x >>> 8
+  out[o + 3] = x
+}
+
+/** 合成置换 T（加解密轮函数）：S 盒电路后接线性变换 L */
+function roundT(a) {
+  const b = sboxWord(a)
+  return (
+    b ^
+    ((b << 2) | (b >>> 30)) ^
+    ((b << 10) | (b >>> 22)) ^
+    ((b << 18) | (b >>> 14)) ^
+    ((b << 24) | (b >>> 8))
+  )
+}
+
+/** 合成置换 T'（密钥扩展）：S 盒电路后接 L' */
+function keyT(a) {
+  const b = sboxWord(a)
   return b ^ ((b << 13) | (b >>> 19)) ^ ((b << 23) | (b >>> 9))
 }
 
 /**
- * 加密或解密一个块。step 为 +1 时按 rk[0..31] 使用轮密钥（加密），为 -1 时反向
- * （解密）。输入和输出可以是同一缓冲区。
+ * 处理一个块。step 为 +1 时按 rk[0..31] 使用轮密钥（加密），为 -1 时反向（解密）。
+ * 输入和输出可以是同一缓冲区。
  */
 function processBlock(rk, first, step, x0, x1, x2, x3, out, outOff) {
   let k = first
   for (let round = 0; round < 8; round++) {
-    let t = x1 ^ x2 ^ x3 ^ rk[k]
+    x0 ^= roundT(x1 ^ x2 ^ x3 ^ rk[k])
     k += step
-    x0 ^=
-      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
-    t = x2 ^ x3 ^ x0 ^ rk[k]
+    x1 ^= roundT(x2 ^ x3 ^ x0 ^ rk[k])
     k += step
-    x1 ^=
-      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
-    t = x3 ^ x0 ^ x1 ^ rk[k]
+    x2 ^= roundT(x3 ^ x0 ^ x1 ^ rk[k])
     k += step
-    x2 ^=
-      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
-    t = x0 ^ x1 ^ x2 ^ rk[k]
+    x3 ^= roundT(x0 ^ x1 ^ x2 ^ rk[k])
     k += step
-    x3 ^=
-      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
   }
   // 反序变换 R
-  out[outOff] = x3 >>> 24
-  out[outOff + 1] = x3 >>> 16
-  out[outOff + 2] = x3 >>> 8
-  out[outOff + 3] = x3
-  out[outOff + 4] = x2 >>> 24
-  out[outOff + 5] = x2 >>> 16
-  out[outOff + 6] = x2 >>> 8
-  out[outOff + 7] = x2
-  out[outOff + 8] = x1 >>> 24
-  out[outOff + 9] = x1 >>> 16
-  out[outOff + 10] = x1 >>> 8
-  out[outOff + 11] = x1
-  out[outOff + 12] = x0 >>> 24
-  out[outOff + 13] = x0 >>> 16
-  out[outOff + 14] = x0 >>> 8
-  out[outOff + 15] = x0
+  writeWord(out, outOff, x3)
+  writeWord(out, outOff + 4, x2)
+  writeWord(out, outOff + 8, x1)
+  writeWord(out, outOff + 12, x0)
 }
 
+/** Swaps bit groups between two words of the buffer, for the 8x8 transpose. */
+function transposeBits(w) {
+  for (let shift = 4, mask = 0x0f0f0f0f; shift > 0;) {
+    for (let i = 0; i < LANES; i = (i + shift + 1) & ~shift) {
+      const j = i + shift
+      const t = ((w[i] >>> shift) ^ w[j]) & mask
+      w[j] ^= t
+      w[i] ^= t << shift
+    }
+    shift >>>= 1
+    mask = shift === 2 ? 0x33333333 : 0x55555555
+  }
+}
+
+const laneState = [
+  new Int32Array(LANES),
+  new Int32Array(LANES),
+  new Int32Array(LANES),
+  new Int32Array(LANES),
+]
+const lanePlanes = new Int32Array(LANES)
+
 /**
- * 将密钥/IV 规范化为 16 字节
- * 如果长度不是 16，用 SM3 哈希后取 hex 串的前 16 个 ASCII 字节（保持向后兼容）
- * @param {string} str
- * @returns {Uint8Array}
+ * Decrypts eight blocks in parallel: the Boolean S-box evaluates 32 bytes at once
+ * on bit planes, so one round costs about a quarter of eight separate rounds.
  */
-function normalizeKeyFromString(str) {
-  const bytes = stringToBytes(str)
-  if (bytes.length === 16) return bytes
-  const hexStr = new SM3().updateString(str).hexDigest()
-  return stringToBytes(hexStr).subarray(0, 16)
+function decryptEightBlocks(rk, input, inOff, out, outOff) {
+  const [a, b, c, d] = laneState
+  const p = lanePlanes
+  for (let lane = 0; lane < LANES; lane++) {
+    const o = inOff + lane * BLOCK_BYTES
+    a[lane] = readWord(input, o)
+    b[lane] = readWord(input, o + 4)
+    c[lane] = readWord(input, o + 8)
+    d[lane] = readWord(input, o + 12)
+  }
+  let k = 31
+  for (let round = 0; round < 32; round++, k--) {
+    const target = laneState[round & 3]
+    const x1 = laneState[(round + 1) & 3]
+    const x2 = laneState[(round + 2) & 3]
+    const x3 = laneState[(round + 3) & 3]
+    const key = rk[k]
+    for (let i = 0; i < LANES; i++) p[i] = x1[i] ^ x2[i] ^ x3[i] ^ key
+    transposeBits(p)
+    sboxPlanes(p)
+    transposeBits(p)
+    for (let i = 0; i < LANES; i++) {
+      const v = p[i]
+      target[i] ^=
+        v ^
+        ((v << 2) | (v >>> 30)) ^
+        ((v << 10) | (v >>> 22)) ^
+        ((v << 18) | (v >>> 14)) ^
+        ((v << 24) | (v >>> 8))
+    }
+  }
+  for (let lane = 0; lane < LANES; lane++) {
+    const o = outOff + lane * BLOCK_BYTES
+    writeWord(out, o, d[lane])
+    writeWord(out, o + 4, c[lane])
+    writeWord(out, o + 8, b[lane])
+    writeWord(out, o + 12, a[lane])
+  }
+  p.fill(0)
+  for (const s of laneState) s.fill(0)
 }
 
 /**
@@ -145,37 +151,55 @@ function normalizeKeyFromString(str) {
  *
  * 用法：
  *   const sm4 = new SM4()
- *   sm4.setKey('key', 'iv')
+ *   sm4.setKey('16-byte-key-here', '16-byte-iv-value')
  *   const cipher = sm4.encrypt('plaintext')   // hex string
  *   const plain  = sm4.decrypt(cipher)         // string
+ *
+ * 安全说明：
+ * - CBC 只提供机密性，不提供完整性。密文可被篡改，调用方必须另行认证（如
+ *   encrypt-then-MAC）。如果未经认证的解密结果或错误对攻击者可见，还会形成填充
+ *   预言机。
+ * - 同一实例的每次 encrypt 都重用 setKey 给定的 IV，相同明文产生相同密文。CBC 要求
+ *   每条消息使用新的不可预测 IV：请为每条消息调用 setKey。
+ * - 字符串密钥必须恰好 16 字节，且应当是随机值；可读文本的熵很低。
+ * - S 盒是布尔电路，没有依赖秘密的查表或分支。JavaScript 引擎不提供常数时间保证。
  */
 export class SM4 {
   constructor() {
     this._rk = new Int32Array(32) // 轮密钥
-    this._iv = new Uint8Array(16) // 初始向量
+    this._iv = new Uint8Array(BLOCK_BYTES) // 初始向量
+    this._keyed = false
   }
 
   /**
-   * 设置密钥和初始向量
-   * @param {string} key  - 密钥字符串或 hex
-   * @param {string} iv   - IV 字符串或 hex
+   * 设置密钥和初始向量。两者都必须恰好 16 字节
+   * @param {string} key  - 16 字节字符串（UTF-8），或 hex 为 true 时的 32 位十六进制
+   * @param {string} iv   - 与 key 相同的格式
    * @param {boolean} [hex=false] - 是否为十六进制输入
    * @returns {SM4}
+   * @throws {Error} 长度或格式不符
    */
   setKey(key, iv, hex) {
-    const keyBytes = hex ? hexToBytes(key) : normalizeKeyFromString(key)
-    const ivBytes = hex ? hexToBytes(iv) : normalizeKeyFromString(iv)
+    const keyBytes = parseKeyMaterial(key, hex)
+    const ivBytes = parseKeyMaterial(iv, hex)
+    if (keyBytes === null || ivBytes === null) {
+      if (keyBytes !== null) keyBytes.fill(0)
+      throw new Error('SM4 key and IV must each be exactly 16 bytes')
+    }
     this._expandKey(keyBytes)
-    this._iv.set(ivBytes.subarray(0, 16))
+    this._iv.set(ivBytes)
+    keyBytes.fill(0)
+    this._keyed = true
     return this
   }
 
   /**
-   * CBC 加密
+   * CBC 加密。不提供完整性，见类注释
    * @param {string} text - 明文字符串
    * @returns {string} 密文 hex
    */
   encrypt(text) {
+    this._requireKey()
     const input = pkcs7Pad(stringToBytes(text))
     const output = new Uint8Array(input.length)
     const rk = this._rk
@@ -184,7 +208,7 @@ export class SM4 {
     let iv2 = readWord(this._iv, 8)
     let iv3 = readWord(this._iv, 12)
 
-    for (let off = 0; off < input.length; off += 16) {
+    for (let off = 0; off < input.length; off += BLOCK_BYTES) {
       processBlock(
         rk,
         0,
@@ -202,21 +226,36 @@ export class SM4 {
       iv3 = readWord(output, off + 12)
     }
 
+    input.fill(0)
     return bytesToHex(output)
   }
 
   /**
-   * CBC 解密
+   * CBC 解密。任何长度、格式或填充错误都抛出同一个错误。
+   * CBC 不提供完整性，未经认证的密文解密成功并不代表其真实，见类注释
    * @param {string} cipherHex - 密文 hex
-   * @returns {string} 明文字符串
+   * @returns {string} 明文字符串。非法 UTF-8 序列替换为 U+FFFD
+   * @throws {Error} 解密失败
    */
   decrypt(cipherHex) {
-    const input = hexToBytes(cipherHex)
+    this._requireKey()
+    const input = decodeHex(cipherHex)
+    if (
+      input === null ||
+      input.length === 0 ||
+      input.length % BLOCK_BYTES !== 0
+    ) {
+      throw new Error(DECRYPT_ERROR)
+    }
     const output = new Uint8Array(input.length)
     const rk = this._rk
     const iv = this._iv
 
-    for (let off = 0; off < input.length; off += 16) {
+    let off = 0
+    for (; off + LANE_BYTES <= input.length; off += LANE_BYTES) {
+      decryptEightBlocks(rk, input, off, output, off)
+    }
+    for (; off < input.length; off += BLOCK_BYTES) {
       processBlock(
         rk,
         31,
@@ -228,16 +267,27 @@ export class SM4 {
         output,
         off,
       )
-      // XOR with CBC IV: 上一个密文块，第一块用初始向量
-      const previous = off === 0 ? iv : input
-      const base = off === 0 ? 0 : off - 16
-      for (let i = 0; i < 16; i++) output[off + i] ^= previous[base + i]
+    }
+    for (let i = 0; i < BLOCK_BYTES; i++) output[i] ^= iv[i]
+    for (let i = BLOCK_BYTES; i < input.length; i++) {
+      output[i] ^= input[i - BLOCK_BYTES]
     }
 
-    return bytesToString(pkcs7Unpad(output))
+    const length = pkcs7UnpaddedLength(output)
+    if (length < 0) {
+      output.fill(0)
+      throw new Error(DECRYPT_ERROR)
+    }
+    const text = bytesToString(output.subarray(0, length))
+    output.fill(0)
+    return text
   }
 
   // ---- 内部方法 ----
+
+  _requireKey() {
+    if (!this._keyed) throw new Error('SM4 key has not been set')
+  }
 
   /** 密钥扩展 */
   _expandKey(key) {
@@ -247,13 +297,13 @@ export class SM4 {
     let k2 = readWord(key, 8) ^ FK[2]
     let k3 = readWord(key, 12) ^ FK[3]
     for (let i = 0; i < 32; i += 4) {
-      k0 ^= tPrime(k1 ^ k2 ^ k3 ^ CK[i])
+      k0 ^= keyT(k1 ^ k2 ^ k3 ^ CK[i])
       rk[i] = k0
-      k1 ^= tPrime(k2 ^ k3 ^ k0 ^ CK[i + 1])
+      k1 ^= keyT(k2 ^ k3 ^ k0 ^ CK[i + 1])
       rk[i + 1] = k1
-      k2 ^= tPrime(k3 ^ k0 ^ k1 ^ CK[i + 2])
+      k2 ^= keyT(k3 ^ k0 ^ k1 ^ CK[i + 2])
       rk[i + 2] = k2
-      k3 ^= tPrime(k0 ^ k1 ^ k2 ^ CK[i + 3])
+      k3 ^= keyT(k0 ^ k1 ^ k2 ^ CK[i + 3])
       rk[i + 3] = k3
     }
   }
@@ -270,6 +320,7 @@ export class SM4 {
 
   /** 处理单块（加密/解密共用） */
   _processBlock(input, inOff, output, outOff, decrypt) {
+    this._requireKey()
     processBlock(
       this._rk,
       decrypt ? 31 : 0,
@@ -284,19 +335,41 @@ export class SM4 {
   }
 }
 
+/** 16 字节字符串或 32 位十六进制 → 字节；其他输入返回 null，不做任何派生或截断 */
+function parseKeyMaterial(value, hex) {
+  if (typeof value !== 'string') return null
+  if (hex) return value.length === 2 * KEY_BYTES ? decodeHex(value) : null
+  requireWellFormedString(value)
+  const bytes = stringToBytes(value)
+  return bytes.length === KEY_BYTES ? bytes : null
+}
+
 // ---- PKCS7 填充 ----
 
 function pkcs7Pad(data) {
-  const padLen = 16 - (data.length % 16)
+  const padLen = BLOCK_BYTES - (data.length % BLOCK_BYTES)
   const out = new Uint8Array(data.length + padLen)
   out.set(data)
   out.fill(padLen, data.length)
   return out
 }
 
-function pkcs7Unpad(data) {
-  const padLen = data[data.length - 1]
-  return data.subarray(0, data.length - padLen)
+/**
+ * Plaintext length after removing the padding, or -1 if it is invalid. Always reads
+ * the last 16 bytes and combines the result with masks, so it does not reveal how
+ * much of the padding was correct. data.length is a nonzero multiple of 16.
+ */
+function pkcs7UnpaddedLength(data) {
+  const n = data.length
+  const pad = data[n - 1]
+  // bad < 0 when pad is outside [1, 16]
+  let bad = (pad - 1) | (BLOCK_BYTES - pad)
+  for (let i = 1; i <= BLOCK_BYTES; i++) {
+    const inPadding = (i - pad - 1) >> 31 // -1 when i <= pad
+    const diff = data[n - i] ^ pad
+    bad |= inPadding & -diff
+  }
+  return bad < 0 ? -1 : n - pad
 }
 
 /** @deprecated 使用 new SM4() */

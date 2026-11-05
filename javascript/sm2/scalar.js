@@ -97,3 +97,32 @@ export function plusNBelowP(x) {
   }
   return out
 }
+
+/**
+ * Constant-flow check that a secret 32-byte value is in [1, limit - 1]. Compares by
+ * running a borrow through the whole value and never looks at where bytes differ.
+ */
+function isInRangeFromOne(x, limit) {
+  let borrow = 0
+  let any = 0
+  for (let i = 31; i >= 0; i--) {
+    const v = x[i] - limit[i] - borrow
+    borrow = (v >> 31) & 1
+    any |= x[i]
+  }
+  const nonZero = ((any - 1) >> 31) + 1 // 0 when any = 0, else 1
+  return (borrow & nonZero) === 1
+}
+
+const N_MINUS_1 = new Uint8Array(N_BYTES)
+N_MINUS_1[31] -= 1
+
+/** Private key range: [1, n - 2]. Excluding n - 1 keeps 1 + d invertible. */
+export function isValidPrivateScalar(x) {
+  return isInRangeFromOne(x, N_MINUS_1)
+}
+
+/** Nonce and signature component range: [1, n - 1]. */
+export function isInScalarRange(x) {
+  return isInRangeFromOne(x, N_BYTES)
+}

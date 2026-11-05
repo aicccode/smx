@@ -6,6 +6,9 @@ const browserAndNode = {
   performance: 'readonly',
   process: 'readonly',
   fetch: 'readonly',
+  AbortSignal: 'readonly',
+  setInterval: 'readonly',
+  clearInterval: 'readonly',
 }
 
 export default [

@@ -1,10 +1,20 @@
+import { decodeHex, encodeHex, toByteArray } from '../common/hex.js'
 import { SM3, getSM3 } from '../sm3/sm3.js'
 import { BigInteger } from './biginteger.js'
 import { bigToBytes, bytesToBig } from './bytes.js'
 import { generateKeyMaterial } from './keygen.js'
-import { verifyCombination } from './point.js'
+import {
+  affineAdd,
+  affineDouble,
+  mulG,
+  mulPoint,
+  mulPublic,
+  verifyCombination,
+} from './point.js'
 import {
   isBelowN,
+  isInScalarRange,
+  isValidPrivateScalar,
   plusNBelowP,
   scalarAdd,
   scalarMulAdd,
@@ -13,11 +23,22 @@ import {
 } from './scalar.js'
 import * as util from './utils.js'
 
-const ZERO = BigInteger.ZERO
 const ONE = BigInteger.ONE
 const BITS = 256
+const SCALAR_BYTES = 32
+const SCALAR_HEX = 2 * SCALAR_BYTES
+const MAX_USER_ID_BYTES = 8191
+const MAX_KEY_EXCHANGE_BYTES = 1 << 20
+const MAX_KDF_BYTES = 0xffffffff * 32
+/** Retries on values that a working RNG hits with negligible probability. */
+const MAX_ATTEMPTS = 64
+const C1_HEX = 130
+const C3_HEX = 64
+const SIGN_TAG = 0x02
+const CONFIRM_TAG = 0x03
+const DECRYPT_ERROR = 'SM2 decryption failed'
 
-const { G, curve, n, w } = util.generateEcparam()
+const { G, curve, n } = util.generateEcparam()
 
 // Z 值中的固定部分：曲线参数 a、b 与基点坐标
 const CURVE_A = toBytes(curve.a.toBigInteger())
@@ -29,10 +50,10 @@ const BASE_Y = toBytes(G.getY().toBigInteger())
 
 /** 非负 BigInteger（小于 2^256）→ 新的 32 字节数组 */
 function toBytes(value) {
-  return bigToBytes(value, new Uint8Array(32))
+  return bigToBytes(value, new Uint8Array(SCALAR_BYTES))
 }
 
-/** 点的仿射坐标 → 32 字节数组。无穷远点会抛出 TypeError */
+/** 点的仿射坐标 → 32 字节数组。无穷远点会抛出错误 */
 function coordinateBytes(point) {
   return [
     toBytes(point.getX().toBigInteger()),
@@ -40,7 +61,7 @@ function coordinateBytes(point) {
   ]
 }
 
-/** Equal-length strings compare in time independent of where they differ. */
+/** Strings of equal length compare in time independent of where they differ. */
 function equalStrings(a, b) {
   if (typeof a !== 'string' || a.length !== b.length) return false
   let diff = 0
@@ -48,11 +69,24 @@ function equalStrings(a, b) {
   return diff === 0
 }
 
-/** data ^= KDF(x2 || y2)，SM3 派生，块计数器从 1 开始 */
+/** Byte arrays of equal length compare in time independent of their contents. */
+function equalBytes(a, b) {
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+  return diff === 0
+}
+
+/**
+ * data ^= KDF(x2 || y2)，SM3 派生，块计数器从 1 开始
+ * @returns {boolean} KDF 输出是否全零。全零时 data 不变，密文等于明文，必须拒绝
+ */
 function kdfXor(x2, y2, data) {
+  if (data.length > MAX_KDF_BYTES)
+    throw new RangeError('KDF output is too long')
   const sm3 = new SM3()
   const counter = new Uint8Array(4)
   let ct = 1
+  let any = 0
   for (let offset = 0; offset < data.length; ct++) {
     counter[0] = ct >>> 24
     counter[1] = ct >>> 16
@@ -65,31 +99,43 @@ function kdfXor(x2, y2, data) {
       .finish()
       .getHashBytes()
     const end = Math.min(32, data.length - offset)
-    for (let i = 0; i < end; i++) data[offset + i] ^= block[i]
+    for (let i = 0; i < end; i++) {
+      data[offset + i] ^= block[i]
+      any |= block[i]
+    }
+    block.fill(0)
     offset += end
   }
+  return any === 0
 }
 
-/** C3 = SM3(x2 || msg || y2)，小写 hex */
-function c3Hex(x2, msg, y2) {
-  return new SM3().update(x2).update(msg).update(y2).hexDigest().toLowerCase()
+/** C3 = SM3(x2 || msg || y2) */
+function computeC3(x2, msg, y2) {
+  return new SM3().update(x2).update(msg).update(y2).digest()
 }
 
-/** 消息 → 新的 Uint8Array（元素按字节截断） */
+/** 消息 → 新的 Uint8Array。字符串按 UTF-8，数组元素必须是字节 */
 function messageBytes(msg) {
   return typeof msg === 'string'
     ? util.stringToBytes(msg)
-    : Uint8Array.from(Array.prototype.slice.call(msg))
+    : Uint8Array.from(toByteArray(msg))
+}
+
+function userIdBytes(userId) {
+  const bytes = util.stringToBytes(userId)
+  if (bytes.length > MAX_USER_ID_BYTES)
+    throw new RangeError('User ID is too long')
+  return bytes
 }
 
 /** Z = SM3(ENTL || userId || a || b || gx || gy || px || py) */
 function computeZ(px, py, userId) {
-  const userIdBytes = util.stringToBytes(userId)
-  const entl = userIdBytes.length * 8
+  const id = userIdBytes(userId)
+  const entl = id.length * 8
   return new SM3()
     .update((entl >> 8) & 0xff)
     .update(entl & 0xff)
-    .update(userIdBytes)
+    .update(id)
     .update(CURVE_A)
     .update(CURVE_B)
     .update(BASE_X)
@@ -99,226 +145,446 @@ function computeZ(px, py, userId) {
     .digest()
 }
 
-/** 私钥 → 模 n 的 32 字节表示（BigInteger 已由点乘校验长度） */
-function privateScalarBytes(d) {
-  if (d.signum() >= 0) return toBytes(d)
-  const out = new Uint8Array(32)
-  scalarSub(out, new Uint8Array(32), toBytes(d.abs()))
-  return out
+/**
+ * Private key hex → 32 bytes in [1, n - 2]. Exactly 64 hex digits. The checks are
+ * constant-flow, and the error does not depend on the value.
+ */
+function parsePrivateKey(hex) {
+  const bytes =
+    typeof hex === 'string' && hex.length === SCALAR_HEX ? decodeHex(hex) : null
+  if (bytes === null || !isValidPrivateScalar(bytes)) {
+    if (bytes !== null) bytes.fill(0)
+    throw new Error('Invalid private key')
+  }
+  return bytes
 }
 
 function decodePublicKey(publicKey) {
-  return publicKey.length === 128
-    ? curve.decodePointHex('04' + publicKey)
-    : curve.decodePointHex(publicKey)
+  return curve.decodePointHex(publicKey)
+}
+
+function requireKeyLength(len) {
+  if (!Number.isInteger(len) || len < 1 || len > MAX_KEY_EXCHANGE_BYTES) {
+    throw new RangeError('Key length must be from 1 to 1048576 bytes')
+  }
+}
+
+/** x̄ = 2^127 + (x & (2^127 - 1)) as 32 bytes, for a public coordinate x. */
+function xBar(x) {
+  const out = new Uint8Array(SCALAR_BYTES)
+  out.set(x.subarray(16), 16)
+  out[16] = (out[16] & 0x7f) | 0x80
+  return out
+}
+
+function hexOfPoint(x, y) {
+  return encodeHex(x) + encodeHex(y)
+}
+
+/**
+ * Shared secret point t * (peerKey + x̄ * peerEphemeral), for a secret t in bytes.
+ * Returns its coordinates, or throws if it is the point at infinity.
+ */
+function sharedPoint(t, peerKey, peerEphemeral) {
+  const [px, py] = coordinateBytes(peerKey)
+  const [rx, ry] = coordinateBytes(peerEphemeral)
+  const scaledX = new Uint8Array(SCALAR_BYTES)
+  const scaledY = new Uint8Array(SCALAR_BYTES)
+  if (!mulPublic(rx, ry, xBar(rx), scaledX, scaledY)) {
+    throw new Error('Key exchange produced the point at infinity')
+  }
+  const sumX = new Uint8Array(SCALAR_BYTES)
+  const sumY = new Uint8Array(SCALAR_BYTES)
+  const status = affineAdd(px, py, scaledX, scaledY, sumX, sumY)
+  if (status === 0)
+    throw new Error('Key exchange produced the point at infinity')
+  if (status === 2) affineDouble(px, py, sumX, sumY)
+  const x = new Uint8Array(SCALAR_BYTES)
+  const y = new Uint8Array(SCALAR_BYTES)
+  if (!mulPoint(sumX, sumY, t, x, y)) {
+    throw new Error('Key exchange produced the point at infinity')
+  }
+  return [x, y]
+}
+
+/** S = SM3(tag || y || SM3(x || Za || Zb || x1 || y1 || x2 || y2)) */
+function confirmationHash(tag, x, y, Za, Zb, ra, rb) {
+  const h1 = getSM3()
+    .update(x)
+    .update(Za)
+    .update(Zb)
+    .update(ra[0])
+    .update(ra[1])
+    .update(rb[0])
+    .update(rb[1])
+    .digest()
+  return getSM3().update(tag).update(y).update(h1).digest()
+}
+
+/** KDF(x || y || Za || Zb) as keylen bytes */
+function exchangeKdf(keylen, x, y, Za, Zb) {
+  const result = new Uint8Array(keylen)
+  const iterations = Math.ceil(keylen / 32)
+  const counter = new Uint8Array(4)
+  for (let i = 0; i < iterations; i++) {
+    const ct = i + 1
+    counter[0] = ct >>> 24
+    counter[1] = ct >>> 16
+    counter[2] = ct >>> 8
+    counter[3] = ct
+    const block = getSM3()
+      .update(x)
+      .update(y)
+      .update(Za)
+      .update(Zb)
+      .update(counter)
+      .digest()
+    const copyLen = i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
+    for (let j = 0; j < copyLen; j++) result[i * 32 + j] = block[j]
+  }
+  return result
 }
 
 /**
  * SM2 非对称加密算法
  *
  * 提供：加密、解密、签名、验签、密钥交换
+ *
+ * 私钥是恰好 64 位十六进制、取值在 [1, n-2] 的字符串。公钥是 04 开头的 130 位十六
+ * 进制，或 02/03 开头的 66 位压缩格式，且必须在曲线上。
+ * 失败约定：返回布尔值的接口返回 false；其余接口抛出 Error，错误信息不含密钥。
  */
 class SM2 {
   // ---- 加密 / 解密 ----
 
   /**
    * SM2 加密
-   * @param {string|number[]} msg - 明文
-   * @param {string} publicKey - 公钥 hex (04 开头非压缩)
+   * @param {string|number[]|Uint8Array} msg - 明文，不能为空
+   * @param {string} publicKey - 公钥 hex
    * @returns {string} 密文 hex (C1 || C3 || C2)
+   * @throws {Error} 输入不合法
    */
   sm2Encrypt(msg, publicKey) {
     const data = messageBytes(msg)
-    const { d: k, x, y } = generateKeyMaterial()
-    const c1 = '04' + util.bytes2hex(x) + util.bytes2hex(y)
+    if (data.length === 0)
+      throw new Error('SM2 cannot encrypt an empty message')
+    const pubPoint = decodePublicKey(publicKey)
+    const [px, py] = coordinateBytes(pubPoint)
 
-    const pubPoint = curve.decodePointHex(publicKey)
-    const [x2, y2] = coordinateBytes(pubPoint.multiply(k))
-
-    // C3 = SM3(x2 || msg || y2)
-    const c3 = c3Hex(x2, data, y2)
-    // C2 = msg XOR KDF(x2 || y2)
-    kdfXor(x2, y2, data)
-
-    return c1 + c3 + util.bytes2hex(data)
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const { dBytes: k, x, y } = generateKeyMaterial()
+      const x2 = new Uint8Array(SCALAR_BYTES)
+      const y2 = new Uint8Array(SCALAR_BYTES)
+      mulPoint(px, py, k, x2, y2)
+      k.fill(0)
+      // C3 = SM3(x2 || msg || y2)
+      const c3 = computeC3(x2, data, y2)
+      // C2 = msg XOR KDF(x2 || y2)。全零 KDF 时 data 不变，可以直接重试
+      const zeroKdf = kdfXor(x2, y2, data)
+      x2.fill(0)
+      y2.fill(0)
+      if (!zeroKdf) {
+        return '04' + hexOfPoint(x, y) + encodeHex(c3) + encodeHex(data)
+      }
+    }
+    throw new Error('SM2 encryption failed')
   }
 
   /**
    * SM2 解密
-   * @param {string} encryptData - 密文 hex
+   * @param {string} encryptData - 密文 hex (C1 || C3 || C2)
    * @param {string} privateKey - 私钥 hex
-   * @returns {string} 明文
+   * @returns {string} 明文。非法 UTF-8 序列替换为 U+FFFD
+   * @throws {Error} 私钥不合法，或密文被拒绝（格式、C1、C3 错误都抛出同一个错误）
    */
   sm2Decrypt(encryptData, privateKey) {
-    const privKey = new BigInteger(privateKey, 16)
-    const c3 = encryptData.substr(130, 64)
-    const data = util.hexToBytes(encryptData.substr(194))
+    const bytes = decodeHex(encryptData)
+    if (bytes === null || bytes.length < (C1_HEX + C3_HEX) / 2 + 1) {
+      throw new Error(DECRYPT_ERROR)
+    }
+    let c1
+    try {
+      c1 = curve.decodePointHex(encryptData.substring(0, C1_HEX))
+    } catch {
+      throw new Error(DECRYPT_ERROR)
+    }
+    if (bytes[0] !== 4) throw new Error(DECRYPT_ERROR)
+    const key = parsePrivateKey(privateKey)
+    const c3 = bytes.subarray(C1_HEX / 2, (C1_HEX + C3_HEX) / 2)
+    const data = Uint8Array.from(bytes.subarray((C1_HEX + C3_HEX) / 2))
 
-    const c1 = curve.decodePointHex(encryptData.substr(0, 130))
-    curve.validatePoint(c1.getX(), c1.getY())
+    const [cx, cy] = coordinateBytes(c1)
+    const x2 = new Uint8Array(SCALAR_BYTES)
+    const y2 = new Uint8Array(SCALAR_BYTES)
+    mulPoint(cx, cy, key, x2, y2)
+    key.fill(0)
 
-    const [x2, y2] = coordinateBytes(c1.multiply(privKey))
-
-    // 恢复明文
-    kdfXor(x2, y2, data)
-
-    // 验证 C3
-    const checkC3 = c3Hex(x2, data, y2)
-    return equalStrings(checkC3, c3.toLowerCase())
-      ? util.bytesToUTF8String(data)
-      : ''
+    // 恢复明文，并验证 C3
+    const zeroKdf = kdfXor(x2, y2, data)
+    const check = computeC3(x2, data, y2)
+    x2.fill(0)
+    y2.fill(0)
+    const valid = equalBytes(check, c3)
+    if (zeroKdf || !valid) {
+      data.fill(0)
+      throw new Error(DECRYPT_ERROR)
+    }
+    const text = util.bytesToUTF8String(data)
+    data.fill(0)
+    return text
   }
 
   // ---- 签名 / 验签 ----
 
   /**
    * SM2 签名
-   * @param {string} userId - 用户标识
+   * @param {string} userId - 用户标识，最多 8191 字节
    * @param {string} privatekey - 私钥 hex
    * @param {string} msg - 消息
-   * @returns {string} 签名 "r_hex h s_hex"
+   * @returns {string} 签名 "r_hex h s_hex"，r、s 各固定 64 位
+   * @throws {Error} 输入不合法
    */
   sm2Sign(userId, privatekey, msg) {
-    const intPrivateKey = new BigInteger(privatekey, 16)
-    const [px, py] = coordinateBytes(G.multiply(intPrivateKey))
-    const d = privateScalarBytes(intPrivateKey)
+    const d = parsePrivateKey(privatekey)
+    try {
+      const px = new Uint8Array(SCALAR_BYTES)
+      const py = new Uint8Array(SCALAR_BYTES)
+      mulG(d, px, py)
 
-    const e = new SM3()
-      .update(computeZ(px, py, userId))
-      .update(util.stringToBytes(msg))
-      .digest()
+      const e = new SM3()
+        .update(computeZ(px, py, userId))
+        .update(util.stringToBytes(msg))
+        .digest()
 
-    const r = new Uint8Array(32)
-    const s = new Uint8Array(32)
-    const sum = new Uint8Array(32)
-    let nonce
-    do {
-      let rejected
-      do {
-        nonce = generateKeyMaterial()
-        const rNonZero = scalarAdd(r, e, nonce.x)
-        rejected =
-          rNonZero === 0 ||
-          scalarAdd(sum, r, nonce.dBytes) === 0 ||
-          // The signature format needs 64 hex digits with no leading zero.
-          r[0] < 16 ||
-          nonce.x[0] < 16 ||
-          nonce.y[0] < 16
-      } while (rejected)
-    } while (signatureS(s, d, nonce.dBytes, r) === 0 || s[0] < 16)
-
-    nonce.dBytes.fill(0)
-    d.fill(0)
-    return util.bytes2hex(r) + 'h' + util.bytes2hex(s)
+      const r = new Uint8Array(SCALAR_BYTES)
+      const s = new Uint8Array(SCALAR_BYTES)
+      const sum = new Uint8Array(SCALAR_BYTES)
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const { dBytes: k, x } = generateKeyMaterial()
+        const rNonZero = scalarAdd(r, e, x)
+        const rPlusK = scalarAdd(sum, r, k)
+        const accepted =
+          rNonZero !== 0 && rPlusK !== 0 && signatureS(s, d, k, r) !== 0
+        k.fill(0)
+        sum.fill(0)
+        if (accepted) return encodeHex(r) + 'h' + encodeHex(s)
+      }
+      throw new Error('SM2 signing failed')
+    } finally {
+      d.fill(0)
+    }
   }
 
   /**
    * SM2 验签
    * @param {string} userId - 用户标识
-   * @param {string} signData - 签名 "r_hex h s_hex"
+   * @param {string} signData - 签名 "r_hex h s_hex"，r、s 各恰好 64 位且在 [1, n-1]
    * @param {string} message - 消息
    * @param {string} publicKey - 公钥 hex
-   * @returns {boolean}
+   * @returns {boolean} 任何不合法的输入都返回 false，不会抛出
    */
   sm2VerifySign(userId, signData, message, publicKey) {
-    const z = this.userSM3Z(publicKey, userId)
-    const e = new SM3().update(z).update(util.stringToBytes(message)).digest()
-
-    const [sr, ss] = signData.split('h')
-    const r = new BigInteger(sr, 16)
-    const s = new BigInteger(ss, 16)
-    const t = r.add(s).mod(n)
-
-    if (t.equals(ZERO)) return false
-
-    const userKey = decodePublicKey(publicKey)
-    if (s.signum() < 0 || r.signum() < 0 || s.bitLength() > BITS) {
-      return this._verifyGeneric(e, r, s, t, userKey)
+    try {
+      return this._verify(userId, signData, message, publicKey)
+    } catch {
+      return false
     }
-
-    const [qx, qy] = coordinateBytes(userKey)
-    if (!userKey.isValid()) throw new Error('Invalid point')
-
-    // R = (e + x1) mod n equals r exactly when x1 is (r - e) mod n, or that plus n.
-    let candidate = null
-    let candidatePlusN = null
-    if (r.bitLength() <= BITS) {
-      const rBytes = toBytes(r)
-      if (isBelowN(rBytes)) {
-        candidate = new Uint8Array(32)
-        scalarSub(candidate, rBytes, e)
-        candidatePlusN = plusNBelowP(candidate)
-      }
-    }
-    const outcome = verifyCombination(
-      toBytes(s),
-      toBytes(t),
-      qx,
-      qy,
-      candidate,
-      candidatePlusN,
-    )
-    // s*G + t*P at infinity has no x coordinate, and getX reports that by throwing.
-    if (outcome < 0) curve.getInfinity().getX()
-    return outcome === 1
   }
 
-  /** The point-class route, for negative or oversized signature components. */
-  _verifyGeneric(e, r, s, t, userKey) {
-    const x1y1 = G.multiply(s).add(userKey.multiply(t))
-    const R = bytesToBig(e).add(x1y1.getX().toBigInteger()).mod(n)
-    return r.equals(R)
+  _verify(userId, signData, message, publicKey) {
+    if (typeof signData !== 'string') return false
+    const parts = signData.split('h')
+    if (parts.length !== 2) return false
+    if (parts[0].length !== SCALAR_HEX || parts[1].length !== SCALAR_HEX) {
+      return false
+    }
+    const r = decodeHex(parts[0])
+    const s = decodeHex(parts[1])
+    if (
+      r === null ||
+      s === null ||
+      !isInScalarRange(r) ||
+      !isInScalarRange(s)
+    ) {
+      return false
+    }
+    const t = new Uint8Array(SCALAR_BYTES)
+    if (scalarAdd(t, r, s) === 0) return false
+
+    const userKey = decodePublicKey(publicKey)
+    const [qx, qy] = coordinateBytes(userKey)
+    const e = new SM3()
+      .update(computeZ(qx, qy, userId))
+      .update(util.stringToBytes(message))
+      .digest()
+
+    // R = (e + x1) mod n equals r exactly when x1 is (r - e) mod n, or that plus n.
+    if (!isBelowN(r)) return false
+    const candidate = new Uint8Array(SCALAR_BYTES)
+    scalarSub(candidate, r, e)
+    return (
+      verifyCombination(s, t, qx, qy, candidate, plusNBelowP(candidate)) === 1
+    )
   }
 
   // ---- 密钥交换 ----
 
   /**
    * B 侧计算协商密钥和验证值
+   * @param {number} len - 协商密钥字节数，1 到 1048576
+   * @returns {{Sb: string, Rb: object, Kb: string, V: string, Za: string, Zb: string}}
+   *   V 是 x、y 各 64 位的 128 位十六进制。Kb 和 V 是秘密
+   * @throws {Error} 任何密钥、点或长度不合法，或 V 是无穷远点
    */
   getSb(len, pA, Ra, IDa, IDb, dBh, pBh, rbh, Rbh) {
-    const dB = new BigInteger(dBh, 16)
-    const rb = new BigInteger(rbh, 16)
-    const Rb = curve.decodePointHex(Rbh)
+    requireKeyLength(len)
+    const pAPoint = decodePublicKey(pA)
+    const pBPoint = decodePublicKey(pBh)
+    const RaPoint = decodePublicKey(Ra)
+    const Rb = decodePublicKey(Rbh)
+    const [ax, ay] = coordinateBytes(pAPoint)
+    const [bx, by] = coordinateBytes(pBPoint)
+    const Za = computeZ(ax, ay, IDa)
+    const Zb = computeZ(bx, by, IDb)
+    const dB = parsePrivateKey(dBh)
+    const rb = parsePrivateKey(rbh)
 
-    const x2_ = this._calcX(w, Rb.getX().toBigInteger())
-    const tb = this._calcT(n, rb, dB, x2_)
+    const raCoordinates = coordinateBytes(RaPoint)
+    const rbCoordinates = coordinateBytes(Rb)
+    const t = new Uint8Array(SCALAR_BYTES)
+    scalarMulAdd(t, xBar(rbCoordinates[0]), rb, dB)
+    dB.fill(0)
+    rb.fill(0)
+    let vx, vy
+    try {
+      ;[vx, vy] = sharedPoint(t, pAPoint, RaPoint)
+    } finally {
+      t.fill(0)
+    }
 
-    const RaPoint = curve.decodePointHex(Ra)
-    if (!RaPoint.isValid()) throw new Error('Ra is not valid')
-
-    const x1_ = this._calcX(w, RaPoint.getX().toBigInteger())
-    const V = this._calcPoint(tb, x1_, curve.decodePointHex(pA), RaPoint)
-
-    if (V.isInfinity()) throw new Error('V is invalid point')
-
-    const Za = this.userSM3Z(pA, IDa)
-    const Zb = this.userSM3Z(pBh, IDb)
-    const Kb = this._KDF(len, V, Za, Zb)
-    const Sb = this._createS(0x02, V, Za, Zb, RaPoint, Rb)
+    const Kb = exchangeKdf(len, vx, vy, Za, Zb)
+    const Sb = confirmationHash(
+      SIGN_TAG,
+      vx,
+      vy,
+      Za,
+      Zb,
+      raCoordinates,
+      rbCoordinates,
+    )
 
     return {
-      Sb: util.bytes2hex(Sb),
+      Sb: encodeHex(Sb),
       Rb,
-      Kb: util.bytes2hex(Kb),
-      V: V.x.toBigInteger().toRadix(16) + V.y.toBigInteger().toRadix(16),
-      Za: util.bytes2hex(Za),
-      Zb: util.bytes2hex(Zb),
+      Kb: encodeHex(Kb),
+      V: hexOfPoint(vx, vy),
+      Za: encodeHex(Za),
+      Zb: encodeHex(Zb),
     }
   }
 
   /**
-   * B 侧检查 Sa
+   * B 侧检查 Sa。比较不提前退出
+   * @param {string} V - getSb 返回的 128 位十六进制
+   * @param {string} Sa - A 侧发来的验证值，恰好 64 位小写十六进制
+   * @returns {boolean} 任何不合法的输入都返回 false，不会抛出
    */
   checkSa(V, Za, Zb, Ra, Rb, Sa) {
-    const S2 = this._createS(
-      0x03,
-      curve.decodePointHex('04' + V),
-      util.hexToArray(Za),
-      util.hexToArray(Zb),
-      curve.decodePointHex(Ra),
-      Rb,
+    try {
+      if (typeof Sa !== 'string' || Sa.length !== SCALAR_HEX) return false
+      if (typeof V !== 'string' || V.length !== 2 * SCALAR_HEX) return false
+      const vPoint = decodePublicKey('04' + V)
+      const za = decodeHex(Za)
+      const zb = decodeHex(Zb)
+      if (za === null || zb === null) return false
+      if (za.length !== SCALAR_BYTES || zb.length !== SCALAR_BYTES) return false
+      const raPoint = decodePublicKey(Ra)
+      if (Rb === null || typeof Rb !== 'object') return false
+      Rb._requireUsable()
+      const [vx, vy] = coordinateBytes(vPoint)
+      const S2 = confirmationHash(
+        CONFIRM_TAG,
+        vx,
+        vy,
+        za,
+        zb,
+        coordinateBytes(raPoint),
+        coordinateBytes(Rb),
+      )
+      return equalStrings(Sa, encodeHex(S2))
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * A 侧验证 Sb，并计算 Sa 和协商密钥。比较 Sb 时不提前退出
+   * @param {number} len - 协商密钥字节数，1 到 1048576
+   * @param {string} pB - B 的公钥 hex
+   * @param {string} Rb - B 的临时公钥 hex
+   * @param {string} pA - A 的公钥 hex
+   * @param {string} Ra - A 的临时公钥 hex
+   * @param {string} IDa - A 的用户标识
+   * @param {string} IDb - B 的用户标识
+   * @param {string} dAh - A 的私钥 hex
+   * @param {string} rah - A 的临时私钥 hex
+   * @param {string} Sb - B 发来的验证值
+   * @returns {{Sa: string, Ka: string}} Ka 是秘密
+   * @throws {Error} 任何输入不合法，或 Sb 不匹配
+   */
+  getSa(len, pB, Rb, pA, Ra, IDa, IDb, dAh, rah, Sb) {
+    requireKeyLength(len)
+    const pAPoint = decodePublicKey(pA)
+    const pBPoint = decodePublicKey(pB)
+    const RaPoint = decodePublicKey(Ra)
+    const RbPoint = decodePublicKey(Rb)
+    const [ax, ay] = coordinateBytes(pAPoint)
+    const [bx, by] = coordinateBytes(pBPoint)
+    const Za = computeZ(ax, ay, IDa)
+    const Zb = computeZ(bx, by, IDb)
+    const dA = parsePrivateKey(dAh)
+    const ra = parsePrivateKey(rah)
+
+    const raCoordinates = coordinateBytes(RaPoint)
+    const rbCoordinates = coordinateBytes(RbPoint)
+    const t = new Uint8Array(SCALAR_BYTES)
+    scalarMulAdd(t, xBar(raCoordinates[0]), ra, dA)
+    dA.fill(0)
+    ra.fill(0)
+    let ux, uy
+    try {
+      ;[ux, uy] = sharedPoint(t, pBPoint, RbPoint)
+    } finally {
+      t.fill(0)
+    }
+
+    const expected = confirmationHash(
+      SIGN_TAG,
+      ux,
+      uy,
+      Za,
+      Zb,
+      raCoordinates,
+      rbCoordinates,
     )
-    return equalStrings(Sa, util.bytes2hex(S2))
+    if (!equalStrings(Sb, encodeHex(expected))) {
+      throw new Error('Key exchange confirmation failed')
+    }
+    const Sa = confirmationHash(
+      CONFIRM_TAG,
+      ux,
+      uy,
+      Za,
+      Zb,
+      raCoordinates,
+      rbCoordinates,
+    )
+    const Ka = exchangeKdf(len, ux, uy, Za, Zb)
+    const result = { Sa: encodeHex(Sa), Ka: encodeHex(Ka) }
+    Ka.fill(0)
+    ux.fill(0)
+    uy.fill(0)
+    return result
   }
 
   // ---- 公钥计算 ----
@@ -327,10 +593,15 @@ class SM2 {
    * 从私钥计算公钥
    * @param {string} privateKey - 私钥 hex
    * @returns {string} 公钥 hex (04 开头)
+   * @throws {Error} 私钥不合法
    */
   getPublicKeyFromPrivateKey(privateKey) {
-    const [x, y] = coordinateBytes(G.multiply(new BigInteger(privateKey, 16)))
-    return '04' + util.bytes2hex(x) + util.bytes2hex(y)
+    const d = parsePrivateKey(privateKey)
+    const x = new Uint8Array(SCALAR_BYTES)
+    const y = new Uint8Array(SCALAR_BYTES)
+    mulG(d, x, y)
+    d.fill(0)
+    return '04' + hexOfPoint(x, y)
   }
 
   /**
@@ -348,6 +619,7 @@ class SM2 {
 
   /**
    * 计算用户标识哈希 Z = SM3(ENTL || userId || a || b || gx || gy || px || py)
+   * @throws {Error} 公钥不合法，或 userId 超过 8191 字节
    */
   userSM3Z(publicKey, userId = '1234567812345678') {
     const [px, py] = coordinateBytes(decodePublicKey(publicKey))
@@ -366,9 +638,10 @@ class SM2 {
       db.signum() >= 0 &&
       rb.bitLength() <= BITS &&
       db.bitLength() <= BITS &&
+      x2_.signum() >= 0 &&
       x2_.bitLength() <= BITS
     ) {
-      const out = new Uint8Array(32)
+      const out = new Uint8Array(SCALAR_BYTES)
       scalarMulAdd(out, toBytes(x2_), toBytes(rb), toBytes(db))
       return bytesToBig(out)
     }
@@ -381,44 +654,21 @@ class SM2 {
 
   _createS(tag, vu, Za, Zb, Ra, Rb) {
     const [vx, vy] = coordinateBytes(vu)
-    const [rax, ray] = coordinateBytes(Ra)
-    const [rbx, rby] = coordinateBytes(Rb)
-    const h1 = getSM3()
-      .update(vx)
-      .update(Za)
-      .update(Zb)
-      .update(rax)
-      .update(ray)
-      .update(rbx)
-      .update(rby)
-      .digest()
-    return getSM3().update(tag).update(vy).update(h1).digest()
+    return confirmationHash(
+      tag,
+      vx,
+      vy,
+      Za,
+      Zb,
+      coordinateBytes(Ra),
+      coordinateBytes(Rb),
+    )
   }
 
   _KDF(keylen, vu, Za, Zb) {
-    const result = new Array(keylen)
-    const iterations = Math.ceil(keylen / 32)
-    if (iterations === 0) return result
+    requireKeyLength(keylen)
     const [vx, vy] = coordinateBytes(vu)
-    const counter = new Uint8Array(4)
-    for (let i = 0; i < iterations; i++) {
-      const ct = i + 1
-      counter[0] = ct >>> 24
-      counter[1] = ct >>> 16
-      counter[2] = ct >>> 8
-      counter[3] = ct
-      const block = getSM3()
-        .update(vx)
-        .update(vy)
-        .update(Za)
-        .update(Zb)
-        .update(counter)
-        .digest()
-      const copyLen =
-        i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
-      for (let j = 0; j < copyLen; j++) result[i * 32 + j] = block[j]
-    }
-    return result
+    return Array.from(exchangeKdf(keylen, vx, vy, Za, Zb))
   }
 }
 

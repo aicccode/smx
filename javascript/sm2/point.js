@@ -160,6 +160,29 @@ function isZeroVar(a) {
   return fpIsZeroMask(a) !== 0
 }
 
+/**
+ * Best-effort erasure of intermediate values derived from a secret scalar. The
+ * garbage collector may have copied or may retain what JavaScript cannot reach.
+ */
+function wipeSecretScratch() {
+  for (const a of FORMULA_SCRATCH) a.fill(0)
+  for (const p of SCRATCH_POINTS) {
+    p.x.fill(0)
+    p.y.fill(0)
+    p.z.fill(0)
+  }
+  selAcc.fill(0)
+  selX.fill(0)
+  selY.fill(0)
+  varTable.fill(0)
+  scalarBytes.fill(0)
+  fixedDigits.fill(0)
+  varDigits.fill(0)
+  affineZ.fill(0)
+  affineZ2.fill(0)
+  affineTmp.fill(0)
+}
+
 // ---- conversion ----
 
 const affineZ = feNew()
@@ -371,11 +394,10 @@ export function mulG(k, outX, outY) {
     feSelect(R.z, R.z, T.z, nonzero)
     infinity &= ~nonzero
   }
-  fixedDigits.fill(0)
-  scalarBytes.fill(0)
-  if (infinity !== 0) return false
-  toAffineBytes(R, outX, outY)
-  return true
+  const finite = infinity === 0
+  if (finite) toAffineBytes(R, outX, outY)
+  wipeSecretScratch()
+  return finite
 }
 
 // ---- secret scalar: variable base ----
@@ -391,6 +413,9 @@ const varR = new Jacobian()
 const varS = new Jacobian()
 const varT = new Jacobian()
 const varD = new Jacobian()
+
+const FORMULA_SCRATCH = [t0, t1, t2, t3, t4, t5, t6, addH, addR, scalarFe]
+const SCRATCH_POINTS = [fixedR, fixedT, varBase, varR, varS, varT, varD]
 
 function storeJacobian(table, index, p) {
   const base = index * VAR_POINT_SIZE
@@ -472,11 +497,10 @@ export function mulPoint(px, py, k, outX, outY) {
     feSelect(R.z, R.z, T.z, nonzero)
     infinity &= ~nonzero
   }
-  varDigits.fill(0)
-  scalarBytes.fill(0)
-  if (infinity !== 0 || fpIsZeroMask(R.z) !== 0) return false
-  toAffineBytes(R, outX, outY)
-  return true
+  const finite = infinity === 0 && fpIsZeroMask(R.z) === 0
+  if (finite) toAffineBytes(R, outX, outY)
+  wipeSecretScratch()
+  return finite
 }
 
 // ---- public scalars: wNAF, variable time ----

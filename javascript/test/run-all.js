@@ -67,7 +67,8 @@ console.log('\n=== SM4 ===')
 {
   // 旧 API
   const sm4 = getSM4()
-  sm4.setKey('this is the key', 'this is the iv', false)
+  // 文本密钥的哈希派生已移除：这里直接写出它当年派生出的 16 字节密钥和 IV
+  sm4.setKey('157224F19FD4C080', '65B06A99625C008A', false)
   const msg = '国密SM4对称加密算法'
   const c = sm4.encrypt(msg)
   assertEqual(
@@ -81,7 +82,7 @@ console.log('\n=== SM4 ===')
 {
   // 新 API
   const sm4 = new SM4()
-  sm4.setKey('this is the key', 'this is the iv')
+  sm4.setKey('157224F19FD4C080', '65B06A99625C008A')
   const msg = '国密SM4对称加密算法'
   const c = sm4.encrypt(msg)
   assertEqual(

@@ -2,33 +2,36 @@
  * 公共工具函数 —— hex / bytes / string 转换
  * 统一使用 Uint8Array，消除有符号字节的复杂性
  */
-
-import { HEX_CODES, HEX_PAIRS, decodeStrictHex, parseHexPair } from './hex.js'
+import {
+  decodeHex,
+  encodeHex,
+  requireWellFormedString,
+  toByteArray,
+} from './hex.js'
 
 const encoder = new TextEncoder()
-const decoder = new TextDecoder('utf-8')
+// ignoreBOM keeps a leading U+FEFF, so UTF-8 round trips are exact.
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
 
 /**
  * 字符串 → UTF-8 字节数组
  * @param {string} str
  * @returns {Uint8Array}
+ * @throws {TypeError} 非字符串，或包含未配对的代理项
  */
 export function stringToBytes(str) {
+  requireWellFormedString(str)
   return encoder.encode(str)
 }
 
 /**
- * UTF-8 字节数组 → 字符串
+ * UTF-8 字节数组 → 字符串。非法序列替换为 U+FFFD
  * @param {Uint8Array|number[]} bytes
  * @returns {string}
  */
 export function bytesToString(bytes) {
-  if (bytes instanceof Uint8Array) return decoder.decode(bytes)
-  return decoder.decode(new Uint8Array(bytes))
+  return decoder.decode(toByteArray(bytes))
 }
-
-/** Above this size, filling char codes and decoding beats concatenating strings. */
-const HEX_DECODE_THRESHOLD = 256
 
 /**
  * 字节数组 → 十六进制字符串（小写）
@@ -36,33 +39,18 @@ const HEX_DECODE_THRESHOLD = 256
  * @returns {string}
  */
 export function bytesToHex(bytes) {
-  const n = bytes.length
-  if (n < HEX_DECODE_THRESHOLD) {
-    let hex = ''
-    for (let i = 0; i < n; i++) hex += HEX_PAIRS[bytes[i] & 0xff]
-    return hex
-  }
-  const out = new Uint8Array(2 * n)
-  for (let i = 0; i < n; i++) {
-    const b = (bytes[i] & 0xff) << 1
-    out[2 * i] = HEX_CODES[b]
-    out[2 * i + 1] = HEX_CODES[b + 1]
-  }
-  return decoder.decode(out)
+  return encodeHex(toByteArray(bytes))
 }
 
 /**
  * 十六进制字符串 → Uint8Array
- * @param {string} hex
+ * @param {string} hex - 偶数长度，只含十六进制数字
  * @returns {Uint8Array}
+ * @throws {Error} 不是合法的十六进制串
  */
 export function hexToBytes(hex) {
-  if (hex.length & 1) hex = '0' + hex
-  const strict = decodeStrictHex(hex)
-  if (strict !== null) return strict
-  const len = hex.length >>> 1
-  const bytes = new Uint8Array(len)
-  for (let i = 0; i < len; i++) bytes[i] = parseHexPair(hex, i)
+  const bytes = decodeHex(hex)
+  if (bytes === null) throw new Error('Invalid hex string')
   return bytes
 }
 
@@ -102,6 +90,10 @@ export function bytesToIntBE(bytes, offset) {
  * @returns {string}
  */
 export function leftPad(str, len) {
+  if (typeof str !== 'string') throw new TypeError('Expected a string')
+  if (!Number.isSafeInteger(len) || len < 0) {
+    throw new RangeError('Invalid pad length')
+  }
   if (str.length >= len) return str
   return '0'.repeat(len - str.length) + str
 }

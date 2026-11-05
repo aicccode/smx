@@ -1,49 +1,105 @@
 /**
- * Hex tables and strict decoding shared inside this package.
+ * Hex and byte validation helpers. Internal module, not part of the public API.
  *
- * Internal module, not part of the public API: common/utils.js is re-exported
- * from index.js, so these helpers must not live there.
+ * Hex values may be secret (keys, nonces), so encoding and decoding use arithmetic
+ * masks, with no branch or table lookup that depends on a digit. Only the final
+ * valid or invalid result is branched on.
  */
 
-/** "00" to "ff" */
-export const HEX_PAIRS = Array.from({ length: 256 }, (_, i) =>
-  i.toString(16).padStart(2, '0'),
-)
-
-export const HEX_CODES = new Uint8Array(512)
-for (let i = 0; i < 256; i++) {
-  HEX_CODES[2 * i] = HEX_PAIRS[i].charCodeAt(0)
-  HEX_CODES[2 * i + 1] = HEX_PAIRS[i].charCodeAt(1)
-}
-
-/** Char code to hex value, or 255 for anything that is not a hex digit. */
-const HEX_VALUES = new Uint8Array(256).fill(255)
-for (let i = 0; i < 16; i++) {
-  HEX_VALUES['0123456789abcdef'.charCodeAt(i)] = i
-  HEX_VALUES['0123456789ABCDEF'.charCodeAt(i)] = i
+/** Value of a hex digit, or a negative number for anything else. */
+function digitValue(c) {
+  const digit = c - 48
+  const letter = (c | 32) - 97
+  const notDigit = (digit | (9 - digit)) >> 31
+  const notLetter = (letter | (5 - letter)) >> 31
+  return (
+    (digit & ~notDigit) | ((letter + 10) & ~notLetter) | (notDigit & notLetter)
+  )
 }
 
 /**
- * Decodes an even-length string of hex digits, or returns null if any other
- * character appears. Callers fall back to parseHexPair.
+ * Decodes a string of an even number of hex digits, in either case.
+ * @param {string} hex
+ * @returns {Uint8Array|null} null unless the whole string is valid
  */
-export function decodeStrictHex(hex) {
+export function decodeHex(hex) {
+  if (typeof hex !== 'string' || (hex.length & 1) !== 0) return null
   const n = hex.length >>> 1
   const out = new Uint8Array(n)
   let bad = 0
   for (let i = 0; i < n; i++) {
-    const a = hex.charCodeAt(2 * i)
-    const b = hex.charCodeAt(2 * i + 1)
-    if ((a | b) > 255) return null
-    const high = HEX_VALUES[a]
-    const low = HEX_VALUES[b]
+    const high = digitValue(hex.charCodeAt(2 * i))
+    const low = digitValue(hex.charCodeAt(2 * i + 1))
     bad |= high | low
     out[i] = (high << 4) | low
   }
-  return bad > 15 ? null : out
+  if (bad < 0) {
+    out.fill(0)
+    return null
+  }
+  return out
 }
 
-/** The historical parse of a malformed pair, kept for its exact results. */
-export function parseHexPair(hex, index) {
-  return parseInt(hex.substring(2 * index, 2 * index + 2), 16)
+const decoder = new TextDecoder('utf-8')
+const FROM_CHAR_CODE_LIMIT = 4096
+
+/** Lowercase hex of a Uint8Array. */
+export function encodeHex(bytes) {
+  const n = bytes.length
+  const codes = new Uint8Array(2 * n)
+  for (let i = 0; i < n; i++) {
+    const b = bytes[i]
+    const high = b >>> 4
+    const low = b & 15
+    codes[2 * i] = high + 48 + (((9 - high) >> 31) & 39)
+    codes[2 * i + 1] = low + 48 + (((9 - low) >> 31) & 39)
+  }
+  return codes.length <= FROM_CHAR_CODE_LIMIT
+    ? String.fromCharCode.apply(null, codes)
+    : decoder.decode(codes)
+}
+
+const typedArrayTag = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+).get
+
+const SIGNED_BYTE_MIN = -128
+const UNSIGNED_BYTE_MAX = 255
+
+/**
+ * Accepts a Uint8Array (returned as is), an Int8Array, or an array of integers in
+ * [-128, 255], the historical signed-byte form. Anything else would have to be
+ * silently truncated to be used as bytes, so it throws.
+ * @returns {Uint8Array}
+ */
+export function toByteArray(data) {
+  if (data instanceof Uint8Array) return data
+  const tag = typedArrayTag.call(data)
+  // The tag also recognises typed arrays from other realms, such as an iframe.
+  if (tag === 'Uint8Array') return data
+  if (tag === 'Int8Array') {
+    return new Uint8Array(data.buffer, data.byteOffset, data.length)
+  }
+  if (!Array.isArray(data)) throw new TypeError('Expected a byte array')
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i]
+    if (!Number.isInteger(v) || v < SIGNED_BYTE_MIN || v > UNSIGNED_BYTE_MAX) {
+      throw new TypeError('Expected a byte array')
+    }
+  }
+  return Uint8Array.from(data)
+}
+
+const LONE_SURROGATE = /\p{Surrogate}/u
+
+/**
+ * Throws on a non-string or a string with unpaired surrogates. UTF-8 encoding would
+ * replace those with U+FFFD, so distinct strings would hash and sign identically.
+ */
+export function requireWellFormedString(s) {
+  if (typeof s !== 'string') throw new TypeError('Expected a string')
+  if (LONE_SURROGATE.test(s)) {
+    throw new TypeError('String contains an unpaired surrogate')
+  }
 }

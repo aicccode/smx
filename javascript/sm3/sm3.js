@@ -1,4 +1,8 @@
+import { toByteArray } from '../common/hex.js'
 import { stringToBytes, bytesToHex, intToBytesBE } from '../common/utils.js'
+
+/** 超过这个长度 _len 不再是精确整数，所以限制更严，仍低于标准上限 2^61 - 1 */
+const MAX_TRACKED_BYTES = Number.MAX_SAFE_INTEGER
 
 /** SM3 初始向量 */
 const IV = new Int32Array([
@@ -13,6 +17,8 @@ for (let j = 0; j < 64; j++) {
   const n = j % 32
   T[j] = n === 0 ? t : (t << n) | (t >>> (32 - n))
 }
+
+const SINGLE_BYTE = new Uint8Array(1)
 
 /** 消息扩展缓冲区：可复用，因为压缩函数不会重入 */
 const W = new Int32Array(68)
@@ -139,29 +145,27 @@ export class SM3 {
     this._V = new Int32Array(IV) // 当前哈希状态
     this._finished = false
     this._hashBytes = null // finish() 的结果
-    this._hashValue = null // 由 _hashBytes 按需生成
+    this._hashValue = null
   }
 
   /**
    * 输入数据（支持单个字节或字节数组）
-   * @param {number|Uint8Array|number[]} data - 单个字节 (0-255) 或字节数组
+   * @param {number|Uint8Array|number[]} data - 单个字节 (-128 到 255) 或字节数组
    * @returns {SM3}
+   * @throws {TypeError} 不是字节数据，或 digest() 之后继续输入
    */
   update(data) {
+    this._requireOpen()
     if (typeof data === 'number') {
-      this._buf[this._pos++] = data & 0xff
-      this._len++
-      if (this._pos === 64) {
-        compress(this._V, this._buf, 0, 1)
-        this._pos = 0
+      if (!Number.isInteger(data) || data < -128 || data > 255) {
+        throw new TypeError('Expected a byte value')
       }
+      SINGLE_BYTE[0] = data
+      this._absorb(SINGLE_BYTE, 0, 1)
       return this
     }
-    if (data instanceof Uint8Array) {
-      this._absorb(data, 0, data.length)
-      return this
-    }
-    this._absorbGeneric(data, 0, data.length)
+    const bytes = toByteArray(data)
+    this._absorb(bytes, 0, bytes.length)
     return this
   }
 
@@ -180,18 +184,21 @@ export class SM3 {
    * @param {number} offset
    * @param {number} length
    * @returns {SM3}
+   * @throws {TypeError|RangeError} 不是字节数据，或区间超出数组范围
    */
   updateBytes(data, offset, length) {
+    this._requireOpen()
+    const bytes = toByteArray(data)
     if (
-      data instanceof Uint8Array &&
-      offset >= 0 &&
-      length >= 0 &&
-      offset + length <= data.length
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) ||
+      offset < 0 ||
+      length < 0 ||
+      offset + length > bytes.length
     ) {
-      this._absorb(data, offset, length)
-    } else {
-      this._absorbGeneric(data, offset, length)
+      throw new RangeError('Range is outside the input')
     }
+    this._absorb(bytes, offset, length)
     return this
   }
 
@@ -224,7 +231,8 @@ export class SM3 {
   /** @deprecated 使用 digest() / hexDigest() */
   finish() {
     this._hashBytes = this.digest()
-    this._hashValue = null
+    // Computed now: getHashBytes hands out this array, and the caller may change it.
+    this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
     // 重置状态以支持复用
     this._V.set(IV)
     this._pos = 0
@@ -235,11 +243,7 @@ export class SM3 {
 
   /** @deprecated 使用 hexDigest() */
   getHashCode() {
-    if (this._hashBytes === null) return undefined
-    if (this._hashValue === null) {
-      this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
-    }
-    return this._hashValue
+    return this._hashValue === null ? undefined : this._hashValue
   }
 
   /** @deprecated 使用 digest() */
@@ -251,6 +255,9 @@ export class SM3 {
 
   /** 整块直接在输入上压缩，只把不足一块的部分放入缓冲区 */
   _absorb(data, offset, length) {
+    if (this._len + length > MAX_TRACKED_BYTES) {
+      throw new RangeError('SM3 input is too long')
+    }
     this._len += length
     const buf = this._buf
     let pos = this._pos
@@ -267,9 +274,10 @@ export class SM3 {
       }
     }
     if (remaining >= 64) {
-      const blocks = remaining >>> 6
+      // Plain division: lengths can exceed the 32-bit range of shift operators.
+      const blocks = Math.floor(remaining / 64)
       compress(this._V, data, offset, blocks)
-      const consumed = blocks << 6
+      const consumed = blocks * 64
       offset += consumed
       remaining -= consumed
     }
@@ -277,21 +285,17 @@ export class SM3 {
     this._pos = pos + remaining
   }
 
-  /** 普通数组等输入：逐字节截断为 0-255 */
-  _absorbGeneric(data, offset, length) {
-    for (let i = 0; i < length; i++) {
-      this._buf[this._pos++] = data[offset + i] & 0xff
-      this._len++
-      if (this._pos === 64) {
-        compress(this._V, this._buf, 0, 1)
-        this._pos = 0
-      }
+  _requireOpen() {
+    if (this._finished) {
+      throw new TypeError('SM3 cannot accept input after digest()')
     }
   }
 
   /** 消息填充 */
   _pad() {
-    const bitLen = this._len * 8
+    // 位长度是 64 位：分别计算高低 32 位，避免浮点精度损失
+    const lengthHigh = Math.floor(this._len / 0x20000000)
+    const lengthLow = ((this._len % 0x20000000) * 8) >>> 0
 
     // 追加 0x80
     this._buf[this._pos++] = 0x80
@@ -305,8 +309,8 @@ export class SM3 {
     this._buf.fill(0, this._pos, 56)
     this._pos = 56
     // 追加 64 位大端序消息长度（JS 安全整数范围内用两个 32 位写入）
-    intToBytesBE(Math.floor(bitLen / 0x100000000), this._buf, 56)
-    intToBytesBE(bitLen >>> 0, this._buf, 60)
+    intToBytesBE(lengthHigh, this._buf, 56)
+    intToBytesBE(lengthLow, this._buf, 60)
     compress(this._V, this._buf, 0, 1)
   }
 

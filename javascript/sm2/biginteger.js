@@ -1,12 +1,47 @@
 /**
  * BigInteger 大整数运算库
+ *
+ * Variable-time general arithmetic. Do not use it on secrets: the SM2 code in this
+ * package handles private keys and nonces as bytes through dedicated modules.
  */
+import { randomFill } from '../common/rng.js'
 
 // ---- 模块级常量 ----
 
 const DB = 28 // 每个 digit 的位数（统一用 am3 策略）
 const DM = (1 << DB) - 1 // digit 掩码
 const DV = 1 << DB // digit 值上限
+
+// Size limits, so that no call can run away on crafted input: larger than any use
+// in this library, and small enough that every operation finishes.
+const MAX_BITS = 1 << 17
+const MAX_DIGITS = Math.ceil(MAX_BITS / DB) + 2
+const MAX_MODPOW_BITS = 8192
+const MAX_RANDOM_ARRAY_LENGTH = 1 << 24
+const MAX_PRIME_BITS = 4096
+const MAX_PRIME_SEARCH_BASE = 4096
+const MAX_PRIME_SEARCH_PER_BIT = 64
+
+function requireDigits(n) {
+  if (!(n <= MAX_DIGITS)) throw new RangeError('BigInteger is too large')
+}
+
+function requireCount(n, max) {
+  if (!Number.isInteger(n) || n < 0 || n > max) {
+    throw new RangeError('Count is out of range')
+  }
+}
+
+/** Duck-typed values could claim any digit count, and the loops trust that count. */
+function requireBigInteger(a) {
+  if (!(a instanceof BigInteger)) throw new TypeError('Expected a BigInteger')
+}
+
+function requireRadix(b) {
+  if (!Number.isInteger(b) || b < 2 || b > 36) {
+    throw new RangeError('Radix must be an integer from 2 to 36')
+  }
+}
 
 const BI_FP = 52
 const FV = Math.pow(2, BI_FP)
@@ -42,6 +77,32 @@ const LP_LIM = (1 << 26) / LOW_PRIMES[LOW_PRIMES.length - 1]
 function nbi() {
   return new BigInteger(null)
 }
+function isByteSequence(a) {
+  return Array.isArray(a) || a instanceof Uint8Array
+}
+
+/** Exactly an optional leading minus and at least one digit valid in radix b. */
+function requireDigitString(s, b) {
+  const start = s.charCodeAt(0) === 45 ? 1 : 0
+  if (s.length === start) throw new Error('Invalid number string')
+  requireDigits(Math.ceil(((s.length - start) * Math.log2(b)) / DB))
+  for (let i = start; i < s.length; i++) {
+    const c = BI_RC[s.charCodeAt(i)]
+    if (c == null || c >= b) throw new Error('Invalid number string')
+  }
+}
+
+const WITNESS_BYTE = new Uint8Array(1)
+
+/** A uniformly chosen small prime, as a Miller-Rabin witness. */
+function randomLowPrime() {
+  const limit = 256 - (256 % LOW_PRIMES.length)
+  do {
+    randomFill(WITNESS_BYTE)
+  } while (WITNESS_BYTE[0] >= limit)
+  return LOW_PRIMES[WITNESS_BYTE[0] % LOW_PRIMES.length]
+}
+
 function nbv(i) {
   const r = nbi()
   r.fromInt(i)
@@ -120,15 +181,18 @@ export class BigInteger {
     // Fixed shape from the start keeps property access monomorphic for the JIT.
     this.t = 0
     this.s = 0
-    if (a != null) {
+    if (a === undefined) throw new TypeError('BigInteger needs a value')
+    if (a !== null) {
       if (typeof a === 'number') this.fromNumber(a, b, c)
-      else if (b == null && typeof a !== 'string') this.fromString(a, 256)
-      else this.fromString(a, b)
+      else if (typeof a === 'string') this.fromString(a, b)
+      else if (b == null && isByteSequence(a)) this.fromString(a, 256)
+      else throw new TypeError('Unsupported BigInteger value')
     }
   }
 
   /** am3: 28-bit 乘法累加（适合所有现代 JS 引擎） */
   am(i, x, w, j, c, n) {
+    requireDigits(n)
     const xl = x & 0x3fff,
       xh = x >> 14
     while (--n >= 0) {
@@ -151,6 +215,9 @@ export class BigInteger {
   }
 
   fromInt(x) {
+    if (!Number.isInteger(x) || x >= DV || x <= -DV) {
+      throw new RangeError('fromInt needs an integer below one digit')
+    }
     this.t = 1
     this.s = x < 0 ? -1 : 0
     if (x > 0) this[0] = x
@@ -159,6 +226,14 @@ export class BigInteger {
   }
 
   fromString(s, b) {
+    if (typeof s === 'string') {
+      requireRadix(b == null ? 10 : b)
+      requireDigitString(s, b == null ? 10 : b)
+    } else if (!isByteSequence(s) || b !== 256) {
+      throw new TypeError('Unsupported BigInteger value')
+    } else {
+      requireDigits(Math.ceil((s.length * 8) / DB))
+    }
     let k
     if (b === 16) k = 4
     else if (b === 8) k = 3
@@ -245,7 +320,9 @@ export class BigInteger {
 
   toRadix(b) {
     if (b == null) b = 10
-    if (this.signum() === 0 || b < 2 || b > 36) return '0'
+    requireRadix(b)
+    if (this.signum() === 0) return '0'
+    if (this.s < 0) return '-' + this.negate().toRadix(b)
     // Positive values in a power-of-2 radix need no division.
     if (
       this.s === 0 &&
@@ -297,14 +374,18 @@ export class BigInteger {
   }
 
   fromNumber(a, b, c) {
+    requireCount(a, MAX_BITS)
     if (typeof b === 'number') {
       if (a < 2) this.fromInt(1)
       else {
+        if (a > MAX_PRIME_BITS) throw new RangeError('Prime size is too large')
         this.fromNumber(a, c)
         if (!this.testBit(a - 1))
           this.bitwiseTo(BigInteger.ONE.shiftLeft(a - 1), op_or, this)
         if (this.isEven()) this.dAddOffset(1, 0)
+        let tries = MAX_PRIME_SEARCH_BASE + MAX_PRIME_SEARCH_PER_BIT * a
         while (!this.isProbablePrime(b)) {
+          if (--tries < 0) throw new Error('Prime search failed')
           this.dAddOffset(2, 0)
           if (this.bitLength() > a)
             this.subTo(BigInteger.ONE.shiftLeft(a - 1), this)
@@ -367,6 +448,7 @@ export class BigInteger {
   }
 
   compareTo(a) {
+    requireBigInteger(a)
     let r = this.s - a.s
     if (r !== 0) return r
     let i = this.t
@@ -421,6 +503,8 @@ export class BigInteger {
   // ---- 位移操作 ----
 
   dlShiftTo(n, r) {
+    requireCount(n, MAX_DIGITS)
+    requireDigits(this.t + n)
     for (let i = this.t - 1; i >= 0; --i) r[i + n] = this[i]
     for (let i = n - 1; i >= 0; --i) r[i] = 0
     r.t = this.t + n
@@ -428,12 +512,15 @@ export class BigInteger {
   }
 
   drShiftTo(n, r) {
+    requireCount(n, MAX_DIGITS)
     for (let i = n; i < this.t; ++i) r[i - n] = this[i]
     r.t = Math.max(this.t - n, 0)
     r.s = this.s
   }
 
   lShiftTo(n, r) {
+    requireCount(n, MAX_BITS)
+    requireDigits(this.t + Math.ceil(n / DB) + 1)
     const bs = n % DB
     const cbs = DB - bs
     const bm = (1 << cbs) - 1
@@ -451,6 +538,7 @@ export class BigInteger {
   }
 
   rShiftTo(n, r) {
+    requireCount(n, MAX_BITS)
     r.s = this.s
     const ds = Math.floor(n / DB)
     if (ds >= this.t) {
@@ -487,6 +575,7 @@ export class BigInteger {
   // ---- 加减乘除 ----
 
   addTo(a, r) {
+    requireBigInteger(a)
     let i = 0,
       c = 0
     const m = Math.min(a.t, this.t)
@@ -520,6 +609,7 @@ export class BigInteger {
   }
 
   subTo(a, r) {
+    requireBigInteger(a)
     let i = 0,
       c = 0
     const m = Math.min(a.t, this.t)
@@ -553,8 +643,10 @@ export class BigInteger {
   }
 
   multiplyTo(a, r) {
+    requireBigInteger(a)
     const x = this.abs(),
       y = a.abs()
+    requireDigits(x.t + y.t)
     let i = x.t
     r.t = i + y.t
     while (--i >= 0) r[i] = 0
@@ -566,6 +658,7 @@ export class BigInteger {
 
   squareTo(r) {
     const x = this.abs()
+    requireDigits(2 * x.t)
     let i = (r.t = 2 * x.t)
     while (--i >= 0) r[i] = 0
     for (i = 0; i < x.t - 1; ++i) {
@@ -584,8 +677,9 @@ export class BigInteger {
   }
 
   divRemTo(m, q, r) {
+    requireBigInteger(m)
     const pm = m.abs()
-    if (pm.t <= 0) return
+    if (pm.signum() === 0) throw new RangeError('Division by zero')
     const pt = this.abs()
     if (pt.t < pm.t) {
       if (q != null) q.fromInt(0)
@@ -685,12 +779,20 @@ export class BigInteger {
   }
 
   dMultiply(n) {
+    requireCount(n, DV)
+    if (n === 0) {
+      this.t = 0
+      this.clamp()
+      return
+    }
     this[this.t] = this.am(0, n - 1, this, 0, 0, this.t)
     ++this.t
     this.clamp()
   }
 
   dAddOffset(n, w) {
+    requireCount(n, DV)
+    requireCount(w, MAX_DIGITS)
     if (n === 0) return
     while (this.t <= w) this[this.t++] = 0
     this[w] += n
@@ -704,6 +806,7 @@ export class BigInteger {
   // ---- 位运算 ----
 
   bitwiseTo(a, op, r) {
+    requireBigInteger(a)
     const m = Math.min(a.t, this.t)
     let i, f
     for (i = 0; i < m; ++i) r[i] = op(this[i], a[i])
@@ -800,6 +903,8 @@ export class BigInteger {
   }
 
   modPowInt(e, m) {
+    requireBigInteger(m)
+    if (m.signum() <= 0) throw new RangeError('Modulus must be positive')
     let z
     if (e < 256 || m.isEven()) z = new Classic(m)
     else z = new Montgomery(m)
@@ -826,6 +931,13 @@ export class BigInteger {
   }
 
   modPow(e, m) {
+    requireBigInteger(m)
+    requireBigInteger(e)
+    if (m.signum() <= 0) throw new RangeError('Modulus must be positive')
+    if (e.signum() < 0) throw new RangeError('Exponent must not be negative')
+    if (m.bitLength() > MAX_MODPOW_BITS || e.bitLength() > MAX_MODPOW_BITS) {
+      throw new RangeError('modPow operands are too large')
+    }
     let i = e.bitLength(),
       k,
       r = nbv(1),
@@ -907,11 +1019,19 @@ export class BigInteger {
     return z.revert(r)
   }
 
+  /**
+   * Modular inverse in [0, m), or ZERO if there is none, including for 0 mod m.
+   * Variable time: for public values only.
+   */
   modInverse(m) {
+    requireBigInteger(m)
+    if (m.signum() <= 0) throw new RangeError('Modulus must be positive')
+    const value = this.mod(m)
+    if (value.signum() === 0) return BigInteger.ZERO
     const ac = m.isEven()
-    if ((this.isEven() && ac) || m.signum() === 0) return BigInteger.ZERO
+    if (value.isEven() && ac) return BigInteger.ZERO
     const u = m.clone(),
-      v = this.clone()
+      v = value.clone()
     const a = nbv(1),
       b = nbv(0),
       c = nbv(0),
@@ -921,7 +1041,7 @@ export class BigInteger {
         u.rShiftTo(1, u)
         if (ac) {
           if (!a.isEven() || !b.isEven()) {
-            a.addTo(this, a)
+            a.addTo(value, a)
             b.subTo(m, b)
           }
           a.rShiftTo(1, a)
@@ -932,7 +1052,7 @@ export class BigInteger {
         v.rShiftTo(1, v)
         if (ac) {
           if (!c.isEven() || !d.isEven()) {
-            c.addTo(this, c)
+            c.addTo(value, c)
             d.subTo(m, d)
           }
           c.rShiftTo(1, c)
@@ -962,6 +1082,7 @@ export class BigInteger {
   }
 
   gcd(a) {
+    requireBigInteger(a)
     let x = this.s < 0 ? this.negate() : this.clone()
     let y = a.s < 0 ? a.negate() : a.clone()
     if (x.compareTo(y) < 0) {
@@ -1034,7 +1155,7 @@ export class BigInteger {
     if (t > LOW_PRIMES.length) t = LOW_PRIMES.length
     const a = nbi()
     for (let i = 0; i < t; ++i) {
-      a.fromInt(LOW_PRIMES[Math.floor(Math.random() * LOW_PRIMES.length)])
+      a.fromInt(randomLowPrime())
       let y = a.modPow(r, this)
       if (y.compareTo(BigInteger.ONE) !== 0 && y.compareTo(n1) !== 0) {
         let j = 1
@@ -1051,6 +1172,9 @@ export class BigInteger {
   // ---- lower/upper multiply ----
 
   multiplyLowerTo(a, n, r) {
+    requireBigInteger(a)
+    requireCount(n, MAX_DIGITS)
+    requireDigits(this.t + a.t)
     let i = Math.min(this.t + a.t, n)
     r.s = 0
     r.t = i
@@ -1063,6 +1187,9 @@ export class BigInteger {
   }
 
   multiplyUpperTo(a, n, r) {
+    requireBigInteger(a)
+    requireCount(n, MAX_DIGITS)
+    requireDigits(this.t + a.t)
     --n
     let i = (r.t = this.t + a.t - n)
     r.s = 0
@@ -1101,8 +1228,9 @@ function op_andnot(x, y) {
 }
 
 // 静态常量（延迟初始化避免循环依赖）
-BigInteger.ZERO = nbv(0)
-BigInteger.ONE = nbv(1)
+// Shared by everything, and the class has in-place mutators: frozen so that they throw.
+BigInteger.ZERO = Object.freeze(nbv(0))
+BigInteger.ONE = Object.freeze(nbv(1))
 
 // 静态工厂方法
 BigInteger.nbi = nbi
@@ -1250,89 +1378,27 @@ class Barrett {
 
 // ---- SecureRandom ----
 
-class Arcfour {
-  constructor() {
-    this.i = 0
-    this.j = 0
-    this.S = new Array(256)
-  }
-
-  init(key) {
-    for (let i = 0; i < 256; ++i) this.S[i] = i
-    let j = 0
-    for (let i = 0; i < 256; ++i) {
-      j = (j + this.S[i] + key[i % key.length]) & 255
-      const t = this.S[i]
-      this.S[i] = this.S[j]
-      this.S[j] = t
-    }
-    this.i = 0
-    this.j = 0
-  }
-
-  next() {
-    this.i = (this.i + 1) & 255
-    this.j = (this.j + this.S[this.i]) & 255
-    const t = this.S[this.i]
-    this.S[this.i] = this.S[this.j]
-    this.S[this.j] = t
-    return this.S[(t + this.S[this.i]) & 255]
-  }
-}
-
-const RNG_PSIZE = 256
-
+/**
+ * Random bytes from the operating system CSPRNG, as a source for the
+ * `new BigInteger(bits, rng)` constructor. Throws if the platform has no secure
+ * source; there is no fallback.
+ */
 export class SecureRandom {
-  constructor() {
-    this._state = null
-    this._pool = []
-    this._pptr = 0
-
-    // 使用平台 CSPRNG 初始化熵池
-    if (
-      typeof globalThis.crypto !== 'undefined' &&
-      globalThis.crypto.getRandomValues
-    ) {
-      const ua = new Uint8Array(32)
-      globalThis.crypto.getRandomValues(ua)
-      for (let i = 0; i < 32; ++i) this._pool[this._pptr++] = ua[i]
-    }
-
-    // 补充到 RNG_PSIZE
-    while (this._pptr < RNG_PSIZE) {
-      const t = Math.floor(65536 * Math.random())
-      this._pool[this._pptr++] = t >>> 8
-      this._pool[this._pptr++] = t & 255
-    }
-    this._pptr = 0
-    this._seedTime()
-  }
-
+  /**
+   * @param {number[]|Uint8Array} ba - filled in place. An array has a length limit:
+   *   writing to a huge sparse one would abort the process with out-of-memory, which
+   *   cannot be caught.
+   */
   nextBytes(ba) {
-    for (let i = 0; i < ba.length; ++i) ba[i] = this._getByte()
-  }
-
-  _seedInt(x) {
-    this._pool[this._pptr++] ^= x & 255
-    this._pool[this._pptr++] ^= (x >> 8) & 255
-    this._pool[this._pptr++] ^= (x >> 16) & 255
-    this._pool[this._pptr++] ^= (x >> 24) & 255
-    if (this._pptr >= RNG_PSIZE) this._pptr -= RNG_PSIZE
-  }
-
-  _seedTime() {
-    this._seedInt(Date.now())
-  }
-
-  _getByte() {
-    if (this._state === null) {
-      this._seedTime()
-      this._state = new Arcfour()
-      this._state.init(this._pool)
-      for (this._pptr = 0; this._pptr < this._pool.length; ++this._pptr)
-        this._pool[this._pptr] = 0
-      this._pptr = 0
+    if (ba instanceof Uint8Array) {
+      randomFill(ba)
+      return
     }
-    return this._state.next()
+    if (!Array.isArray(ba) || ba.length > MAX_RANDOM_ARRAY_LENGTH) {
+      throw new RangeError('Expected a byte array of a reasonable length')
+    }
+    const bytes = randomFill(new Uint8Array(ba.length))
+    for (let i = 0; i < ba.length; ++i) ba[i] = bytes[i]
+    bytes.fill(0)
   }
 }

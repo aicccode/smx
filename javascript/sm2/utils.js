@@ -1,7 +1,7 @@
 import { BigInteger } from './biginteger.js'
 import { ECCurveFp } from './ec.js'
 import { generateKeyMaterial } from './keygen.js'
-import { HEX_PAIRS, decodeStrictHex, parseHexPair } from '../common/hex.js'
+import { encodeHex } from '../common/hex.js'
 import {
   bytesToHex,
   hexToBytes,
@@ -54,12 +54,15 @@ export function generateEcparam() {
 
 /**
  * 生成密钥对：publicKey = privateKey * G
+ * 私钥是 [1, n-2] 内的均匀随机数，hex 固定 64 位
  */
 export function generateKeyPairHex() {
-  const { d, x, y } = generateKeyMaterial()
+  const { dBytes, x, y } = generateKeyMaterial()
+  const privateKey = encodeHex(dBytes)
+  dBytes.fill(0)
   return {
-    privateKey: d.toRadix(16),
-    publicKey: '04' + bytesToHex(x) + bytesToHex(y),
+    privateKey,
+    publicKey: '04' + encodeHex(x) + encodeHex(y),
   }
 }
 
@@ -67,36 +70,37 @@ export function generateKeyPairHex() {
  * 生成压缩公钥
  */
 export function compressPublicKeyHex(s) {
-  if (s.length !== 130) throw new Error('Invalid public key to compress')
-  const len = (s.length - 2) / 2
-  const xHex = s.substring(2, 2 + len)
-  const y = new BigInteger(s.substring(2 + len, 2 + 2 * len), 16)
-  const prefix = y.isEven() ? '02' : '03'
-  return prefix + xHex
+  if (typeof s !== 'string' || s.length !== 130) {
+    throw new Error('Invalid public key to compress')
+  }
+  const point = curve.decodePointHex(s)
+  const prefix = point.y.toBigInteger().isEven() ? '02' : '03'
+  return prefix + s.substring(2, 66)
 }
 
 /**
  * 验证公钥是否为椭圆曲线上的点
  */
 export function verifyPublicKey(publicKey) {
-  const point = curve.decodePointHex(publicKey)
-  if (!point) return false
-  const x = point.getX(),
-    y = point.getY()
-  return y
-    .square()
-    .equals(x.multiply(x.square()).add(x.multiply(curve.a)).add(curve.b))
+  try {
+    curve.decodePointHex(publicKey)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
  * 验证公钥是否等价
  */
 export function comparePublicKeyHex(publicKey1, publicKey2) {
-  const point1 = curve.decodePointHex(publicKey1)
-  if (!point1) return false
-  const point2 = curve.decodePointHex(publicKey2)
-  if (!point2) return false
-  return point1.equals(point2)
+  try {
+    return curve
+      .decodePointHex(publicKey1)
+      .equals(curve.decodePointHex(publicKey2))
+  } catch {
+    return false
+  }
 }
 
 // ---- 重导出公共工具函数 ----
@@ -112,13 +116,10 @@ export {
  * 十六进制串 → 有符号字节数组（兼容旧 API）
  */
 export function hexToArray(hexStr) {
-  if (hexStr.length % 2 !== 0) hexStr = leftPad(hexStr, hexStr.length + 1)
-  const bytes = decodeStrictHex(hexStr)
-  const words = new Array(hexStr.length >>> 1)
+  const bytes = hexToBytes(hexStr)
+  const words = new Array(bytes.length)
   for (let i = 0; i < words.length; i++) {
-    let b = bytes === null ? parseHexPair(hexStr, i) : bytes[i]
-    if (b > 127) b -= 256
-    words[i] = b
+    words[i] = (bytes[i] << 24) >> 24
   }
   return words
 }
@@ -127,5 +128,5 @@ export function hexToArray(hexStr) {
  * 字节数组 → 十六进制串（兼容旧 API）
  */
 export function arrayToHex(arr) {
-  return arr.map((item) => HEX_PAIRS[item & 0xff]).join('')
+  return bytesToHex(arr)
 }
