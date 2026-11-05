@@ -1,16 +1,11 @@
 // 素数域元素实现（模p运算）
 
 use super::bigint256::BigInt256;
+use super::field;
+use super::modinv::{self, MOD_P};
 
 /// SM2推荐曲线的素数p
-pub const SM2_P: BigInt256 = BigInt256 {
-    limbs: [
-        0xFFFFFFFFFFFFFFFF,
-        0xFFFFFFFF00000000,
-        0xFFFFFFFFFFFFFFFF,
-        0xFFFFFFFEFFFFFFFF,
-    ],
-};
+pub const SM2_P: BigInt256 = BigInt256 { limbs: field::P };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FpElement {
@@ -18,13 +13,11 @@ pub struct FpElement {
 }
 
 impl FpElement {
+    #[inline]
     pub fn new(value: BigInt256) -> Self {
         // 确保值在有效范围内
-        if value.compare(&SM2_P) != core::cmp::Ordering::Less {
-            let reduced = value.mod_sub(&SM2_P, &SM2_P);
-            FpElement { value: reduced }
-        } else {
-            FpElement { value }
+        FpElement {
+            value: BigInt256::new(field::reduce_once(&value.limbs, &SM2_P.limbs)),
         }
     }
 
@@ -32,41 +25,49 @@ impl FpElement {
         FpElement::new(BigInt256::from_hex(hex))
     }
 
+    #[inline]
     pub fn zero() -> Self {
         FpElement {
             value: BigInt256::ZERO,
         }
     }
 
+    #[inline]
     pub fn one() -> Self {
         FpElement {
             value: BigInt256::ONE,
         }
     }
 
+    #[inline]
     pub fn is_zero(&self) -> bool {
         self.value.is_zero()
     }
 
+    #[inline]
     pub fn is_one(&self) -> bool {
         self.value.is_one()
     }
 
     /// 加法
+    #[inline]
+    #[allow(clippy::should_implement_trait)] // public name kept for API compatibility
     pub fn add(&self, other: &FpElement) -> FpElement {
         FpElement {
-            value: self.value.mod_add(&other.value, &SM2_P),
+            value: BigInt256::new(field::fe_add(&self.value.limbs, &other.value.limbs)),
         }
     }
 
     /// 减法
+    #[inline]
     pub fn subtract(&self, other: &FpElement) -> FpElement {
         FpElement {
-            value: self.value.mod_sub(&other.value, &SM2_P),
+            value: BigInt256::new(field::fe_sub(&self.value.limbs, &other.value.limbs)),
         }
     }
 
     /// 乘法
+    #[inline]
     pub fn multiply(&self, other: &FpElement) -> FpElement {
         FpElement {
             value: self.value.sm2_mod_mul_p(&other.value),
@@ -74,6 +75,7 @@ impl FpElement {
     }
 
     /// 平方
+    #[inline]
     pub fn square(&self) -> FpElement {
         FpElement {
             value: self.value.sm2_mod_square_p(),
@@ -81,33 +83,24 @@ impl FpElement {
     }
 
     /// 取反
+    #[inline]
     pub fn negate(&self) -> FpElement {
-        if self.is_zero() {
-            *self
-        } else {
-            FpElement {
-                value: SM2_P.mod_sub(&self.value, &SM2_P),
-            }
+        let limbs = &self.value.limbs;
+        let negated = field::fe_sub(&SM2_P.limbs, limbs);
+        FpElement {
+            value: BigInt256::new(field::select(field::is_zero_mask(limbs), limbs, &negated)),
         }
     }
 
-    /// 求逆（使用SM2快速约减的费马小定理）
+    /// 求逆（常数时间的 safegcd 算法）
     pub fn invert(&self) -> FpElement {
         if self.is_zero() {
             panic!("Cannot invert zero");
         }
-        // a^(-1) = a^(p-2) mod p
-        let (p_minus_2, _) = SM2_P.sub(&BigInt256::new([2, 0, 0, 0]));
-        let mut result = BigInt256::ONE;
-        let mut base = self.value;
-        let bit_len = p_minus_2.bit_length();
-        for i in 0..bit_len {
-            if p_minus_2.get_bit(i) {
-                result = result.sm2_mod_mul_p(&base);
-            }
-            base = base.sm2_mod_square_p();
+        let reduced = field::reduce_once(&self.value.limbs, &SM2_P.limbs);
+        FpElement {
+            value: BigInt256::new(modinv::invert(&reduced, &MOD_P)),
         }
-        FpElement { value: result }
     }
 
     /// 除法
@@ -116,21 +109,25 @@ impl FpElement {
     }
 
     /// 2倍
+    #[inline]
     pub fn double(&self) -> FpElement {
         self.add(self)
     }
 
     /// 3倍
+    #[inline]
     pub fn triple(&self) -> FpElement {
         self.double().add(self)
     }
 
     /// 转换为BigInt256
+    #[inline]
     pub fn to_bigint(&self) -> BigInt256 {
         self.value
     }
 
     /// 转换为大端字节数组
+    #[inline]
     pub fn to_be_bytes(&self) -> [u8; 32] {
         self.value.to_be_bytes()
     }

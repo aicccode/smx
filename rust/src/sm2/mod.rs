@@ -1,12 +1,62 @@
 // SM2椭圆曲线公钥密码算法实现
 
 pub mod bigint256;
+mod curve;
+mod field;
 pub mod fp;
+mod modinv;
+mod order;
 pub mod point;
+mod precomp;
+mod scalar_mul;
 
-use crate::sm3::Sm3;
+use crate::hex;
+use crate::sm3::{Sm3, digest_parts};
 use bigint256::BigInt256;
 use point::{ECPoint, SM2_N};
+
+/// a, b, Gx, Gy as hashed into every user identity value Z.
+const CURVE_PARAMS_BE: [u8; 128] = {
+    let parts = [
+        point::SM2_A.value.limbs,
+        point::SM2_B.value.limbs,
+        point::SM2_GX.value.limbs,
+        point::SM2_GY.value.limbs,
+    ];
+    let mut out = [0u8; 128];
+    let mut part = 0;
+    while part < 4 {
+        let mut limb = 0;
+        while limb < 4 {
+            let bytes = parts[part][3 - limb].to_be_bytes();
+            let mut b = 0;
+            while b < 8 {
+                out[part * 32 + limb * 8 + b] = bytes[b];
+                b += 1;
+            }
+            limb += 1;
+        }
+        part += 1;
+    }
+    out
+};
+
+/// 2^127 and 2^127 - 1 for the key agreement's truncated coordinate.
+const TWO_POW_W: BigInt256 = BigInt256 {
+    limbs: [0, 0x8000_0000_0000_0000, 0, 0],
+};
+const W_MASK: BigInt256 = BigInt256 {
+    limbs: [u64::MAX, 0x7FFF_FFFF_FFFF_FFFF, 0, 0],
+};
+
+/// Equality of byte strings that does not stop at the first difference.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    core::hint::black_box(diff) == 0
+}
 
 /// SM2密钥交换协议参数
 #[derive(Clone, Debug)]
@@ -93,33 +143,22 @@ impl SM2 {
                 continue;
             }
 
-            // KDF
-            let key = Self::kdf(message.len(), &p2);
-
-            // 检查密钥是否全零
-            if key.iter().all(|&b| b == 0) {
+            // C2 = M XOR t
+            let (x2, y2) = (p2.x.to_be_bytes(), p2.y.to_be_bytes());
+            let mut c2 = message.to_vec();
+            if Self::kdf_xor(&mut c2, &x2, &y2) {
+                // 检查密钥是否全零
                 continue;
             }
 
-            // C2 = M XOR t
-            let mut c2 = message.to_vec();
-            for i in 0..c2.len() {
-                c2[i] ^= key[i];
-            }
-
             // C3 = SM3(x2 || M || y2)
-            let mut sm3 = Sm3::new();
-            sm3.update(&p2.x.to_be_bytes());
-            sm3.update(message);
-            sm3.update(&p2.y.to_be_bytes());
-            sm3.finish();
-            let c3 = sm3.hash_bytes();
+            let c3 = digest_parts(&[&x2, message, &y2]);
 
             // 输出 C1 || C3 || C2
-            let mut result = String::new();
-            result.push_str(&c1.to_hex_encoded());
-            result.push_str(&bytes_to_hex(c3));
-            result.push_str(&bytes_to_hex(&c2));
+            let mut result = String::with_capacity(130 + 64 + 2 * c2.len());
+            c1.push_hex_encoded(&mut result); // k is in [1, n-1], so C1 is finite
+            hex::push_lower(&mut result, &c3);
+            hex::push_lower(&mut result, &c2);
 
             return Ok(result);
         }
@@ -152,23 +191,13 @@ impl SM2 {
             return Err("Invalid decryption".to_string());
         }
 
-        // KDF
-        let key = Self::kdf(c2.len(), &p2);
-
         // M = C2 XOR t
-        for i in 0..c2.len() {
-            c2[i] ^= key[i];
-        }
+        let (x2, y2) = (p2.x.to_be_bytes(), p2.y.to_be_bytes());
+        Self::kdf_xor(&mut c2, &x2, &y2);
 
         // 验证 C3
-        let mut sm3 = Sm3::new();
-        sm3.update(&p2.x.to_be_bytes());
-        sm3.update(&c2);
-        sm3.update(&p2.y.to_be_bytes());
-        sm3.finish();
-        let computed_c3 = sm3.hash_bytes();
-
-        if computed_c3.as_slice() != c3.as_slice() {
+        let computed_c3 = digest_parts(&[&x2, &c2, &y2]);
+        if !ct_eq(&computed_c3, &c3) {
             return Err("Decryption verification failed".to_string());
         }
 
@@ -184,12 +213,10 @@ impl SM2 {
         let z = Self::user_sm3_z(user_id.as_bytes(), &public_key);
 
         // e = SM3(Z || M)
-        let mut sm3 = Sm3::new();
-        sm3.update(&z);
-        sm3.update(message.as_bytes());
-        sm3.finish();
-        let e = BigInt256::from_be_bytes(sm3.hash_bytes());
+        let e = BigInt256::from_be_bytes(&digest_parts(&[&z, message.as_bytes()]));
 
+        // (1 + d)^-1 does not change between attempts, so it is computed at most once.
+        let mut d_plus_1_inv = None;
         loop {
             // 生成随机数 k
             let k = Self::random_bigint();
@@ -214,35 +241,33 @@ impl SM2 {
             }
 
             // s = ((1 + d)^-1 * (k - r*d)) mod n
-            let one = BigInt256::ONE;
-            let (d_plus_1, _) = d.add(&one);
-            let d_plus_1_inv = d_plus_1.mod_inverse(&SM2_N);
+            let inv =
+                *d_plus_1_inv.get_or_insert_with(|| d.add(&BigInt256::ONE).0.mod_inverse(&SM2_N));
             let rd = r.mod_mul(&d, &SM2_N);
             let k_minus_rd = k.mod_sub(&rd, &SM2_N);
-            let s = k_minus_rd.mod_mul(&d_plus_1_inv, &SM2_N);
+            let s = k_minus_rd.mod_mul(&inv, &SM2_N);
 
             if s.is_zero() {
                 continue;
             }
 
-            // 确保 r 和 s 都是64个十六进制字符
-            let r_hex = r.to_hex();
-            let s_hex = s.to_hex();
-            if r_hex.len() == 64 && s_hex.len() == 64 {
-                return Ok(format!("{}h{}", r_hex.to_lowercase(), s_hex.to_lowercase()));
-            }
+            let mut out = String::with_capacity(129);
+            hex::push_lower(&mut out, &r.to_be_bytes());
+            out.push('h');
+            hex::push_lower(&mut out, &s.to_be_bytes());
+            return Ok(out);
         }
     }
 
     /// 验签
     pub fn verify(user_id: &str, signature: &str, message: &str, public_key: &str) -> bool {
-        let parts: Vec<&str> = signature.split('h').collect();
-        if parts.len() != 2 {
+        let mut parts = signature.split('h');
+        let (Some(r_hex), Some(s_hex), None) = (parts.next(), parts.next(), parts.next()) else {
             return false;
-        }
+        };
 
-        let r = BigInt256::from_hex(parts[0]);
-        let s = BigInt256::from_hex(parts[1]);
+        let r = BigInt256::from_hex(r_hex);
+        let s = BigInt256::from_hex(s_hex);
 
         // 验证 r, s 在 [1, n-1] 范围内
         if r.is_zero() || r.compare(&SM2_N) != core::cmp::Ordering::Less {
@@ -261,11 +286,7 @@ impl SM2 {
         let z = Self::user_sm3_z(user_id.as_bytes(), &pub_point);
 
         // e = SM3(Z || M)
-        let mut sm3 = Sm3::new();
-        sm3.update(&z);
-        sm3.update(message.as_bytes());
-        sm3.finish();
-        let e = BigInt256::from_be_bytes(sm3.hash_bytes());
+        let e = BigInt256::from_be_bytes(&digest_parts(&[&z, message.as_bytes()]));
 
         // t = (r + s) mod n
         let t = r.mod_add(&s, &SM2_N);
@@ -274,9 +295,7 @@ impl SM2 {
         }
 
         // (x1, y1) = [s]G + [t]PA
-        let sg = ECPoint::generator().multiply(&s);
-        let tpa = pub_point.multiply(&t);
-        let point = sg.add(&tpa);
+        let point = pub_point.base_mul_add_public(&s, &t);
 
         if point.is_infinity() {
             return false;
@@ -289,6 +308,7 @@ impl SM2 {
     }
 
     /// B用户密钥交换
+    #[allow(clippy::too_many_arguments)] // public signature kept for API compatibility
     pub fn get_sb(
         byte_len: usize,
         p_a: &ECPoint,
@@ -330,17 +350,18 @@ impl SM2 {
         let kb = Self::kdf_key_swap(byte_len, &v, &za, &zb);
         let sb = Self::create_s(0x02, &v, &za, &zb, r_a, r_b);
 
-        result.sb = Some(bytes_to_hex(&sb));
-        result.kb = Some(bytes_to_hex(&kb));
+        result.sb = Some(hex::encode_lower(&sb));
+        result.kb = Some(hex::encode_lower(&kb));
         result.v = Some(v);
-        result.za = Some(za);
-        result.zb = Some(zb);
+        result.za = Some(za.to_vec());
+        result.zb = Some(zb.to_vec());
         result.success = true;
 
         result
     }
 
     /// A用户密钥交换
+    #[allow(clippy::too_many_arguments)] // public signature kept for API compatibility
     pub fn get_sa(
         byte_len: usize,
         p_b: &ECPoint,
@@ -383,15 +404,15 @@ impl SM2 {
         let ka = Self::kdf_key_swap(byte_len, &u, &za, &zb);
         let s1 = Self::create_s(0x02, &u, &za, &zb, r_a, r_b);
 
-        if s1.as_slice() != sb {
+        if !ct_eq(&s1, sb) {
             result.message = Some("协商失败，B用户验证值与A侧计算值不相等".to_string());
             return result;
         }
 
         let sa = Self::create_s(0x03, &u, &za, &zb, r_a, r_b);
 
-        result.sa = Some(bytes_to_hex(&sa));
-        result.ka = Some(bytes_to_hex(&ka));
+        result.sa = Some(hex::encode_lower(&sa));
+        result.ka = Some(hex::encode_lower(&ka));
         result.success = true;
 
         result
@@ -407,7 +428,7 @@ impl SM2 {
         sa: &[u8],
     ) -> bool {
         let s2 = Self::create_s(0x03, v, za, zb, r_a, r_b);
-        s2.as_slice() == sa
+        ct_eq(&s2, sa)
     }
 
     /// 解码公钥点
@@ -429,103 +450,59 @@ impl SM2 {
         BigInt256::from_be_bytes(&bytes)
     }
 
-    /// KDF密钥派生函数（用于加密）
-    fn kdf(keylen: usize, p2: &ECPoint) -> Vec<u8> {
-        let mut result = vec![0u8; keylen];
-        let mut ct = 1u32;
-        let blocks = (keylen + 31) / 32;
-
-        for i in 0..blocks {
-            let mut sm3 = Sm3::new();
-            sm3.update(&p2.x.to_be_bytes());
-            sm3.update(&p2.y.to_be_bytes());
-            sm3.update(&ct.to_be_bytes());
-            sm3.finish();
-            let hash = sm3.hash_bytes();
-
-            let start = i * 32;
-            let end = ((i + 1) * 32).min(keylen);
-            let copy_len = end - start;
-            result[start..start + copy_len].copy_from_slice(&hash[..copy_len]);
-
-            ct += 1;
+    /// KDF keystream (`x2 || y2 || ct`) XORed onto `data`. Returns true if it was all zero.
+    fn kdf_xor(data: &mut [u8], x2: &[u8; 32], y2: &[u8; 32]) -> bool {
+        // x2 || y2 fills exactly one SM3 block, which all counters then share.
+        let mut prefix = Sm3::new();
+        prefix.update(x2);
+        prefix.update(y2);
+        let mut seen = 0u8;
+        for (index, chunk) in data.chunks_mut(32).enumerate() {
+            let mut h = prefix.clone();
+            h.update(&(index as u32 + 1).to_be_bytes());
+            let block = h.finalize_digest();
+            for (byte, key) in chunk.iter_mut().zip(block) {
+                *byte ^= key;
+                seen |= key;
+            }
         }
-
-        result
+        seen == 0
     }
 
     /// KDF密钥派生函数（用于密钥交换）
     fn kdf_key_swap(keylen: usize, vu: &ECPoint, za: &[u8], zb: &[u8]) -> Vec<u8> {
+        let mut prefix = Sm3::new();
+        prefix.update(&vu.x.to_be_bytes());
+        prefix.update(&vu.y.to_be_bytes());
+        prefix.update(za);
+        prefix.update(zb);
+
         let mut result = vec![0u8; keylen];
-        let mut ct = 1u32;
-        let blocks = (keylen + 31) / 32;
-
-        for i in 0..blocks {
-            let mut sm3 = Sm3::new();
-            sm3.update(&vu.x.to_be_bytes());
-            sm3.update(&vu.y.to_be_bytes());
-            sm3.update(za);
-            sm3.update(zb);
-            sm3.update(&ct.to_be_bytes());
-            sm3.finish();
-            let hash = sm3.hash_bytes();
-
-            let start = i * 32;
-            let end = ((i + 1) * 32).min(keylen);
-            let copy_len = end - start;
-            result[start..start + copy_len].copy_from_slice(&hash[..copy_len]);
-
-            ct += 1;
+        for (index, chunk) in result.chunks_mut(32).enumerate() {
+            let mut h = prefix.clone();
+            h.update(&(index as u32 + 1).to_be_bytes());
+            let block = h.finalize_digest();
+            chunk.copy_from_slice(&block[..chunk.len()]);
         }
-
         result
     }
 
     /// 计算用户身份Z值
-    fn user_sm3_z(user_id: &[u8], public_key: &ECPoint) -> Vec<u8> {
-        let mut sm3 = Sm3::new();
-
+    fn user_sm3_z(user_id: &[u8], public_key: &ECPoint) -> [u8; 32] {
         // ENTL (2字节)
-        let entl = (user_id.len() * 8) as u16;
-        sm3.update_byte((entl >> 8) as u8);
-        sm3.update_byte((entl & 0xFF) as u8);
-
-        // ID
-        sm3.update(user_id);
-
-        // a
-        sm3.update(&point::SM2_A.to_be_bytes());
-
-        // b
-        sm3.update(&point::SM2_B.to_be_bytes());
-
-        // Gx
-        sm3.update(&point::SM2_GX.to_be_bytes());
-
-        // Gy
-        sm3.update(&point::SM2_GY.to_be_bytes());
-
-        // xA
-        sm3.update(&public_key.x.to_be_bytes());
-
-        // yA
-        sm3.update(&public_key.y.to_be_bytes());
-
-        sm3.finish();
-        sm3.hash_bytes().to_vec()
+        let entl = ((user_id.len() * 8) as u16).to_be_bytes();
+        digest_parts(&[
+            &entl,
+            user_id,
+            &CURVE_PARAMS_BE,
+            &public_key.x.to_be_bytes(),
+            &public_key.y.to_be_bytes(),
+        ])
     }
 
-    /// 密钥交换协议中的x_计算
+    /// 密钥交换协议中的x_计算: 2^w + (x & (2^w - 1))
     fn calc_x(x: BigInt256) -> BigInt256 {
-        // 2^w
-        let two_pow_w = BigInt256::from_hex("80000000000000000000000000000000");
-        // 2^w - 1
-        let mask = BigInt256::from_hex("7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
-        // x & (2^w - 1)
-        let x_masked = x.and(&mask);
-        // 2^w + masked
-        let (result, _) = two_pow_w.add(&x_masked);
-        result
+        TWO_POW_W.add(&x.and(&W_MASK)).0
     }
 
     /// 计算 t = (d + x_ * r) mod n
@@ -534,9 +511,9 @@ impl SM2 {
         d.mod_add(&xr, n)
     }
 
-    /// 计算点 [t](P + [x_]R)
+    /// 计算点 [t](P + [x_]R); x_ comes from the public point R, t is secret. R is on the curve.
     fn calc_point(t: &BigInt256, x_: &BigInt256, p: &ECPoint, r: &ECPoint) -> ECPoint {
-        let xr = r.multiply(x_);
+        let xr = r.multiply_public(x_);
         let sum = p.add(&xr);
         sum.multiply(t)
     }
@@ -549,53 +526,41 @@ impl SM2 {
         zb: &[u8],
         ra: &ECPoint,
         rb: &ECPoint,
-    ) -> Vec<u8> {
-        // 第一个哈希
-        let mut sm3 = Sm3::new();
-        sm3.update(&vu.x.to_be_bytes());
-        sm3.update(za);
-        sm3.update(zb);
-        sm3.update(&ra.x.to_be_bytes());
-        sm3.update(&ra.y.to_be_bytes());
-        sm3.update(&rb.x.to_be_bytes());
-        sm3.update(&rb.y.to_be_bytes());
-        sm3.finish();
-        let h1 = sm3.hash_bytes().to_vec();
-
-        // 第二个哈希
-        let mut hash = Sm3::new();
-        hash.update_byte(tag);
-        hash.update(&vu.y.to_be_bytes());
-        hash.update(&h1);
-        hash.finish();
-        hash.hash_bytes().to_vec()
+    ) -> [u8; 32] {
+        let h1 = digest_parts(&[
+            &vu.x.to_be_bytes(),
+            za,
+            zb,
+            &ra.x.to_be_bytes(),
+            &ra.y.to_be_bytes(),
+            &rb.x.to_be_bytes(),
+            &rb.y.to_be_bytes(),
+        ]);
+        digest_parts(&[&[tag], &vu.y.to_be_bytes(), &h1])
     }
 }
 
 // ============ 辅助函数 ============
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
-
-fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, String> {
+    if hex_str.len() % 2 != 0 {
         return Err("Invalid hex string length".to_string());
     }
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    for i in 0..hex.len() / 2 {
-        let byte =
-            u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|_| "Invalid hex character")?;
+    if let Some(bytes) = hex::decode_plain(hex_str) {
+        return Ok(bytes);
+    }
+    // Anything but plain digits keeps the historic parse, including its acceptance of "+f".
+    let mut bytes = Vec::with_capacity(hex_str.len() / 2);
+    for i in 0..hex_str.len() / 2 {
+        let byte = u8::from_str_radix(&hex_str[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "Invalid hex character")?;
         bytes.push(byte);
     }
     Ok(bytes)
 }
 
 /// 使用系统随机数生成器填充字节数组
+#[allow(clippy::needless_return)] // only needless on some targets
 fn getrandom(dest: &mut [u8]) {
     #[cfg(target_family = "unix")]
     {

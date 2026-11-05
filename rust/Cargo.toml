@@ -2,5 +2,14 @@
 name = "gm-rust"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85" # the minimum for edition 2024; also keeps clippy to APIs of that version
 
 [dependencies]
+
+[[bench]]
+name = "sm_bench"
+harness = false
+
+# The differential tests use a bit-by-bit reference; overflow checks stay on.
+[profile.test]
+opt-level = 2

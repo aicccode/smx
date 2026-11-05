@@ -1,7 +1,11 @@
 // 椭圆曲线点实现（仿射坐标 + 内部使用Jacobian坐标加速标量乘法）
 
 use super::bigint256::BigInt256;
+use super::curve::{Affine, Jacobian};
+use super::field::{P, reduce_once};
 use super::fp::FpElement;
+use super::order;
+use super::scalar_mul;
 
 /// SM2曲线参数 a
 pub const SM2_A: FpElement = FpElement {
@@ -52,155 +56,7 @@ pub const SM2_GY: FpElement = FpElement {
 };
 
 /// SM2曲线阶 n
-pub const SM2_N: BigInt256 = BigInt256 {
-    limbs: [
-        0x53BBF40939D54123,
-        0x7203DF6B21C6052B,
-        0xFFFFFFFFFFFFFFFF,
-        0xFFFFFFFEFFFFFFFF,
-    ],
-};
-
-// ============ Jacobian坐标内部点 ============
-// (X, Y, Z) 对应仿射 (X/Z², Y/Z³)
-// 无穷远点: Z = 0
-
-struct JacobianPoint {
-    x: FpElement,
-    y: FpElement,
-    z: FpElement,
-}
-
-impl JacobianPoint {
-    fn infinity() -> Self {
-        JacobianPoint {
-            x: FpElement::one(),
-            y: FpElement::one(),
-            z: FpElement::zero(),
-        }
-    }
-
-    fn from_affine(p: &ECPoint) -> Self {
-        if p.infinity {
-            return Self::infinity();
-        }
-        JacobianPoint {
-            x: p.x,
-            y: p.y,
-            z: FpElement::one(),
-        }
-    }
-
-    fn to_affine(&self) -> ECPoint {
-        if self.z.is_zero() {
-            return ECPoint::infinity();
-        }
-        // x_affine = X / Z²
-        // y_affine = Y / Z³
-        let z_inv = self.z.invert();
-        let z_inv2 = z_inv.square();
-        let z_inv3 = z_inv2.multiply(&z_inv);
-        let x = self.x.multiply(&z_inv2);
-        let y = self.y.multiply(&z_inv3);
-        ECPoint::new(x, y)
-    }
-
-    /// Jacobian点倍乘（a = p - 3 优化）
-    /// 参考: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#doubling-dbl-2001-b
-    fn double(&self) -> JacobianPoint {
-        if self.z.is_zero() || self.y.is_zero() {
-            return Self::infinity();
-        }
-
-        // SM2曲线 a = p - 3, 使用 a=-3 优化
-        // delta = Z1²
-        let delta = self.z.square();
-        // gamma = Y1²
-        let gamma = self.y.square();
-        // beta = X1 * gamma
-        let beta = self.x.multiply(&gamma);
-        // alpha = 3*(X1-delta)*(X1+delta)  (利用 a=-3: 3*X1²+a*Z1⁴ = 3*(X1²-Z1⁴) = 3*(X1-Z1²)*(X1+Z1²))
-        let alpha = self
-            .x
-            .subtract(&delta)
-            .multiply(&self.x.add(&delta))
-            .triple();
-        // X3 = alpha² - 8*beta
-        let beta8 = beta.double().double().double();
-        let x3 = alpha.square().subtract(&beta8);
-        // Z3 = (Y1+Z1)² - gamma - delta
-        let z3 = self
-            .y
-            .add(&self.z)
-            .square()
-            .subtract(&gamma)
-            .subtract(&delta);
-        // Y3 = alpha*(4*beta - X3) - 8*gamma²
-        let gamma_sq = gamma.square();
-        let y3 = alpha
-            .multiply(&beta.double().double().subtract(&x3))
-            .subtract(&gamma_sq.double().double().double());
-
-        JacobianPoint {
-            x: x3,
-            y: y3,
-            z: z3,
-        }
-    }
-
-    /// Jacobian点加法 (mixed addition: other.Z = 1)
-    /// 参考: https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-3.html#addition-madd-2007-bl
-    fn add_affine(&self, other: &ECPoint) -> JacobianPoint {
-        if other.infinity {
-            return JacobianPoint {
-                x: self.x,
-                y: self.y,
-                z: self.z,
-            };
-        }
-        if self.z.is_zero() {
-            return JacobianPoint::from_affine(other);
-        }
-
-        // Z1Z1 = Z1²
-        let z1z1 = self.z.square();
-        // U2 = X2*Z1Z1
-        let u2 = other.x.multiply(&z1z1);
-        // S2 = Y2*Z1*Z1Z1
-        let s2 = other.y.multiply(&self.z).multiply(&z1z1);
-        // H = U2 - X1
-        let h = u2.subtract(&self.x);
-        // r = S2 - Y1
-        let r = s2.subtract(&self.y);
-
-        if h.is_zero() {
-            if r.is_zero() {
-                return self.double();
-            }
-            return Self::infinity();
-        }
-
-        let hh = h.square();
-        let hhh = hh.multiply(&h);
-        // X3 = r² - H³ - 2*X1*H²
-        let x3 = r
-            .square()
-            .subtract(&hhh)
-            .subtract(&self.x.multiply(&hh).double());
-        // Y3 = r*(X1*H² - X3) - Y1*H³
-        let y3 = r
-            .multiply(&self.x.multiply(&hh).subtract(&x3))
-            .subtract(&self.y.multiply(&hhh));
-        // Z3 = Z1*H
-        let z3 = self.z.multiply(&h);
-
-        JacobianPoint {
-            x: x3,
-            y: y3,
-            z: z3,
-        }
-    }
-}
+pub const SM2_N: BigInt256 = BigInt256 { limbs: order::N };
 
 /// 椭圆曲线点（仿射坐标）
 #[derive(Clone, Debug)]
@@ -212,6 +68,7 @@ pub struct ECPoint {
 
 impl ECPoint {
     /// 创建新的点
+    #[inline]
     pub fn new(x: FpElement, y: FpElement) -> Self {
         ECPoint {
             x,
@@ -221,6 +78,7 @@ impl ECPoint {
     }
 
     /// 创建无穷远点
+    #[inline]
     pub fn infinity() -> Self {
         ECPoint {
             x: FpElement::zero(),
@@ -230,11 +88,13 @@ impl ECPoint {
     }
 
     /// 获取基点G
+    #[inline]
     pub fn generator() -> Self {
         ECPoint::new(SM2_GX, SM2_GY)
     }
 
     /// 判断是否为无穷远点
+    #[inline]
     pub fn is_infinity(&self) -> bool {
         self.infinity
     }
@@ -262,10 +122,19 @@ impl ECPoint {
 
     /// 从十六进制编码解码点
     pub fn from_hex_encoded(hex: &str) -> Self {
-        let hex = hex.trim_start_matches("0x").trim_start_matches("0X");
-        let mut bytes = Vec::with_capacity(hex.len() / 2);
-        for i in 0..hex.len() / 2 {
-            let byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0);
+        let digits = hex.trim_start_matches("0x").trim_start_matches("0X");
+        // The usual encoding needs no heap at all.
+        if digits.len() == 130 {
+            let mut bytes = [0u8; 65];
+            if crate::hex::decode_into(digits.as_bytes(), &mut bytes) {
+                return Self::from_encoded(&bytes);
+            }
+        }
+        // Everything else keeps the historic parse: invalid pairs read as 0, an odd trailing
+        // digit is ignored.
+        let mut bytes = Vec::with_capacity(digits.len() / 2);
+        for i in 0..digits.len() / 2 {
+            let byte = u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).unwrap_or(0);
             bytes.push(byte);
         }
         Self::from_encoded(&bytes)
@@ -285,12 +154,19 @@ impl ECPoint {
 
     /// 编码为十六进制字符串
     pub fn to_hex_encoded(&self) -> String {
-        let bytes = self.to_encoded();
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in &bytes {
-            s.push_str(&format!("{:02x}", b));
+        if self.infinity {
+            return "00".to_string();
         }
+        let mut s = String::with_capacity(130);
+        self.push_hex_encoded(&mut s);
         s
+    }
+
+    /// Appends the lower-case uncompressed encoding; the point must be finite.
+    pub(crate) fn push_hex_encoded(&self, out: &mut String) {
+        out.push_str("04");
+        crate::hex::push_lower(out, &self.x.to_be_bytes());
+        crate::hex::push_lower(out, &self.y.to_be_bytes());
     }
 
     /// 取反
@@ -305,7 +181,33 @@ impl ECPoint {
         }
     }
 
+    /// Field limbs for the internal arithmetic. The public `value` field can hold a coordinate
+    /// that was never reduced, which the internal formulas do not expect.
+    #[inline]
+    fn affine(&self) -> Affine {
+        Affine {
+            x: reduce_once(&self.x.value.limbs, &P),
+            y: reduce_once(&self.y.value.limbs, &P),
+        }
+    }
+
+    #[inline]
+    fn from_jacobian(point: &Jacobian) -> ECPoint {
+        match point.to_affine() {
+            Some(affine) => ECPoint::new(
+                FpElement {
+                    value: BigInt256::new(affine.x),
+                },
+                FpElement {
+                    value: BigInt256::new(affine.y),
+                },
+            ),
+            None => ECPoint::infinity(),
+        }
+    }
+
     /// 点加法
+    #[allow(clippy::should_implement_trait)] // public name kept for API compatibility
     pub fn add(&self, other: &ECPoint) -> ECPoint {
         if self.infinity {
             return other.clone();
@@ -315,9 +217,12 @@ impl ECPoint {
         }
 
         // 使用Jacobian坐标计算后转回仿射
-        let jp = JacobianPoint::from_affine(self);
-        let result = jp.add_affine(other);
-        result.to_affine()
+        Self::from_jacobian(
+            &self
+                .affine()
+                .to_jacobian()
+                .add_mixed_vartime(&other.affine()),
+        )
     }
 
     /// 点倍乘（P + P）
@@ -325,11 +230,7 @@ impl ECPoint {
         if self.infinity {
             return ECPoint::infinity();
         }
-        if self.y.is_zero() {
-            return ECPoint::infinity();
-        }
-        let jp = JacobianPoint::from_affine(self);
-        jp.double().to_affine()
+        Self::from_jacobian(&self.affine().to_jacobian().double())
     }
 
     /// 减法
@@ -337,40 +238,35 @@ impl ECPoint {
         self.add(&other.negate())
     }
 
-    /// 标量乘法（使用Jacobian坐标的Double-and-Add算法，仅在最后转回仿射）
+    /// 标量乘法：常数时间（对标量k），基点G使用预计算表
     pub fn multiply(&self, k: &BigInt256) -> ECPoint {
-        if k.is_zero() || self.infinity {
+        if self.infinity {
             return ECPoint::infinity();
         }
-
-        if k.is_one() {
-            return self.clone();
+        if self.x == SM2_GX && self.y == SM2_GY {
+            return Self::from_jacobian(&scalar_mul::mul_base(&k.limbs));
         }
+        Self::from_jacobian(&scalar_mul::mul_ct(&self.affine(), &k.limbs))
+    }
 
-        let mut result = JacobianPoint::infinity();
-        let bit_len = k.bit_length();
-
-        // 从高位到低位扫描（更适合Jacobian坐标）
-        for i in (0..bit_len).rev() {
-            result = result.double();
-            if k.get_bit(i) {
-                result = result.add_affine(self);
-            }
+    /// [k]self for a public scalar, in variable time. The point must be on the curve.
+    pub(crate) fn multiply_public(&self, k: &BigInt256) -> ECPoint {
+        if self.infinity {
+            return ECPoint::infinity();
         }
+        Self::from_jacobian(&scalar_mul::mul_public(&self.affine(), &k.limbs))
+    }
 
-        result.to_affine()
+    /// [s]G + [t]self for public scalars, in variable time. The point must be on the curve.
+    pub(crate) fn base_mul_add_public(&self, s: &BigInt256, t: &BigInt256) -> ECPoint {
+        let affine = self.affine();
+        let point = (!self.infinity).then_some(&affine);
+        Self::from_jacobian(&scalar_mul::mul_base_and_public(&s.limbs, &t.limbs, point))
     }
 
     /// 验证点在曲线上
     pub fn is_on_curve(&self) -> bool {
-        if self.infinity {
-            return true;
-        }
-
-        // y^2 = x^3 + a*x + b
-        let lhs = self.y.square();
-        let rhs = self.x.square().add(&SM2_A).multiply(&self.x).add(&SM2_B);
-        lhs == rhs
+        self.infinity || scalar_mul::is_on_curve(&self.affine())
     }
 }
 
