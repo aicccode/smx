@@ -124,9 +124,9 @@ public final class SM2 {
 
     // MARK: - 解密
 
-    /// 密文是 C1 || C3 || C2 的十六进制（大小写均可），C2 不能为空。
+    /// 密文是 C1 || C3 || C2 的小写十六进制（encrypt 的输出形式），C2 不能为空。
     public static func decrypt(_ ciphertext: String, privateKey: String) throws -> String {
-        guard let bytes = Hex.decodeStrict(ciphertext) else {
+        guard let bytes = Hex.decodeCanonical(ciphertext) else {
             throw SM2Error.invalidInput("Invalid ciphertext encoding")
         }
         // 65 字节 C1 + 32 字节 C3 + 至少 1 字节 C2
@@ -227,7 +227,8 @@ public final class SM2 {
 
     // MARK: - 验签
 
-    /// 签名格式是 r + "h" + s，r、s 都是恰好64个十六进制字符。任何不合法的输入都返回 false。
+    /// 签名格式是 r + "h" + s，r、s 都是恰好64个小写十六进制字符（sign 的输出形式）。
+    /// 每个签名只有一种字符串。任何不合法的输入都返回 false。
     public static func verify(userId: String, signature: String, message: String, publicKey: String) -> Bool {
         guard let (r, s) = parseSignature(signature) else {
             return false
@@ -266,7 +267,9 @@ public final class SM2 {
     private static func parseSignature(_ signature: String) -> (BigInt256, BigInt256)? {
         var copy = signature
         return copy.withUTF8 { utf8 -> (BigInt256, BigInt256)? in
-            guard utf8.count == 129, utf8[64] == UInt8(ascii: "h") else {
+            guard utf8.count == 129, utf8[64] == UInt8(ascii: "h"),
+                !utf8.contains(where: { $0 >= UInt8(ascii: "A") && $0 <= UInt8(ascii: "F") })
+            else {
                 return nil
             }
             let rPart = String(decoding: UnsafeBufferPointer(rebasing: utf8[0..<64]), as: UTF8.self)

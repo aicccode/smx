@@ -12,7 +12,7 @@ disassembles the objects, and fails if:
     or has more conditional branches than expected.
 
 It works on x86-64 (objdump) and arm64 (llvm-objdump, macOS). It checks branches and memory reads, which are what the
-optimizer has broken; it cannot see microarchitectural effects. Usage: Tools/check_constant_time.py [--no-build]
+optimizer has broken; it cannot see microarchitectural effects. Usage: Tools/check_constant_time.py [--no-build] [--size]  (--size builds with -Osize)
 """
 import glob
 import os
@@ -28,13 +28,15 @@ BRANCH_FREE = [
     "opaqueMask(", "FpElement.multiply(", "FpElement.square()", "montgomeryMultiply(", "montgomerySquare(",
     "BigInt256.modMul(", "BigInt256.modSquare(",
 ]
+# Secret bytes go through these. Their only branches may be loop or length control, never data.
+DATA_LOOPS = {"pkcs7InvalidMask(": 2, "utf8InvalidMask(": 2, "Hex.encodeDigits(": 18, "Hex.decode(": 16}
 # name -> maximum conditional branches. These loops accumulate and decide once at the end; a vectorizer adds length
 # guards. A branch on loaded data (an early exit) shows up as a compare with a memory operand and fails the check.
 SIMPLE_LOOPS = {"fillSelectionMasks(": 2, "constantTimeEquals(": 14, "constantTimeIsAllZero(": 12}
 # name -> (functions it must call, maximum conditional branches including public loop counters and table setup)
 MULTIPLIERS = {
-    "JacobianPoint.multiplyGenerator(": (["fillSelectionMasks", "scanTable8"], 12),
-    "JacobianPoint.multiplyConstantTime(": (["fillSelectionMasks", "scanTable12"], 40),
+    "JacobianPoint.multiplyGenerator(": (["fillSelectionMasks", "scanTable8"], 11),
+    "JacobianPoint.multiplyConstantTime(": (["fillSelectionMasks", "scanTable12"], 22),
 }
 ARM_COND = re.compile(r"^(b\.[a-z]+|cbz|cbnz|tbz|tbnz)$")
 FLAG_SETTERS = re.compile(r"^(cmp|cmpq|cmpl|cmpb|cmpw|test|testq|testl|testb|testw|subs|adds|ands|cmn|tst)$")
@@ -160,7 +162,10 @@ def is_stack_guard(body, index):
 
 def main():
     if "--no-build" not in sys.argv:
-        run(["swift", "build", "-c", "release"], cwd=ROOT, stderr=subprocess.STDOUT)
+        command = ["swift", "build", "-c", "release"]
+        if "--size" in sys.argv:
+            command += ["-Xswiftc", "-Osize"]
+        run(command, cwd=ROOT, stderr=subprocess.STDOUT)
     objects = glob.glob(os.path.join(ROOT, ".build", "release", "GMSwift.build", "*.o"))
     if not objects:
         sys.exit("no objects found; run swift build -c release")
@@ -188,10 +193,14 @@ def main():
     if not matching("opaqueMask("):
         problems.append("missing opaqueMask (inlined?)")
 
-    for fragment, limit in SIMPLE_LOOPS.items():
+    for fragment, limit in list(SIMPLE_LOOPS.items()) + list(DATA_LOOPS.items()):
         found = matching(fragment)
         if not found:
-            problems.append("missing %s (inlined?)" % fragment)
+            # arm64 -Osize drops local symbol names (the function becomes ltmp0), so it cannot be found by name.
+            if "--size" in sys.argv and platform.system() == "Darwin":
+                print("note   %s has no symbol in this build and was not checked" % fragment)
+            else:
+                problems.append("missing %s (inlined?)" % fragment)
         for name, body in found.items():
             check_simple_loop(name, body, limit, problems)
             print("loop   %-44s conditional branches %d" % (name[:44], len(conditional_branches(body))))

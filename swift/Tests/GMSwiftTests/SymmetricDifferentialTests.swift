@@ -98,7 +98,9 @@ final class SymmetricDifferentialTests: XCTestCase {
                 let text = String(decoding: message, as: UTF8.self)
                 XCTAssertEqual(sm4.encrypt(text: text), expected)
                 XCTAssertEqual(sm4.decrypt(text: expected), text)
-                XCTAssertEqual(sm4.decrypt(text: expected.uppercased()), text)
+                if !expected.isEmpty, expected.uppercased() != expected {
+                    XCTAssertEqual(sm4.decrypt(text: expected.uppercased()), "", "uppercase is not canonical")
+                }
             }
         }
     }
@@ -166,6 +168,7 @@ final class SymmetricDifferentialTests: XCTestCase {
         let cipher = try sm4.encryptChecked(text: "0123456789abcdef")
         let cases = [
             "", "0", "zz", "é", String(cipher.dropLast(2)), cipher + "00", String(repeating: "00", count: 1),
+            cipher.uppercased(),
             "+f" + String(cipher.dropFirst(2)), String(cipher.prefix(32)), String(repeating: "ff", count: 48),
         ]
         for text in cases {
@@ -188,6 +191,119 @@ final class SymmetricDifferentialTests: XCTestCase {
         // 明文里真实的 U+FFFD 和 NUL 不受影响
         for text in ["\u{FFFD}", "a\0b"] {
             XCTAssertEqual(try sm4.decryptChecked(text: try sm4.encryptChecked(text: text)), text)
+        }
+    }
+
+    /// 填充错误时必须同样运行 UTF-8 校验，并且覆盖同样多的字节：这是填充预言机的修复
+    func testSM4BadPaddingStillRunsUTF8Validation() {
+        var validatedBytes: [Int] = []
+        let spy: (UnsafePointer<UInt8>, Int) -> UInt32 = { pointer, count in
+            validatedBytes.append(count)
+            return utf8InvalidMask(pointer, count: count)
+        }
+        let cases: [(name: String, bytes: [UInt8], valid: Bool)] = [
+            ("good padding, good text", [UInt8](repeating: 0x61, count: 27) + [UInt8](repeating: 5, count: 5), true),
+            (
+                "good padding, bad text",
+                [0xFF] + [UInt8](repeating: 0x61, count: 26) + [UInt8](repeating: 5, count: 5), false
+            ),
+            ("bad padding byte", [UInt8](repeating: 0x61, count: 32), false),
+            ("zero padding byte", [UInt8](repeating: 0, count: 32), false),
+            ("padding 17", [UInt8](repeating: 17, count: 32), false),
+            ("inconsistent padding", [UInt8](repeating: 0x61, count: 30) + [1, 2], false),
+            ("bad padding and bad text", [UInt8](repeating: 0xFF, count: 32), false),
+        ]
+        for testCase in cases {
+            var data = testCase.bytes
+            let result = Sm4Impl.finishStringDecrypt(&data, utf8Check: spy)
+            XCTAssertEqual(result != nil, testCase.valid, testCase.name)
+        }
+        XCTAssertEqual(validatedBytes, [Int](repeating: 32, count: cases.count))
+    }
+
+    func testPKCS7Mask() {
+        for pad in 0...255 {
+            var block = [UInt8](repeating: 0x41, count: 32)
+            for index in 0..<min(pad, 32) {
+                block[31 - index] = UInt8(pad)
+            }
+            if pad == 0 {
+                block[31] = 0
+            }
+            let invalid = pkcs7InvalidMask(block, count: 32)
+            XCTAssertEqual(invalid == 0, (1...16).contains(pad), "\(pad)")
+        }
+        for wrong in 2...16 {
+            var block = [UInt8](repeating: 0x41, count: 32)
+            for index in 0..<wrong {
+                block[31 - index] = UInt8(wrong)
+            }
+            block[32 - wrong] ^= 1
+            XCTAssertNotEqual(pkcs7InvalidMask(block, count: 32), 0, "\(wrong)")
+        }
+    }
+
+    func testDecryptBytesHasNoUTF8Step() throws {
+        let key = [UInt8](0..<16)
+        let iv = [UInt8](16..<32)
+        let sm4 = try getSM4().setKeyChecked(key: Hex.encode(key), iv: Hex.encode(iv), hex: true)
+        for bytes in [[0xFF], [0xC0, 0x80], [], [UInt8](repeating: 0xFE, count: 16), [UInt8](0...255)] as [[UInt8]] {
+            let cipher = Hex.encode(referenceCBCEncrypt(bytes, key: key, iv: iv))
+            XCTAssertEqual(try sm4.decryptBytesChecked(text: cipher), bytes)
+        }
+        for bad in ["", "00", String(repeating: "ff", count: 16), "ZZ"] {
+            XCTAssertThrowsError(try sm4.decryptBytesChecked(text: bad))
+        }
+        XCTAssertThrowsError(try getSM4().decryptBytesChecked(text: "00"))
+    }
+
+    /// 恒定流程的校验器必须与标准库的 UTF-8 判定完全一致
+    func testUTF8ValidatorMatchesStandardLibrary() {
+        func reference(_ bytes: [UInt8]) -> Bool {
+            return String(decoding: bytes, as: UTF8.self).utf8.elementsEqual(bytes)
+        }
+        func assertSame(_ bytes: [UInt8]) {
+            let invalid = bytes.withUnsafeBufferPointer { buffer in
+                buffer.baseAddress.map { utf8InvalidMask($0, count: buffer.count) } ?? 0
+            }
+            XCTAssertEqual(invalid == 0, reference(bytes), "\(bytes)")
+        }
+        assertSame([])
+        for a in 0...255 {
+            assertSame([UInt8(a)])
+            for b in 0...255 {
+                assertSame([UInt8(a), UInt8(b)])
+            }
+        }
+        // 3、4 字节序列：每个位置都用各范围的边界值
+        let edges: [UInt8] = [
+            0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC1, 0xC2, 0xDF, 0xE0, 0xE1, 0xEC, 0xED, 0xEE, 0xEF,
+            0xF0, 0xF1, 0xF3, 0xF4, 0xF5, 0xFF,
+        ]
+        for a in edges {
+            for b in edges {
+                for c in edges {
+                    assertSame([a, b, c])
+                    assertSame([0x61, a, b, c])
+                    for d in [UInt8(0x41), 0x80, 0x8F, 0x90, 0xBF, 0xC0, 0xFF] {
+                        assertSame([a, b, c, d])
+                    }
+                }
+            }
+        }
+        var rng = TestRandom(seed: 0xB5)
+        let starts: [UInt8] = [0x41, 0xC3, 0xE4, 0xED, 0xF0, 0xF4, 0x80]
+        for _ in 0..<20000 {
+            let length = Int(rng.next() % 12)
+            let bytes = (0..<length).map { _ -> UInt8 in
+                let value = rng.next()
+                return value & 1 == 0 ? starts[Int(value >> 8) % starts.count] : UInt8(0x80 + (value >> 8) % 0x40)
+            }
+            assertSame(bytes)
+        }
+        for text in ["", "abc", "国密", "\u{FFFD}", "\u{10FFFF}", "\u{1F600}x", "a\0b"] {
+            assertSame(Array(text.utf8))
+            XCTAssertEqual(strictUTF8String(Array(text.utf8)), text)
         }
     }
 
@@ -263,17 +379,32 @@ final class SymmetricDifferentialTests: XCTestCase {
         }
     }
 
-    /// 结束之后对象不再改变。曾经的实现在结束后继续累积状态，再次 finalize 得到非标准的值。
-    func testSM3ReuseAfterFinalizeIsInert() {
+    /// 未结束时读取、重复结束和结束后更新都不能得到错误或陈旧的摘要。
+    func testSM3MisuseNeverReturnsAStaleDigest() {
         let sm3 = SM3()
         XCTAssertEqual(sm3.getHash(), "")
         XCTAssertEqual(sm3.getHashBytes(), [])
         _ = sm3.update("abc").finalize()
         let first = sm3.getHash()
-        _ = sm3.update([1, 2, 3]).update("more")
-        XCTAssertEqual(sm3.getHash(), first)
+        XCTAssertFalse(first.isEmpty)
         _ = sm3.finalize()
-        XCTAssertEqual(sm3.getHash(), first)
+        XCTAssertEqual(sm3.getHash(), first, "finish twice keeps the digest")
+        _ = sm3.update([1, 2, 3])
+        XCTAssertEqual(sm3.getHash(), "", "update after finish must not return the old digest")
+        XCTAssertEqual(sm3.getHashBytes(), [])
+        _ = sm3.finalize()
+        XCTAssertEqual(sm3.getHash(), "", "stays failed")
+
+        var core = SM3Core()
+        core.update([1])
+        XCTAssertEqual(core.finalize().count, 32)
+        XCTAssertEqual(core.finalize(), [], "core cannot finish twice")
+        core.update([2])
+        XCTAssertEqual(core.finalize(), [], "core cannot continue")
+        var copy = SM3Core()
+        copy.update([1])
+        var midstate = copy
+        XCTAssertEqual(copy.finalize(), midstate.finalize(), "copies finish independently")
     }
 
     /// 2^61 - 1 字节是上限：恰好到达时可以结束，超过时不回绕、不产生摘要
@@ -303,7 +434,8 @@ final class SymmetricDifferentialTests: XCTestCase {
             let cipher = try SM2.encrypt(message, publicKey: publicKey)
             XCTAssertEqual(cipher.count, 130 + 64 + 2 * length)
             XCTAssertEqual(try SM2.decrypt(cipher, privateKey: privateKey), message)
-            XCTAssertEqual(try SM2.decrypt(cipher.uppercased(), privateKey: privateKey), message)
+            XCTAssertThrowsError(
+                try SM2.decrypt(cipher.uppercased(), privateKey: privateKey), "uppercase is not canonical")
         }
     }
 

@@ -188,7 +188,7 @@ suite("SM2.verify") { _ in
     if SM2.verify(userId: id, signature: signature, message: message, publicKey: key) {
         accepted += 1
         check(
-            signature.lowercased() == goodSignature && message == signedMessage && id == userId,
+            signature == goodSignature && message == signedMessage && id == userId,
             "forged: \(signature.debugDescription) \(message.debugDescription)")
     }
 }
@@ -212,7 +212,7 @@ suite("SM2.decrypt") { _ in
     let key = rng.below(4) == 0 ? mutate(privateHex) : privateHex
     if let plain = try? SM2.decrypt(cipher, privateKey: key) {
         accepted += 1
-        check(cipher.lowercased() == goodCipher && plain == encryptedMessage, "forged ciphertext accepted")
+        check(cipher == goodCipher && plain == encryptedMessage, "forged ciphertext accepted")
     }
 }
 
@@ -345,6 +345,15 @@ suite("Sm4Impl.encryptChecked") { _ in
     let text = mutate(sm4Plain)
     if let cipher = try? shared.encryptChecked(text: text) {
         check(cipher.utf8.count == (text.utf8.count / 16 + 1) * 32, "bad ciphertext length")
+    }
+}
+suite("Sm4Impl.decryptBytesChecked") { _ in
+    do {
+        accepted += try shared.decryptBytesChecked(text: mutate(sm4Good)).isEmpty ? 0 : 1
+    } catch let error as SM4Error {
+        check(error == .decryptionFailed, "non-uniform error")
+    } catch {
+        check(false, "unexpected error type")
     }
 }
 suite("Sm4Impl.decrypt") { _ in

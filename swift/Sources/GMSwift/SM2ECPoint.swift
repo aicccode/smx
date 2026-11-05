@@ -51,7 +51,7 @@ public final class ECPoint: Equatable {
 
     /// 恰好130个十六进制字符（大小写均可），其余同 fromEncoded。
     public static func fromHexEncoded(_ hex: String) -> ECPoint {
-        guard let bytes = Hex.decodeStrict(hex) else {
+        guard hex.utf8.count == 130, let bytes = Hex.decodeStrict(hex) else {
             return ECPoint.infinityPoint()
         }
         return fromEncoded(bytes)

@@ -178,6 +178,12 @@ public final class Sm4Impl: @unchecked Sendable {
     /// 同 setKey，不合法时抛出 SM4Error.invalidKeyOrIV（已有密钥同样被清除）。
     @discardableResult
     public func setKeyChecked(key: String, iv: String, hex: Bool) throws -> Sm4Impl {
+        // 先检查长度，超长的字符串不做解码
+        let expected = hex ? 32 : 16
+        guard key.utf8.count == expected, iv.utf8.count == expected else {
+            replaceState(nil)
+            throw SM4Error.invalidKeyOrIV
+        }
         var keyBytes = hex ? (Hex.decodeStrict(key) ?? []) : Array(key.utf8)
         defer { secureWipe(&keyBytes) }
         let ivBytes = hex ? (Hex.decodeStrict(iv) ?? []) : Array(iv.utf8)
@@ -205,22 +211,70 @@ public final class Sm4Impl: @unchecked Sendable {
 
     public func encryptChecked(text: String) throws -> String {
         let key = try currentState()
-        return Hex.encode(Sm4Impl.encryptCBC(Array(text.utf8), roundKeys: key.roundKeys, iv: key.iv))
+        var plain = Array(text.utf8)
+        defer { secureWipe(&plain) }
+        return Hex.encode(Sm4Impl.encryptCBC(plain, roundKeys: key.roundKeys, iv: key.iv))
     }
 
-    /// 所有失败都抛出同一个 SM4Error.decryptionFailed。
+    /// 所有失败都抛出同一个 SM4Error.decryptionFailed。密文必须是小写十六进制（encrypt 的输出形式）。
+    ///
+    /// 不管填充是否合法，都对同样多的字节做同样的 UTF-8 校验之后才判断结果，否则失败的快慢就是填充预言机。
+    /// 成功路径还要构造字符串，所以成功和失败的耗时不同，但成功本身就是可观察的结果。
+    /// 明文不一定是文本时用 decryptBytesChecked。
     public func decryptChecked(text: String) throws -> String {
-        let key = try currentState()
-        guard let cipher = Hex.decodeStrict(text),
-            var plain = Sm4Impl.decryptCBC(cipher, roundKeys: key.roundKeys, iv: key.iv)
-        else {
-            throw SM4Error.decryptionFailed
-        }
+        var plain = try decryptedBuffer(text: text)
         defer { secureWipe(&plain) }
-        guard let result = strictUTF8String(plain) else {
+        guard let result = Sm4Impl.finishStringDecrypt(&plain, utf8Check: utf8InvalidMask) else {
             throw SM4Error.decryptionFailed
         }
         return result
+    }
+
+    /// 返回明文字节，没有 UTF-8 步骤。所有失败都抛出同一个 SM4Error.decryptionFailed。
+    public func decryptBytesChecked(text: String) throws -> [UInt8] {
+        var plain = try decryptedBuffer(text: text)
+        let invalid = plain.withUnsafeBufferPointer { buffer -> UInt32 in
+            guard let base = buffer.baseAddress else {
+                return 1
+            }
+            return pkcs7InvalidMask(base, count: buffer.count)
+        }
+        if invalid != 0 {
+            secureWipe(&plain)
+            throw SM4Error.decryptionFailed
+        }
+        plain.removeLast(Int(plain[plain.count - 1]))
+        return plain
+    }
+
+    private func decryptedBuffer(text: String) throws -> [UInt8] {
+        let key = try currentState()
+        guard let cipher = Hex.decodeCanonical(text),
+            let plain = Sm4Impl.decryptCBC(cipher, roundKeys: key.roundKeys, iv: key.iv)
+        else {
+            throw SM4Error.decryptionFailed
+        }
+        return plain
+    }
+
+    /// 校验填充和 UTF-8（总是两者都做，且 UTF-8 校验覆盖整个缓冲区），都通过才去除填充并构造字符串。
+    /// 合法的 PKCS#7 填充字节都是 ASCII，所以校验整个缓冲区与只校验明文部分的结论相同。
+    /// utf8Check 是参数，测试可以确认填充错误时它同样运行。
+    static func finishStringDecrypt(
+        _ data: inout [UInt8], utf8Check: (UnsafePointer<UInt8>, Int) -> UInt32
+    ) -> String? {
+        let invalid = data.withUnsafeBufferPointer { buffer -> UInt32 in
+            guard let base = buffer.baseAddress else {
+                return 1
+            }
+            let padding = pkcs7InvalidMask(base, count: buffer.count)
+            let text = utf8Check(base, buffer.count)
+            return padding | text
+        }
+        if invalid != 0 {
+            return nil
+        }
+        return String(decoding: data.dropLast(Int(data[data.count - 1])), as: UTF8.self)
     }
 
     // MARK: - 内部接口（测试使用）
@@ -294,7 +348,7 @@ public final class Sm4Impl: @unchecked Sendable {
         return data
     }
 
-    /// 解密并去除 PKCS#7 填充。长度不合法或填充错误都返回 nil；填充检查不提前退出。
+    /// 解密，不处理填充。只有长度不合法时返回 nil（长度是公开的）。
     private static func decryptCBC(_ cipher: [UInt8], roundKeys: [UInt32], iv: [UInt8]) -> [UInt8]? {
         guard !cipher.isEmpty, cipher.count % 16 == 0 else {
             return nil
@@ -353,23 +407,26 @@ public final class Sm4Impl: @unchecked Sendable {
             }
         }
 
-        // 恒定流程的填充检查：总是检查最后16个字节
-        let length = data.count
-        let pad = UInt32(data[length - 1])
-        var bad: UInt32 = (pad &- 1) >> 31  // pad == 0
-        bad |= (16 &- pad) >> 31  // pad > 16
-        for offset in 0..<16 {
-            // offset < pad 时掩码全 1
-            let inPadding = 0 &- ((UInt32(offset) &- pad) >> 31)
-            bad |= UInt32(data[length - 1 - offset] ^ UInt8(truncatingIfNeeded: pad)) & inPadding
-        }
-        if bad != 0 {
-            secureWipe(&data)
-            return nil
-        }
-        data.removeLast(Int(pad))
         return data
     }
+}
+
+/// 恒定流程的 PKCS#7 检查：合法时返回 0，否则返回非 0。count 必须是不小于16的整数。
+/// 总是检查最后16个字节，不提前退出，也不按数据分支。
+@inline(never)
+func pkcs7InvalidMask(_ bytes: UnsafePointer<UInt8>, count: Int) -> UInt32 {
+    let last = bytes + (count &- 1)
+    let pad = UInt32(last.pointee)
+    var bad: UInt32 = (pad &- 1) >> 31  // pad == 0
+    bad |= (16 &- pad) >> 31  // pad > 16
+    var offset: UInt32 = 0
+    while offset < 16 {
+        // offset < pad 时掩码全 1
+        let inPadding = 0 &- ((offset &- pad) >> 31)
+        bad |= (UInt32((last - Int(offset)).pointee) ^ pad) & inPadding
+        offset &+= 1
+    }
+    return bad
 }
 
 extension Sm4Impl: CustomReflectable, CustomStringConvertible {

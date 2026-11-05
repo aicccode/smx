@@ -125,6 +125,7 @@ struct SM3Core {
     private var bufferOffset = 0
     private var byteCount: UInt64 = 0
     private var overLimit = false
+    private var finished = false
 
     /// 标准允许的最大输入：比特长度必须小于 2^64
     static let maximumByteCount: UInt64 = (1 << 61) - 1
@@ -139,6 +140,11 @@ struct SM3Core {
     var isOverLimit: Bool { return overLimit }
 
     mutating func update(_ data: UnsafeBufferPointer<UInt8>) {
+        // 结束之后不再有合法的状态可以继续；复制一份再结束才能继续累积。
+        if finished {
+            overLimit = true
+            return
+        }
         guard var source = data.baseAddress else {
             return
         }
@@ -218,8 +224,16 @@ struct SM3Core {
         state = pending
     }
 
-    /// 填充并处理最后的分组，把摘要写入 output（32字节）。值类型，复制后可以各自结束；结束后不要再使用。
-    mutating func finalize(into output: UnsafeMutablePointer<UInt8>) {
+    /// 填充并处理最后的分组，把摘要写入 output（32字节），返回 true。
+    /// 超过长度上限或已经结束过时不写入并返回 false，不会产生错误或陈旧的摘要。
+    /// 值类型：复制后可以各自结束。
+    @discardableResult
+    mutating func finalize(into output: UnsafeMutablePointer<UInt8>) -> Bool {
+        if finished || overLimit {
+            overLimit = true
+            return false
+        }
+        finished = true
         let bitLength = byteCount &<< 3
         let start = bufferOffset
         let needsExtraBlock = start + 1 > 56
@@ -254,11 +268,13 @@ struct SM3Core {
                 output[index * 4 + 3] = UInt8(truncatingIfNeeded: word)
             }
         }
+        return true
     }
 
-    /// 超过长度上限时返回空数组
+    /// 超过长度上限或已经结束过时返回空数组
     mutating func finalize() -> [UInt8] {
-        if overLimit {
+        if finished || overLimit {
+            overLimit = true
             return []
         }
         return [UInt8](unsafeUninitializedCapacity: 32) { buffer, initialized in
@@ -270,24 +286,35 @@ struct SM3Core {
     }
 }
 
-/// 结束（finalize）之后对象不可再改变：之后的 update 被忽略，再次 finalize 保持同一个摘要。
+/// finalize 之前读取得到空值。finalize 可以重复调用，摘要不变。finalize 之后再 update 是误用：
+/// 摘要被清除，之后一直得到空值，不会返回不包含新数据的旧摘要。
 final class SM3 {
     private var core = SM3Core()
     private var digest: [UInt8] = []
     private var finished = false
+    private var misused = false
 
     func update(_ data: [UInt8]) -> SM3 {
-        if !finished {
+        if finished {
+            markMisused()
+        } else {
             core.update(data)
         }
         return self
     }
 
     func update(_ string: String) -> SM3 {
-        if !finished {
+        if finished {
+            markMisused()
+        } else {
             core.update(string)
         }
         return self
+    }
+
+    private func markMisused() {
+        misused = true
+        digest = []
     }
 
     func finalize() -> SM3 {
@@ -298,12 +325,12 @@ final class SM3 {
         return self
     }
 
-    /// 大写十六进制摘要；finalize 之前或输入超过上限时返回空串
+    /// 大写十六进制摘要；未结束、误用或输入超过上限时返回空串
     func getHash() -> String {
         return Hex.encode(digest, gap: Hex.uppercaseGap)
     }
 
-    /// 摘要字节；finalize 之前或输入超过上限时返回空数组
+    /// 摘要字节；未结束、误用或输入超过上限时返回空数组
     func getHashBytes() -> [UInt8] {
         return digest
     }

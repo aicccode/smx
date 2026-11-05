@@ -140,6 +140,46 @@ final class SecurityVectorTests: XCTestCase {
         }
     }
 
+    /// 每个签名和密文只有一种字符串，否则以字符串为键的缓存可以被绕过。公钥和私钥仍然不区分大小写。
+    func testHexCaseCanonicalForm() throws {
+        let id = text(sm2, "user_id")
+        let message = text(sm2, "message")
+        let publicKey = text(sm2, "public_key")
+        let privateKey = text(sm2, "private_key")
+        let r = text(sm2, "r")
+        let s = text(sm2, "s")
+        XCTAssertTrue(SM2.verify(userId: id, signature: "\(r)h\(s)", message: message, publicKey: publicKey))
+        XCTAssertTrue(
+            SM2.verify(userId: id, signature: "\(r)h\(s)", message: message, publicKey: publicKey.uppercased()))
+        for forged in ["\(r.uppercased())h\(s)", "\(r)h\(s.uppercased())", "\(r.uppercased())H\(s.uppercased())"] {
+            XCTAssertFalse(SM2.verify(userId: id, signature: forged, message: message, publicKey: publicKey), forged)
+        }
+        let cipher = text(sm2, "ciphertext")
+        XCTAssertEqual(try SM2.decrypt(cipher, privateKey: privateKey.uppercased()), text(sm2, "plaintext"))
+        XCTAssertThrowsError(try SM2.decrypt(cipher.uppercased(), privateKey: privateKey))
+        // 本库的输出本身就是规范形式
+        let signature = try SM2.sign(userId: id, message: message, privateKey: privateKey)
+        XCTAssertEqual(signature, signature.lowercased())
+        let produced = try SM2.encrypt("x", publicKey: publicKey)
+        XCTAssertEqual(produced, produced.lowercased())
+
+        let sm4Cipher = try keyed()
+        let good = text(sm4, "valid_padded_ciphertext")
+        XCTAssertThrowsError(try sm4Cipher.decryptChecked(text: good.uppercased()))
+        XCTAssertEqual(try sm4Cipher.decryptBytesChecked(text: good), Array(text(sm4, "valid_padded_plaintext").utf8))
+    }
+
+    func testOversizedInputsAreRejectedBeforeWork() {
+        let huge = String(repeating: "a", count: 4 << 20)
+        XCTAssertFalse(SM2.verify(userId: "id", signature: huge, message: "m", publicKey: text(sm2, "public_key")))
+        XCTAssertFalse(
+            SM2.verify(userId: "id", signature: "\(text(sm2, "r"))h\(text(sm2, "s"))", message: "m", publicKey: huge))
+        XCTAssertTrue(ECPoint.fromHexEncoded(huge).isInfinity)
+        XCTAssertNil(BigInt256(hex: huge))
+        XCTAssertThrowsError(try getSM4().setKeyChecked(key: huge, iv: huge, hex: true))
+        XCTAssertThrowsError(try getSM4().setKeyChecked(key: huge, iv: huge, hex: false))
+    }
+
     func testInvalidCiphertexts() {
         let privateKey = text(sm2, "private_key")
         for vector in cases(sm2, "invalid_ciphertexts") {

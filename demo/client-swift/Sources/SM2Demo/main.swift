@@ -6,6 +6,9 @@ import GMSwift
 
 // 这是演示代码。它用明文 HTTP 通信，并且为了和 Java 服务端的协议保持一致使用全 0 的 SM4 IV，
 // 真实系统必须使用 TLS，并且为每条消息使用新的随机 IV。CBC 本身不提供完整性。
+//
+// 服务端身份：pB 和 IDb 来自同一个未经认证的响应，冒充者可以用自己的密钥通过密钥确认并读取通信内容。
+// 设置环境变量 SM2_DEMO_SERVER_PUBKEY（服务端公钥的十六进制）后，pB 不同就是硬失败。
 
 let serverURL = "http://localhost:8080"
 let clientId = "swift-client@demo.aicc"
@@ -57,6 +60,48 @@ struct CryptoTestResponse: Decodable {
 
 /// 响应上限，防止服务端返回无限长的数据
 let maximumResponseBytes = 1 << 20
+/// 每个请求的总期限（秒），不是单次读取的超时：缓慢滴送数据的服务端同样会被中止
+let requestDeadlineSeconds = 30
+
+/// 服务端的任何文本都不可信：去掉控制字符（包括转义序列的起始字符和双向控制符），并限制长度，然后才能打印。
+func sanitized(_ text: String) -> String {
+    var scalars = String.UnicodeScalarView()
+    var count = 0
+    for scalar in text.unicodeScalars {
+        if count >= 300 {
+            scalars.append(contentsOf: "...".unicodeScalars)
+            break
+        }
+        let value = scalar.value
+        let control =
+            value < 0x20 || (0x7F...0x9F).contains(value) || (0x200E...0x200F).contains(value)
+            || (0x2028...0x202E).contains(value) || (0x2066...0x2069).contains(value)
+        scalars.append(control ? "?" : scalar)
+        count += 1
+    }
+    return String(scalars)
+}
+
+/// 打印服务端文本（或包含服务端文本的错误）的唯一入口
+func printServer(_ label: String, _ text: String) {
+    print("\(label)\(sanitized(text))")
+}
+
+/// 没有设置时返回 nil 并打印警告；设置了但不是合法公钥时直接失败。
+func pinnedServerKey() -> ECPoint? {
+    guard let pinned = ProcessInfo.processInfo.environment["SM2_DEMO_SERVER_PUBKEY"], !pinned.isEmpty else {
+        print("WARNING: the server is UNAUTHENTICATED. Anyone on the network path can impersonate it and read this")
+        print("         traffic. Set SM2_DEMO_SERVER_PUBKEY to the server public key to detect that.")
+        return nil
+    }
+    let point = ECPoint.fromHexEncoded(pinned)
+    if point.isInfinity {
+        print("SM2_DEMO_SERVER_PUBKEY is not a valid public key")
+        exit(1)
+    }
+    print("Server public key is pinned by SM2_DEMO_SERVER_PUBKEY")
+    return point
+}
 
 func postJSON<T: Encodable, R: Decodable>(_ url: String, body: T) throws -> R {
     let jsonData = try JSONEncoder().encode(body)
@@ -66,7 +111,7 @@ func postJSON<T: Encodable, R: Decodable>(_ url: String, body: T) throws -> R {
     // 请求体走标准输入，不放在命令行上：其它用户可以通过进程列表看到命令行。
     process.arguments = [
         "-s", "-X", "POST",
-        "--max-time", "30",
+        "--max-time", String(requestDeadlineSeconds),
         "--max-filesize", String(maximumResponseBytes),
         "-H", "Content-Type: application/json",
         "--data-binary", "@-",
@@ -79,6 +124,8 @@ func postJSON<T: Encodable, R: Decodable>(_ url: String, body: T) throws -> R {
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
 
+    // 写入时 curl 可能已经退出；SIGPIPE 不能杀死进程，下面按响应为空处理
+    signal(SIGPIPE, SIG_IGN)
     try process.run()
     input.fileHandleForWriting.write(jsonData)
     input.fileHandleForWriting.closeFile()
@@ -134,6 +181,7 @@ func hexValue(_ digit: UInt8) -> UInt8? {
 
 func main() {
     print("=== SM2 Key Exchange Demo (Swift Client) ===\n")
+    let pinnedKey = pinnedServerKey()
 
     // 生成A侧(客户端)证书密钥对
     let (daHex, paHex) = SM2.genKeyPair()
@@ -175,12 +223,13 @@ func main() {
     let initResponse: InitResponse
     do {
         initResponse = try postJSON("\(serverURL)/api/keyswap/init", body: initRequest)
-        print("Response: sessionId=\(initResponse.sessionId), IDb=\(initResponse.IDb)")
-        print("  pB: \(initResponse.pB)")
-        print("  Rb: \(initResponse.Rb)")
-        print("  Sb: \(initResponse.Sb)")
+        printServer("Response: sessionId=", initResponse.sessionId)
+        printServer("  IDb: ", initResponse.IDb)
+        printServer("  pB: ", initResponse.pB)
+        printServer("  Rb: ", initResponse.Rb)
+        printServer("  Sb: ", initResponse.Sb)
     } catch {
-        print("Failed to connect to server: \(error)")
+        printServer("Failed to connect to server: ", "\(error)")
         print("Make sure the Java server is running on port 8080")
         exit(1)
     }
@@ -189,6 +238,10 @@ func main() {
     print("\n--- Step 2: Calculate Sa and Ka ---")
 
     let pB = ECPoint.fromHexEncoded(initResponse.pB)
+    if let pinnedKey = pinnedKey, pB.isInfinity || pB != pinnedKey {
+        print("Server public key does not match SM2_DEMO_SERVER_PUBKEY: refusing to continue")
+        exit(1)
+    }
     let pointRb = ECPoint.fromHexEncoded(initResponse.Rb)
     let pA = ECPoint.fromHexEncoded(paHex)
     let pointRa = ECPoint.fromHexEncoded(raPubHex)
@@ -208,7 +261,7 @@ func main() {
     )
 
     guard result.success, let sa = result.sa, let ka = result.ka else {
-        print("getSa failed: \(result.message ?? "unknown error")")
+        printServer("getSa failed: ", result.message ?? "unknown error")
         exit(1)
     }
 
@@ -237,7 +290,7 @@ func main() {
             exit(1)
         }
     } catch {
-        print("Confirm request failed: \(error)")
+        printServer("Confirm request failed: ", "\(error)")
         exit(1)
     }
 
@@ -279,10 +332,10 @@ func main() {
     do {
         let cryptoResponse: CryptoTestResponse = try postJSON("\(serverURL)/api/crypto/test", body: cryptoRequest)
         print("Response:")
-        print("  clientDecrypted: \(cryptoResponse.clientDecrypted)")
+        printServer("  clientDecrypted: ", cryptoResponse.clientDecrypted)
         print("  clientDecryptMatch: \(cryptoResponse.clientDecryptMatch)")
-        print("  serverPlaintext: \(cryptoResponse.serverPlaintext)")
-        print("  serverCiphertext: \(cryptoResponse.serverCiphertext)")
+        printServer("  serverPlaintext: ", cryptoResponse.serverPlaintext)
+        printServer("  serverCiphertext: ", cryptoResponse.serverCiphertext)
 
         // 验证服务端是否正确解密了客户端的消息
         let serverDecryptOk = cryptoResponse.clientDecryptMatch
@@ -292,8 +345,8 @@ func main() {
         let serverDecrypted = try sm4.decryptChecked(text: cryptoResponse.serverCiphertext)
         let clientDecryptOk = serverDecrypted == cryptoResponse.serverPlaintext
         print("[Client decrypted server message]: \(clientDecryptOk ? "PASS" : "FAIL")")
-        print("  Server plaintext: \(cryptoResponse.serverPlaintext)")
-        print("  Client decrypted: \(serverDecrypted)")
+        printServer("  Server plaintext: ", cryptoResponse.serverPlaintext)
+        printServer("  Client decrypted: ", serverDecrypted)
 
         if serverDecryptOk && clientDecryptOk {
             print("\nBidirectional Crypto test PASSED!")
@@ -302,11 +355,11 @@ func main() {
             exit(1)
         }
     } catch {
-        print("Crypto test failed: \(error)")
+        printServer("Crypto test failed: ", "\(error)")
         exit(1)
     }
 
-    print("\n=== Demo Complete ===")
+    print(pinnedKey == nil ? "\n=== Demo Complete (server identity NOT verified) ===" : "\n=== Demo Complete ===")
 }
 
 main()
