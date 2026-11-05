@@ -38,7 +38,7 @@ type confirmResponse struct {
 }
 
 type cryptoTestRequest struct {
-	SessionID       string `json:"sessionId"`
+	SessionID        string `json:"sessionId"`
 	ClientCiphertext string `json:"clientCiphertext"`
 	ClientPlaintext  string `json:"clientPlaintext"`
 }
@@ -191,7 +191,7 @@ func main() {
 
 	// Send to server
 	cryptoReq := cryptoTestRequest{
-		SessionID:       initResp.SessionID,
+		SessionID:        initResp.SessionID,
 		ClientCiphertext: clientCiphertext,
 		ClientPlaintext:  clientPlaintext,
 	}
