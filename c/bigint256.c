@@ -18,31 +18,38 @@
 
 /* n in [0, 15] to its ASCII digit, without a branch or a table. */
 static inline char hex_digit(unsigned n, unsigned alpha_delta) {
-    unsigned letter = 0u - ((9u - n) >> 31);
+    unsigned letter = (unsigned)smx_ct_barrier(0u - ((9u - n) >> 31));
     return (char)(n + '0' + (letter & alpha_delta));
 }
+
+#ifdef SMX_HAVE_SSE2
+/* 16 bytes to 32 characters. */
+static inline void hex_encode_block(const uint8_t *data, char *out, unsigned delta) {
+    const __m128i low_mask = _mm_set1_epi8(0x0F);
+    const __m128i nine = _mm_set1_epi8(9);
+    const __m128i zero_char = _mm_set1_epi8('0');
+    const __m128i letter_delta = _mm_set1_epi8((char)delta);
+    __m128i x = _mm_loadu_si128((const __m128i *)(const void *)data);
+    __m128i hi = _mm_and_si128(_mm_srli_epi16(x, 4), low_mask);
+    __m128i lo = _mm_and_si128(x, low_mask);
+    __m128i a = _mm_unpacklo_epi8(hi, lo);
+    __m128i b = _mm_unpackhi_epi8(hi, lo);
+    a = _mm_add_epi8(_mm_add_epi8(a, zero_char),
+                     _mm_and_si128(_mm_cmpgt_epi8(a, nine), letter_delta));
+    b = _mm_add_epi8(_mm_add_epi8(b, zero_char),
+                     _mm_and_si128(_mm_cmpgt_epi8(b, nine), letter_delta));
+    _mm_storeu_si128((__m128i *)(void *)out, a);
+    _mm_storeu_si128((__m128i *)(void *)(out + 16), b);
+}
+#endif
 
 void smx_hex_encode(const uint8_t *data, size_t len, char *out, char alpha) {
     const unsigned delta = (unsigned)alpha - '0' - 10u;
     size_t i = 0;
 
 #ifdef SMX_HAVE_SSE2
-    const __m128i low_mask = _mm_set1_epi8(0x0F);
-    const __m128i nine = _mm_set1_epi8(9);
-    const __m128i zero_char = _mm_set1_epi8('0');
-    const __m128i letter_delta = _mm_set1_epi8((char)delta);
     for (; len - i >= 16; i += 16) {
-        __m128i x = _mm_loadu_si128((const __m128i *)(const void *)(data + i));
-        __m128i hi = _mm_and_si128(_mm_srli_epi16(x, 4), low_mask);
-        __m128i lo = _mm_and_si128(x, low_mask);
-        __m128i a = _mm_unpacklo_epi8(hi, lo);
-        __m128i b = _mm_unpackhi_epi8(hi, lo);
-        a = _mm_add_epi8(_mm_add_epi8(a, zero_char),
-                         _mm_and_si128(_mm_cmpgt_epi8(a, nine), letter_delta));
-        b = _mm_add_epi8(_mm_add_epi8(b, zero_char),
-                         _mm_and_si128(_mm_cmpgt_epi8(b, nine), letter_delta));
-        _mm_storeu_si128((__m128i *)(void *)(out + i * 2), a);
-        _mm_storeu_si128((__m128i *)(void *)(out + i * 2 + 16), b);
+        hex_encode_block(data + i, out + i * 2, delta);
     }
 #endif
     for (; i < len; i++) {
@@ -56,8 +63,8 @@ static inline unsigned hex_nibble(char ch, unsigned *bad) {
     unsigned c = (unsigned char)ch;
     unsigned d = c - '0';
     unsigned l = (c | 0x20u) - 'a';
-    unsigned is_digit = 0u - (((d - 10u) & ~d) >> 31);
-    unsigned is_letter = 0u - (((l - 6u) & ~l) >> 31);
+    unsigned is_digit = (unsigned)smx_ct_barrier(0u - (((d - 10u) & ~d) >> 31));
+    unsigned is_letter = (unsigned)smx_ct_barrier(0u - (((l - 6u) & ~l) >> 31));
     *bad |= ~(is_digit | is_letter);
     return (d & is_digit) | ((l + 10u) & is_letter);
 }
@@ -242,16 +249,7 @@ int bigint256_is_one(const BigInt256 *a) {
 }
 
 int bigint256_compare(const BigInt256 *a, const BigInt256 *b) {
-    uint64_t lt = 0, gt = 0;
-    int i;
-    if (a == NULL || b == NULL) {
-        return 0;
-    }
-    for (i = 0; i < 4; i++) {
-        (void)smx_subb(a->limbs[i], b->limbs[i], lt, &lt);
-        (void)smx_subb(b->limbs[i], a->limbs[i], gt, &gt);
-    }
-    return (int)gt - (int)lt;
+    return (a == NULL || b == NULL) ? 0 : smx_compare(a->limbs, b->limbs);
 }
 
 int bigint256_get_bit(const BigInt256 *a, int i) {
@@ -333,32 +331,15 @@ void bigint256_mul(uint64_t r[8], const BigInt256 *a, const BigInt256 *b) {
 }
 
 void bigint256_mod_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m) {
-    BigInt256 sum, reduced;
-    uint64_t carry, borrow, keep;
-    int i;
-    if (r == NULL || a == NULL || b == NULL || m == NULL) {
-        return;
-    }
-    carry = bigint256_add(&sum, a, b);
-    borrow = bigint256_sub(&reduced, &sum, m);
-    keep = (uint64_t)0 - (borrow & (carry ^ 1));
-    for (i = 0; i < 4; i++) {
-        r->limbs[i] = reduced.limbs[i] ^ (keep & (reduced.limbs[i] ^ sum.limbs[i]));
+    if (r != NULL && a != NULL && b != NULL && m != NULL) {
+        smx_mod_add(r->limbs, a->limbs, b->limbs, m->limbs);
     }
 }
 
 void bigint256_mod_sub(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m) {
-    BigInt256 diff, mm;
-    uint64_t mask;
-    int i;
-    if (r == NULL || a == NULL || b == NULL || m == NULL) {
-        return;
+    if (r != NULL && a != NULL && b != NULL && m != NULL) {
+        smx_mod_sub(r->limbs, a->limbs, b->limbs, m->limbs);
     }
-    mask = (uint64_t)0 - bigint256_sub(&diff, a, b);
-    for (i = 0; i < 4; i++) {
-        mm.limbs[i] = m->limbs[i] & mask;
-    }
-    bigint256_add(r, &diff, &mm);
 }
 
 /* ---- generic modular reduction: Knuth algorithm D on 32-bit digits ---- */

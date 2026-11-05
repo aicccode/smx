@@ -712,7 +712,7 @@ static void sm4_cbc_decrypt_in_place(const SM4 *ctx, uint8_t *buf, size_t blocks
  * memory accesses for every padding value, valid or not. Returns an all-ones mask if
  * the padding is valid, and *out_len is then the plaintext length.
  */
-static uint64_t pkcs7_check(const uint8_t *input, size_t len, size_t *out_len) {
+static SMX_NOINLINE uint64_t pkcs7_check(const uint8_t *input, size_t len, size_t *out_len) {
     uint64_t pad = input[len - 1];
     /* 1 <= pad <= 16 */
     uint64_t ok = smx_mask_is_zero((pad - 1) >> 4);
@@ -720,7 +720,7 @@ static uint64_t pkcs7_check(const uint8_t *input, size_t len, size_t *out_len) {
     uint64_t i;
     for (i = 0; i < 16; i++) {
         /* all ones when i < pad, that is, when this byte belongs to the padding */
-        uint64_t covered = (uint64_t)0 - ((i - pad) >> 63);
+        uint64_t covered = smx_ct_barrier((uint64_t)0 - ((i - pad) >> 63));
         diff |= covered & (input[len - 1 - i] ^ pad);
     }
     *out_len = len - (size_t)pad;

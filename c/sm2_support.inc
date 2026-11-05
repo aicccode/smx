@@ -106,7 +106,7 @@ static int random_scalar(BigInt256 *out, const BigInt256 *max) {
         *out = bigint256_from_be_bytes(b, 32);
         smx_wipe(b, sizeof(b));
         /* a rejected draw reveals nothing about the value finally accepted */
-        accept = (int)(!bigint256_is_zero(out)) & (int)(bigint256_compare(out, max) <= 0);
+        accept = (int)(!bigint256_is_zero(out)) & (int)(smx_compare(out->limbs, max->limbs) <= 0);
         SMX_DECLASSIFY(&accept, sizeof(accept));
         if (accept) {
             return 1;
@@ -130,7 +130,7 @@ static int private_key_in_range(const BigInt256 *d) {
     (void)smx_subb(d->limbs[1], SM2_N_MINUS_1.limbs[1], b, &b);
     (void)smx_subb(d->limbs[2], SM2_N_MINUS_1.limbs[2], b, &b);
     (void)smx_subb(d->limbs[3], SM2_N_MINUS_1.limbs[3], b, &b);
-    in_range &= (uint64_t)0 - b;
+    in_range &= smx_ct_barrier((uint64_t)0 - b);
     SMX_DECLASSIFY(&in_range, sizeof(in_range));
     return in_range != 0;
 }
@@ -280,7 +280,7 @@ static BigInt256 calc_x(const BigInt256 *x) {
 static BigInt256 calc_t(const BigInt256 *r, const BigInt256 *d, const BigInt256 *x_) {
     BigInt256 xr, result;
     fn_mul(xr.limbs, x_->limbs, r->limbs);
-    bigint256_mod_add(&result, d, &xr, &SM2_N);
+    smx_mod_add(result.limbs, d->limbs, xr.limbs, SM2_N.limbs);
     return result;
 }
 
@@ -330,14 +330,4 @@ static void create_s(uint8_t tag, const ECPoint *vu, const uint8_t *za, const ui
     smx_wipe(buf, sizeof(buf));
     smx_wipe(h1, sizeof(h1));
     smx_wipe(&sm3, sizeof(sm3));
-}
-
-/* Constant-time comparison: the running time does not depend on where a difference is. */
-static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len) {
-    uint8_t diff = 0;
-    size_t i;
-    for (i = 0; i < len; i++) {
-        diff |= (uint8_t)(a[i] ^ b[i]);
-    }
-    return diff == 0;
 }

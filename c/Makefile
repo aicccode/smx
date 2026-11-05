@@ -4,7 +4,7 @@ CFLAGS = -Wall -Wextra -O3 -std=c99
 
 SRCS = bigint256.c sm3.c sm4.c sm2.c
 HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc sm4_sbox_circuit.inc \
-	sm2_point.inc sm2_support.inc sm2_key_exchange.inc
+	sm2_point.inc sm2_support.inc sm2_key_exchange.inc sm2_support_ct.h
 OBJS = $(SRCS:.c=.o)
 
 all: test_all
@@ -66,6 +66,7 @@ check-sanitizers:
 # SM4 tier 2 because clang's MSan rejects the GFNI intrinsics outright. Tier 3 shares
 # all of its structure with tier 2 and differs only in the S-box instructions.
 check-ct:
+	python3 tools/check_ct_asm.py
 	@for tier in 2 1 0; do \
 		clang -std=gnu99 -O2 -g -DSMX_CT_TEST -DSMX_SM4_MAX_TIER=$$tier -fsanitize=memory \
 			-fno-sanitize-memory-param-retval -fno-sanitize-recover=all \
@@ -81,7 +82,7 @@ fuzz_all: fuzz/fuzz_all.c $(SRCS) $(HDRS)
 		-o fuzz_all fuzz/fuzz_all.c $(SRCS)
 
 format:
-	clang-format -i *.c smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_point.inc sm2_support.inc \
+	clang-format -i *.c smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_support_ct.h sm2_point.inc sm2_support.inc \
 		sm2_key_exchange.inc tools/*.c fuzz/*.c
 
 clean:

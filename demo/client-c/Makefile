@@ -4,7 +4,7 @@ SMX_DIR = ../../c
 SMX_SRCS = $(SMX_DIR)/bigint256.c $(SMX_DIR)/sm3.c $(SMX_DIR)/sm4.c $(SMX_DIR)/sm2.c
 SMX_HDRS = $(SMX_DIR)/smx.h $(SMX_DIR)/smx_internal.h $(SMX_DIR)/sm2_fp.h $(SMX_DIR)/sm2_fn.h \
 	$(SMX_DIR)/sm2_ec.h $(SMX_DIR)/sm2_precomp.inc $(SMX_DIR)/sm4_sbox_circuit.inc \
-	$(SMX_DIR)/sm2_point.inc $(SMX_DIR)/sm2_support.inc $(SMX_DIR)/sm2_key_exchange.inc
+	$(SMX_DIR)/sm2_point.inc $(SMX_DIR)/sm2_support.inc $(SMX_DIR)/sm2_key_exchange.inc $(SMX_DIR)/sm2_support_ct.h
 CURL_FLAGS = $(shell pkg-config --cflags --libs libcurl)
 
 all: demo

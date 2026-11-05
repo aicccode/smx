@@ -25,34 +25,62 @@ static inline void fn_reduce_once(uint64_t r[4], const uint64_t v[4], uint64_t t
     uint64_t t1 = smx_subb(v[1], FN_N[1], b, &b);
     uint64_t t2 = smx_subb(v[2], FN_N[2], b, &b);
     uint64_t t3 = smx_subb(v[3], FN_N[3], b, &b);
-    uint64_t keep = (uint64_t)0 - (b & (top ^ 1));
+    uint64_t keep = smx_ct_barrier((uint64_t)0 - (b & (top ^ 1)));
     r[0] = t0 ^ (keep & (t0 ^ v[0]));
     r[1] = t1 ^ (keep & (t1 ^ v[1]));
     r[2] = t2 ^ (keep & (t2 ^ v[2]));
     r[3] = t3 ^ (keep & (t3 ^ v[3]));
 }
 
-/* Montgomery reduction of t < n * R; result is t / R mod n, fully reduced. */
+/*
+ * One Montgomery round: clears t[0] and adds into t[1..4], returning the carry out of t[3]
+ * and t[4] for the caller's next limb.
+ */
+#define FN_MONT_ROUND(t0, t1, t2, t3)                                                              \
+    do {                                                                                           \
+        uint64_t q = (t0) * FN_N0;                                                                 \
+        (void)smx_mac(q, FN_N[0], (t0), 0, &c);                                                    \
+        (t1) = smx_mac(q, FN_N[1], (t1), c, &c);                                                   \
+        (t2) = smx_mac(q, FN_N[2], (t2), c, &c);                                                   \
+        (t3) = smx_mac(q, FN_N[3], (t3), c, &c);                                                   \
+    } while (0)
+
+/*
+ * Montgomery reduction of t < n * R; result is t / R mod n, fully reduced. Straight-line
+ * code: a loop over the carry limbs lets a compiler unroll it into forward branches.
+ */
 static inline void fn_mont_reduce(uint64_t r[4], const uint64_t x[8]) {
-    uint64_t t[8], top = 0;
-    int i;
-    for (i = 0; i < 8; i++) {
-        t[i] = x[i];
-    }
-    for (i = 0; i < 4; i++) {
-        uint64_t q = t[i] * FN_N0;
-        uint64_t c;
-        int j;
-        (void)smx_mac(q, FN_N[0], t[i], 0, &c);
-        t[i + 1] = smx_mac(q, FN_N[1], t[i + 1], c, &c);
-        t[i + 2] = smx_mac(q, FN_N[2], t[i + 2], c, &c);
-        t[i + 3] = smx_mac(q, FN_N[3], t[i + 3], c, &c);
-        for (j = i + 4; j < 8; j++) {
-            t[j] = smx_addc(t[j], c, 0, &c);
-        }
-        top += c;
-    }
-    fn_reduce_once(r, t + 4, top);
+    uint64_t t0 = x[0], t1 = x[1], t2 = x[2], t3 = x[3];
+    uint64_t t4 = x[4], t5 = x[5], t6 = x[6], t7 = x[7];
+    uint64_t c, top, v[4];
+
+    FN_MONT_ROUND(t0, t1, t2, t3);
+    t4 = smx_addc(t4, c, 0, &c);
+    t5 = smx_addc(t5, 0, c, &c);
+    t6 = smx_addc(t6, 0, c, &c);
+    t7 = smx_addc(t7, 0, c, &c);
+    top = c;
+
+    FN_MONT_ROUND(t1, t2, t3, t4);
+    t5 = smx_addc(t5, c, 0, &c);
+    t6 = smx_addc(t6, 0, c, &c);
+    t7 = smx_addc(t7, 0, c, &c);
+    top += c;
+
+    FN_MONT_ROUND(t2, t3, t4, t5);
+    t6 = smx_addc(t6, c, 0, &c);
+    t7 = smx_addc(t7, 0, c, &c);
+    top += c;
+
+    FN_MONT_ROUND(t3, t4, t5, t6);
+    t7 = smx_addc(t7, c, 0, &c);
+    top += c;
+
+    v[0] = t4;
+    v[1] = t5;
+    v[2] = t6;
+    v[3] = t7;
+    fn_reduce_once(r, v, top);
 }
 
 /* Montgomery product a * b / R mod n, for a, b < n. */
@@ -92,8 +120,8 @@ static inline void fn_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4
 
 /*
  * r = a^(n-2) mod n, for any 256-bit a; inverting a multiple of n gives 0.
- * The exponent is public, so skipping zero digits and indexing the power table
- * by the exponent leak nothing about the base.
+ * The exponent is public, so indexing the power table by its digits leaks nothing about
+ * the base.
  *   n-2 = FFFFFFFE FFFFFFFF FFFFFFFF FFFFFFFF 7203DF6B 21C6052B 53BBF409 39D54121
  */
 static inline void fn_inv(uint64_t r[4], const uint64_t a[4]) {
@@ -102,6 +130,7 @@ static inline void fn_inv(uint64_t r[4], const uint64_t a[4]) {
     int i;
 
     fn_reduce(ra, a);
+    fn_mont_mul(pow[0], one, FN_R2);
     fn_mont_mul(pow[1], ra, FN_R2);
     for (i = 2; i < 16; i++) {
         fn_mont_mul(pow[i], pow[i - 1], pow[1]);
@@ -130,9 +159,7 @@ static inline void fn_inv(uint64_t r[4], const uint64_t a[4]) {
     for (i = 124; i >= 0; i -= 4) {
         unsigned digit = (unsigned)(low_digits[i / 64] >> (i % 64)) & 15u;
         fn_mont_sqr_n(t, t, 4);
-        if (digit != 0) {
-            fn_mont_mul(t, t, pow[digit]);
-        }
+        fn_mont_mul(t, t, pow[digit]); /* pow[0] is the Montgomery form of 1 */
     }
 
     fn_mont_mul(r, t, one); /* leave Montgomery form */

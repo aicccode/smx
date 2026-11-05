@@ -211,11 +211,46 @@ static inline unsigned ec_booth_digit(const uint64_t k[4], int bits, int i, uint
         }
         w &= mask;
     }
-    sign = (uint64_t)0 - (w >> bits);
+    sign = smx_ct_barrier((uint64_t)0 - (w >> bits));
     d = ((uint64_t)1 << (bits + 1)) - w - 1;
     d = (d & sign) | (w & ~sign);
     *negative = sign;
     return (unsigned)((d >> 1) + (d & 1));
+}
+
+/*
+ * The two table scans read every entry, whichever one is wanted. They stay out of line so
+ * that tools/check_ct_asm.py can inspect exactly the code that runs: no conditional jump
+ * may skip a load.
+ */
+static SMX_NOINLINE void ec_comb_select(uint64_t sel[8], int window, unsigned mag) {
+    int j, l;
+    for (l = 0; l < 8; l++) {
+        sel[l] = 0;
+    }
+    for (j = 0; j < SMX_COMB_ENTRIES; j++) {
+        uint64_t mask = smx_mask_is_zero((uint64_t)(mag ^ (unsigned)(j + 1)));
+        for (l = 0; l < 8; l++) {
+            sel[l] |= sm2_comb[window][j][l] & mask;
+        }
+    }
+}
+
+static SMX_NOINLINE void ec_var_select(Jac *sel, const Jac table[EC_VAR_ENTRIES], unsigned mag) {
+    int j, l;
+    for (l = 0; l < 4; l++) {
+        sel->x[l] = 0;
+        sel->y[l] = 0;
+        sel->z[l] = 0;
+    }
+    for (j = 0; j < EC_VAR_ENTRIES; j++) {
+        uint64_t mask = smx_mask_is_zero((uint64_t)(mag ^ (unsigned)(j + 1)));
+        for (l = 0; l < 4; l++) {
+            sel->x[l] |= table[j].x[l] & mask;
+            sel->y[l] |= table[j].y[l] & mask;
+            sel->z[l] |= table[j].z[l] & mask;
+        }
+    }
 }
 
 /*
@@ -242,15 +277,9 @@ static inline void ec_mul_g(Jac *r, const uint64_t k_in[4]) {
     for (i = 0; i < SMX_COMB_WINDOWS; i++) {
         uint64_t negative;
         unsigned mag = ec_booth_digit(k, SMX_COMB_BITS, i, &negative);
-        uint64_t sel[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint64_t sel[8];
         Fe y;
-        int j, l;
-        for (j = 0; j < SMX_COMB_ENTRIES; j++) {
-            uint64_t mask = smx_mask_is_zero((uint64_t)(mag ^ (unsigned)(j + 1)));
-            for (l = 0; l < 8; l++) {
-                sel[l] |= sm2_comb[i][j][l] & mask;
-            }
-        }
+        ec_comb_select(sel, i, mag);
         fe_cond_neg(y, sel + 4, negative);
         (void)jac_add_affine(&acc, &acc, sel, y, ~smx_mask_is_zero((uint64_t)mag));
         smx_wipe(sel, sizeof(sel));
@@ -300,18 +329,7 @@ static inline void ec_mul_ct(Jac *r, const Jac *base, const uint64_t k_in[4]) {
                 jac_double(&acc, &acc);
             }
         }
-        sel.x[0] = sel.x[1] = sel.x[2] = sel.x[3] = 0;
-        sel.y[0] = sel.y[1] = sel.y[2] = sel.y[3] = 0;
-        sel.z[0] = sel.z[1] = sel.z[2] = sel.z[3] = 0;
-        for (j = 0; j < EC_VAR_ENTRIES; j++) {
-            uint64_t mask = smx_mask_is_zero((uint64_t)(mag ^ (unsigned)(j + 1)));
-            int l;
-            for (l = 0; l < 4; l++) {
-                sel.x[l] |= table[j].x[l] & mask;
-                sel.y[l] |= table[j].y[l] & mask;
-                sel.z[l] |= table[j].z[l] & mask;
-            }
-        }
+        ec_var_select(&sel, table, mag);
         fe_cond_neg(sel.y, sel.y, negative);
         if (i == 0) {
             jac_add_complete(&acc, &acc, &sel);

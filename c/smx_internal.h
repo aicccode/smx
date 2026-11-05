@@ -45,8 +45,10 @@ __extension__ typedef unsigned __int128 smx_u128;
 
 #if defined(__GNUC__)
 #define SMX_MAYBE_UNUSED __attribute__((unused))
+#define SMX_NOINLINE __attribute__((noinline))
 #else
 #define SMX_MAYBE_UNUSED
+#define SMX_NOINLINE
 #endif
 
 /* ---- wide arithmetic ---- */
@@ -109,9 +111,30 @@ static inline uint64_t smx_mac(uint64_t a, uint64_t b, uint64_t t, uint64_t c, u
 #endif
 }
 
+/*
+ * Hides a value from the optimizer. An optimizer that can see a mask is always 0 or all
+ * ones may turn masked code back into a compare and a branch, which skips the very memory
+ * accesses the mask exists to keep uniform. Emits no instructions. Every mask derived from
+ * a secret goes through here; tools/check_ct_asm.py checks the compiled result.
+ *
+ * Under SMX_CT_TEST it is the identity, because MemorySanitizer treats any uninitialized
+ * operand of an asm statement as an error, and it must be able to track the value through.
+ */
+static inline uint64_t smx_ct_barrier(uint64_t x) {
+#if defined(SMX_CT_TEST)
+    return x;
+#elif defined(__GNUC__)
+    __asm__ __volatile__("" : "+r"(x));
+    return x;
+#else
+    volatile uint64_t v = x;
+    return v;
+#endif
+}
+
 /* All ones if x == 0, otherwise zero. No branches. */
 static inline uint64_t smx_mask_is_zero(uint64_t x) {
-    return ((x | ((uint64_t)0 - x)) >> 63) - 1;
+    return smx_ct_barrier(((x | ((uint64_t)0 - x)) >> 63) - 1);
 }
 
 /* Schoolbook 256x256 -> 512. r must not alias a or b. */
@@ -175,6 +198,53 @@ static inline void smx_sqr_4(uint64_t r[8], const uint64_t a[4]) {
     r[5] = smx_addc(t5, h2, c, &c);
     r[6] = smx_addc(t6, l3, c, &c);
     r[7] = t7 + h3 + c;
+}
+
+/* ---- branch-free BigInt256 operations, for secret operands ---- */
+
+/* r = a + b, minus m if the sum reaches it. */
+static inline void smx_mod_add(uint64_t r[4], const uint64_t a[4], const uint64_t b[4],
+                               const uint64_t m[4]) {
+    uint64_t v[4], t[4], c, bo, keep;
+    int i;
+    v[0] = smx_addc(a[0], b[0], 0, &c);
+    v[1] = smx_addc(a[1], b[1], c, &c);
+    v[2] = smx_addc(a[2], b[2], c, &c);
+    v[3] = smx_addc(a[3], b[3], c, &c);
+    t[0] = smx_subb(v[0], m[0], 0, &bo);
+    t[1] = smx_subb(v[1], m[1], bo, &bo);
+    t[2] = smx_subb(v[2], m[2], bo, &bo);
+    t[3] = smx_subb(v[3], m[3], bo, &bo);
+    keep = smx_ct_barrier((uint64_t)0 - (bo & (c ^ 1)));
+    for (i = 0; i < 4; i++) {
+        r[i] = t[i] ^ (keep & (t[i] ^ v[i]));
+    }
+}
+
+/* r = a - b, plus m if that went negative. */
+static inline void smx_mod_sub(uint64_t r[4], const uint64_t a[4], const uint64_t b[4],
+                               const uint64_t m[4]) {
+    uint64_t v[4], c, mask;
+    v[0] = smx_subb(a[0], b[0], 0, &c);
+    v[1] = smx_subb(a[1], b[1], c, &c);
+    v[2] = smx_subb(a[2], b[2], c, &c);
+    v[3] = smx_subb(a[3], b[3], c, &c);
+    mask = smx_ct_barrier((uint64_t)0 - c);
+    r[0] = smx_addc(v[0], m[0] & mask, 0, &c);
+    r[1] = smx_addc(v[1], m[1] & mask, c, &c);
+    r[2] = smx_addc(v[2], m[2] & mask, c, &c);
+    r[3] = smx_addc(v[3], m[3] & mask, c, &c);
+}
+
+/* -1, 0 or 1. */
+static inline int smx_compare(const uint64_t a[4], const uint64_t b[4]) {
+    uint64_t lt = 0, gt = 0;
+    int i;
+    for (i = 0; i < 4; i++) {
+        (void)smx_subb(a[i], b[i], lt, &lt);
+        (void)smx_subb(b[i], a[i], gt, &gt);
+    }
+    return (int)gt - (int)lt;
 }
 
 /* ---- secret hygiene ---- */

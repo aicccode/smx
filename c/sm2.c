@@ -7,6 +7,7 @@
 #endif
 
 #include "sm2_ec.h"
+#include "sm2_support_ct.h"
 #include "sm2_fn.h"
 #include "smx_internal.h"
 #include <stdio.h>
@@ -303,10 +304,11 @@ char *sm2_sign_bytes(const char *user_id, const uint8_t *message, size_t len,
 
         /* r = (e + x1) mod n, fully reduced; x1 is below p, which can exceed n */
         fn_reduce(x1.limbs, kp.x.value.limbs);
-        bigint256_mod_add(&r, &e, &x1, &SM2_N);
+        smx_mod_add(r.limbs, e.limbs, x1.limbs, SM2_N.limbs);
         carry = bigint256_add(&rk, &r, &k);
         /* r + k involves the nonce: no short-circuit, so no branch on its carry */
-        reject = bigint256_is_zero(&r) | ((int)(carry ^ 1) & (bigint256_compare(&rk, &SM2_N) == 0));
+        reject =
+            bigint256_is_zero(&r) | ((int)(carry ^ 1) & (smx_compare(rk.limbs, SM2_N.limbs) == 0));
         smx_wipe(&rk, sizeof(rk));
         SMX_DECLASSIFY(&reject, sizeof(reject));
         if (reject) {
@@ -314,7 +316,7 @@ char *sm2_sign_bytes(const char *user_id, const uint8_t *message, size_t len,
         }
 
         fn_mul(rd.limbs, r.limbs, d.limbs);
-        bigint256_mod_sub(&k_minus_rd, &k, &rd, &SM2_N);
+        smx_mod_sub(k_minus_rd.limbs, k.limbs, rd.limbs, SM2_N.limbs);
         fn_mul(s.limbs, k_minus_rd.limbs, d_plus_1_inv.limbs);
         smx_wipe(&rd, sizeof(rd));
         smx_wipe(&k_minus_rd, sizeof(k_minus_rd));
