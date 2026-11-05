@@ -33,3 +33,10 @@ demo/client-c/demo
 # C# build output
 bin/
 obj/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage

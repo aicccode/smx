@@ -19,13 +19,13 @@ echo "=========================================="
 echo ""
 
 # 构建并安装Java SM2模块到本地仓库
-echo -e "${YELLOW}[1/9] 构建并安装Java SM2模块...${NC}"
+echo -e "${YELLOW}[1/10] 构建并安装Java SM2模块...${NC}"
 cd ../java
 mvn -q install -DskipTests
 echo -e "${GREEN}Java SM2模块构建并安装完成${NC}"
 
 # 启动Java服务端
-echo -e "${YELLOW}[2/9] 启动Java服务端...${NC}"
+echo -e "${YELLOW}[2/10] 启动Java服务端...${NC}"
 cd "$SCRIPT_DIR/server-java"
 mvn -q compile
 mvn -q exec:java -Dexec.mainClass="site.aicc.demo.DemoServer" &
@@ -54,7 +54,7 @@ trap cleanup EXIT
 
 # 测试JavaScript客户端
 echo "=========================================="
-echo -e "${YELLOW}[3/9] 测试JavaScript客户端...${NC}"
+echo -e "${YELLOW}[3/10] 测试JavaScript客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-js"
 if node test-demo.mjs; then
@@ -66,7 +66,7 @@ echo ""
 
 # 测试Rust客户端
 echo "=========================================="
-echo -e "${YELLOW}[4/9] 测试Rust客户端...${NC}"
+echo -e "${YELLOW}[4/10] 测试Rust客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-rust"
 if cargo run -q 2>/dev/null; then
@@ -78,7 +78,7 @@ echo ""
 
 # 测试Swift客户端 (仅在macOS上)
 echo "=========================================="
-echo -e "${YELLOW}[5/9] 测试Swift客户端...${NC}"
+echo -e "${YELLOW}[5/10] 测试Swift客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-swift"
 if swift run 2>/dev/null; then
@@ -90,7 +90,7 @@ echo ""
 
 # 测试Go客户端
 echo "=========================================="
-echo -e "${YELLOW}[6/9] 测试Go客户端...${NC}"
+echo -e "${YELLOW}[6/10] 测试Go客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-go"
 if go run . 2>/dev/null; then
@@ -102,7 +102,7 @@ echo ""
 
 # 测试C客户端
 echo "=========================================="
-echo -e "${YELLOW}[7/9] 测试C客户端...${NC}"
+echo -e "${YELLOW}[7/10] 测试C客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-c"
 make -s clean 2>/dev/null; make -s 2>/dev/null
@@ -115,7 +115,7 @@ echo ""
 
 # 测试C#客户端
 echo "=========================================="
-echo -e "${YELLOW}[8/9] 测试C#客户端...${NC}"
+echo -e "${YELLOW}[8/10] 测试C#客户端...${NC}"
 echo "=========================================="
 cd "$SCRIPT_DIR/client-csharp"
 if dotnet run -q 2>/dev/null; then
@@ -125,9 +125,21 @@ else
 fi
 echo ""
 
+# 测试Python客户端
+echo "=========================================="
+echo -e "${YELLOW}[9/10] 测试Python客户端...${NC}"
+echo "=========================================="
+cd "$SCRIPT_DIR/client-python"
+if python3 main.py; then
+    echo -e "${GREEN}Python客户端测试通过${NC}"
+else
+    echo -e "${RED}Python客户端测试失败${NC}"
+fi
+echo ""
+
 # 汇总
 echo "=========================================="
-echo -e "${YELLOW}[9/9] 测试完成${NC}"
+echo -e "${YELLOW}[10/10] 测试完成${NC}"
 echo "=========================================="
 echo ""
 echo "所有测试已完成，服务端将关闭。"

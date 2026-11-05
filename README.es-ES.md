@@ -2,19 +2,19 @@
 
 # SMX - Implementación Multilingüe de Algoritmos Criptográficos Nacionales
 
-Basado completamente en los estándares de algoritmos criptográficos comerciales publicados por la Administración Estatal de Criptografía, esta implementación logra la aplicación integral de los algoritmos criptográficos nacionales SM2, SM3 y SM4 en siete lenguajes de programación principales: **Java, JavaScript, Swift, Rust, Go, C y C#**, con **cero dependencias de terceros**.
+Basado completamente en los estándares de algoritmos criptográficos comerciales publicados por la Administración Estatal de Criptografía, esta implementación logra la aplicación integral de los algoritmos criptográficos nacionales SM2, SM3 y SM4 en ocho lenguajes de programación principales: **Java, JavaScript, Swift, Rust, Go, C, C# y Python**, con **cero dependencias de terceros**.
 
 Todas las implementaciones siguen estrictamente las especificaciones algorítmicas y los casos de prueba publicados por la Administración Estatal de Criptografía. La salida de los algoritmos coincide completamente con los estándares de prueba oficiales, por lo que pueden aplicarse directamente al desarrollo y despliegue de productos de criptografía comercial.
 
 ## Matriz de funcionalidades
 
-| Funcionalidad | Java | JavaScript | Swift | Rust | Go | C | C# |
-|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|
-| Hash SM3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cifrado/Descifrado Simétrico SM4 (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cifrado/Descifrado Asimétrico SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Firma Digital / Verificación SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Intercambio de Claves SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Funcionalidad | Java | JavaScript | Swift | Rust | Go | C | C# | Python |
+|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|:------:|
+| Hash SM3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cifrado/Descifrado Simétrico SM4 (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cifrado/Descifrado Asimétrico SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Firma Digital / Verificación SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Intercambio de Claves SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Estructura del proyecto
 
@@ -27,6 +27,7 @@ smx/
 ├── go/              # Implementación Go (Go Module, smx)
 ├── c/               # Implementación C (Makefile, C99)
 ├── csharp/          # Implementación C# (.NET 8, SMX)
+├── python/          # Implementación Python (pyproject, gm-python)
 ├── demo/            # Demo de intercambio de claves y comunicación cifrada entre lenguajes
 │   ├── server-java/     # Servidor HTTP Java (Lado B)
 │   ├── client-js/       # Cliente JavaScript (Lado A)
@@ -35,6 +36,7 @@ smx/
 │   ├── client-go/       # Cliente Go (Lado A)
 │   ├── client-c/        # Cliente C (Lado A, libcurl)
 │   ├── client-csharp/   # Cliente C# (Lado A, .NET 8)
+│   ├── client-python/   # Cliente Python (Lado A)
 │   └── run-tests.sh     # Script de prueba rápida
 └── doc/             # Documentos de especificación algorítmica (PDF)
 ```
@@ -128,9 +130,22 @@ dotnet build    # Compilar
 - **Versión mínima:** .NET 8.0
 - **Dependencias:** Ninguna (solo xunit para pruebas)
 
+### Python
+
+```bash
+cd python
+python3 -m unittest discover -s tests -t .   # Ejecutar pruebas (sin instalar dependencias)
+python3 -m pytest                            # También se puede ejecutar con pytest
+```
+
+- **Herramienta de compilación:** setuptools (pyproject.toml)
+- **Nombre del paquete:** `gm-python` (se importa como `smx`)
+- **Versión mínima:** Python 3.9+
+- **Dependencias:** Ninguna (pytest opcional, solo para pruebas)
+
 ## Demo interlenguajes
 
-El demo verifica que las implementaciones SM2 en los siete lenguajes pueden completar el **protocolo de intercambio de claves** y utilizar las claves negociadas para la **comunicación de cifrado/descifrado SM4**.
+El demo verifica que las implementaciones SM2 en los ocho lenguajes pueden completar el **protocolo de intercambio de claves** y utilizar las claves negociadas para la **comunicación de cifrado/descifrado SM4**.
 
 ### Arquitectura
 
@@ -147,6 +162,8 @@ El demo verifica que las implementaciones SM2 en los siete lenguajes pueden comp
 │  C Client   │─────────────>│             │
 ├─────────────┤              │             │
 │  C# Client  │─────────────>│             │
+├─────────────┤              │             │
+│Python Client│─────────────>│             │
 └─────────────┘              └─────────────┘
      (A侧)
 ```
