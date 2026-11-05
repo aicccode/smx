@@ -5,6 +5,8 @@ import site.aicc.sm2.util.ConvertUtil;
 
 /** Abstract elliptic curve. */
 public abstract class AbstractECCurve {
+  private static final byte UNCOMPRESSED_PREFIX = 0x04;
+
   protected AbstractECElement a;
   protected AbstractECElement b;
   protected BigInteger order;
@@ -14,6 +16,7 @@ public abstract class AbstractECCurve {
 
   public abstract AbstractECElement fromBigInteger(BigInteger x);
 
+  /** Creates a point after checking 0 <= x, y < p and the curve equation. */
   public AbstractECPoint validatePoint(BigInteger x, BigInteger y) {
     AbstractECPoint p = createPoint(x, y);
     if (!p.isValid()) {
@@ -22,7 +25,11 @@ public abstract class AbstractECCurve {
     return p;
   }
 
+  /** Creates a point without checking the curve equation; use {@link #validatePoint} for input. */
   public AbstractECPoint createPoint(BigInteger x, BigInteger y) {
+    if (x == null || y == null) {
+      throw new IllegalArgumentException("Coordinate is null");
+    }
     return createRawPoint(fromBigInteger(x), fromBigInteger(y));
   }
 
@@ -48,10 +55,18 @@ public abstract class AbstractECCurve {
 
   public abstract AbstractECMultiplier getMultiplier();
 
+  /**
+   * Decodes an uncompressed point: exactly 0x04 || x || y, with x and y below p and on the curve.
+   *
+   * @throws IllegalArgumentException for anything else
+   */
   public AbstractECPoint decodePoint(byte[] encoded) {
     int expectedLength = (getFieldSize() + 7) / 8;
-    if (encoded.length != (2 * expectedLength + 1)) {
+    if (encoded == null || encoded.length != (2 * expectedLength + 1)) {
       throw new IllegalArgumentException("Invalid point encoding length");
+    }
+    if (encoded[0] != UNCOMPRESSED_PREFIX) {
+      throw new IllegalArgumentException("Invalid point encoding prefix");
     }
     BigInteger x = ConvertUtil.fromUnsignedByteArray(encoded, 1, expectedLength);
     BigInteger y = ConvertUtil.fromUnsignedByteArray(encoded, 1 + expectedLength, expectedLength);
@@ -77,9 +92,10 @@ public abstract class AbstractECCurve {
     }
   }
 
+  /** Curves are equal only to themselves, unless a subclass can compare its parameters. */
   @Override
   public boolean equals(Object obj) {
-    return this == obj || (obj instanceof AbstractECCurve && equals((AbstractECCurve) obj));
+    return this == obj;
   }
 
   @Override

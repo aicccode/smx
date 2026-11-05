@@ -21,6 +21,9 @@ public class FpElement extends AbstractECElement {
   /** Lazily computed for SM2 elements; benign race, BigInteger is immutable. */
   private BigInteger v;
 
+  /** True only for coordinates of a secret point created by {@link Sm2Engine}. */
+  private boolean erasable;
+
   static BigInteger calculateResidue(BigInteger p) {
     int bitLength = p.bitLength();
     if (bitLength >= 96) {
@@ -44,9 +47,23 @@ public class FpElement extends AbstractECElement {
 
   /** Wraps canonical limbs of the SM2 field; takes ownership of the array. */
   FpElement(int[] limbs) {
+    this(limbs, false);
+  }
+
+  /** As {@link #FpElement(int[])}, marking a coordinate of a secret point as erasable. */
+  FpElement(int[] limbs, boolean erasable) {
     this.q = Sm2Field.P_BIG;
     this.r = null;
     this.limbs = limbs;
+    this.erasable = erasable;
+  }
+
+  /** Clears a secret coordinate after its last use; does nothing to any other element. */
+  void eraseIfSecret() {
+    if (erasable) {
+      Arrays.fill(limbs, 0);
+      v = null;
+    }
   }
 
   /** The limbs of an SM2 field element, or null; callers must not modify the array. */
@@ -54,9 +71,25 @@ public class FpElement extends AbstractECElement {
     return limbs;
   }
 
-  /** The other element's limbs when both are SM2 limb elements, else null. */
+  /**
+   * The other element's limbs when both are SM2 limb elements, else null. Rejects a null operand
+   * and one from a different field, whose arithmetic would be meaningless.
+   */
   private int[] otherLimbs(AbstractECElement b) {
-    return limbs != null && b instanceof FpElement ? ((FpElement) b).limbs : null;
+    if (b == null) {
+      throw new IllegalArgumentException("Field element is null");
+    }
+    if (!(b instanceof FpElement)) {
+      return null;
+    }
+    FpElement other = (FpElement) b;
+    if (limbs != null && other.limbs != null) {
+      return other.limbs;
+    }
+    if (!q.equals(other.q)) {
+      throw new IllegalArgumentException("Field elements are from different fields");
+    }
+    return null;
   }
 
   @Override

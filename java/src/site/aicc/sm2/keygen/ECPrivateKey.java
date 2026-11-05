@@ -9,6 +9,9 @@ public class ECPrivateKey extends ECKey {
 
   public ECPrivateKey(BigInteger d) {
     super(true);
+    if (d == null || d.signum() <= 0) {
+      throw new IllegalArgumentException("Invalid private key");
+    }
     this.d = d;
   }
 

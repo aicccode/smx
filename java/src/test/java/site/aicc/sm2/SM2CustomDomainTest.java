@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import org.junit.Test;
 import site.aicc.sm2.ec.AbstractECMultiplier;
@@ -44,12 +43,8 @@ public class SM2CustomDomainTest {
     for (int i = 0; i < 4; i++) {
       ECKeyPair pair = init.genKeyPair();
       byte[] pub = pair.getPointPubKey().getEncoded();
-      // A scalar with the top bit set would be read as negative by sm2Sign; keep it positive.
-      BigInteger d = pair.getBIPriKey();
-      byte[] priv = ConvertUtil.bigIntegerTo32Bytes(d);
-      byte[] signedPriv = new byte[33];
-      System.arraycopy(priv, 0, signedPriv, 1, 32);
-      String signature = SM2Cipher.sm2Sign(id, signedPriv, message, init);
+      byte[] priv = ConvertUtil.bigIntegerTo32Bytes(pair.getBIPriKey());
+      String signature = SM2Cipher.sm2Sign(id, priv, message, init);
       assertTrue(SM2Cipher.sm2SignVerify(id, pub, message, signature, init));
       assertFalse(SM2Cipher.sm2SignVerify(id, pub, new byte[3], signature, init));
       String cipher = SM2Cipher.encrypt(pub, message, init);

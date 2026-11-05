@@ -4,6 +4,8 @@ import java.math.BigInteger;
 
 /** Point on an elliptic curve. */
 public abstract class AbstractECPoint {
+  /** The largest count a multiplier needs: its scalars are limited to 2^16 bits. */
+  private static final int MAX_DOUBLINGS = 1 << 16;
 
   protected AbstractECCurve curve;
   protected AbstractECElement x;
@@ -19,6 +21,9 @@ public abstract class AbstractECPoint {
 
   protected AbstractECPoint(
       AbstractECCurve curve, AbstractECElement x, AbstractECElement y, AbstractECElement[] zs) {
+    if (curve == null || zs == null) {
+      throw new IllegalArgumentException("Curve is null");
+    }
     this.curve = curve;
     this.x = x;
     this.y = y;
@@ -102,15 +107,23 @@ public abstract class AbstractECPoint {
   public abstract AbstractECPoint subtract(AbstractECPoint b);
 
   public AbstractECPoint timesPow2(int e) {
-    if (e < 0) {
-      throw new IllegalArgumentException("'e' cannot be negative");
-    }
+    checkDoublingCount(e);
 
     AbstractECPoint p = this;
     for (int i = 0; i < e; i++) {
       p = p.twice();
     }
     return p;
+  }
+
+  /** Bounds {@link #timesPow2} so that no argument can make it run for hours. */
+  protected static void checkDoublingCount(int e) {
+    if (e < 0) {
+      throw new IllegalArgumentException("'e' cannot be negative");
+    }
+    if (e > MAX_DOUBLINGS) {
+      throw new IllegalArgumentException("'e' is too large");
+    }
   }
 
   public abstract AbstractECPoint twice();

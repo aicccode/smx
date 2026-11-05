@@ -3,14 +3,16 @@ package site.aicc.sm2;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import site.aicc.sm2.ec.AbstractECPoint;
 import site.aicc.sm2.ec.DoubleAndAddMultiplier;
 import site.aicc.sm2.keygen.ECKeyPair;
-import site.aicc.sm2.keygen.ECPublicKey;
 import site.aicc.sm2.util.ConvertUtil;
 
 /** SM2 elliptic curve public key cryptographic algorithm. */
 public class SM2 {
+  private static final int PRIVATE_KEY_HEX_LENGTH = 64;
+
   private static final String[] PARAMS =
       new String[] {
         "FFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF",
@@ -28,58 +30,123 @@ public class SM2 {
     return INIT;
   }
 
-  /** Generates a key pair whose private key and coordinates fit the fixed 32-byte encodings. */
+  /**
+   * Generates a key pair whose private key is uniform in [1, n - 2].
+   *
+   * @throws IllegalStateException when the operating system's random source fails
+   */
   public static ECKeyPair genSM2KeyPair() {
-    while (true) {
-      ECKeyPair key = INIT.genKeyPairWith32ByteScalar();
-      AbstractECPoint q = ((ECPublicKey) key.getPublic()).getQ();
-      int pubLength =
-          q.getXCoord().toBigInteger().toByteArray().length
-              + q.getYCoord().toBigInteger().toByteArray().length;
-      if (pubLength == 64) {
-        return key;
-      }
-    }
+    return INIT.genKeyPair();
   }
 
+  /**
+   * Decodes a public key: the hex of exactly 0x04 || x || y, validated.
+   *
+   * @throws IllegalArgumentException for malformed hex or an invalid point
+   */
   public static AbstractECPoint decodePoint(String publicKey) {
     return INIT.decodePoint(ConvertUtil.hexToByte(publicKey));
   }
 
+  /**
+   * Computes the public key of a private key.
+   *
+   * @throws IllegalArgumentException unless 1 <= privateKey <= n - 2
+   */
   public static AbstractECPoint getPublicKey(BigInteger privateKey) {
     return INIT.getPublicKey(privateKey);
   }
 
+  /**
+   * Encrypts the UTF-8 encoding of content; returns the hex of C1 || C3 || C2.
+   *
+   * @return null for empty content
+   * @throws IllegalArgumentException for an invalid key, or content that is null or not valid
+   *     Unicode
+   * @throws IllegalStateException when the operating system's random source fails
+   */
   public static String sm2Encrypt(String content, String publicKey)
       throws IllegalArgumentException, IOException {
-    return SM2Cipher.encrypt(
-        ConvertUtil.hexToByte(publicKey), content.getBytes(StandardCharsets.UTF_8), INIT);
+    byte[] plain = ConvertUtil.utf8Bytes(content);
+    try {
+      return SM2Cipher.encrypt(ConvertUtil.hexToByte(publicKey), plain, INIT);
+    } finally {
+      Arrays.fill(plain, (byte) 0);
+    }
   }
 
+  /**
+   * Decrypts the hex of C1 || C3 || C2 with a private key of exactly 64 hex digits. The result is
+   * decoded as UTF-8, where bytes that are not valid UTF-8 become U+FFFD.
+   *
+   * @throws IllegalArgumentException for an invalid key or any rejected ciphertext
+   */
   public static String sm2Decrypt(String content, String privateKey)
       throws IllegalArgumentException, IOException {
-    byte[] decrypt =
-        SM2Cipher.decrypt(ConvertUtil.hexToByte(privateKey), ConvertUtil.hexToByte(content), INIT);
-    return new String(decrypt, StandardCharsets.UTF_8);
+    byte[] key = decodePrivateKey(privateKey);
+    try {
+      byte[] cipher;
+      try {
+        cipher = ConvertUtil.hexToByte(content);
+      } catch (IllegalArgumentException e) {
+        throw new IllegalArgumentException("Decryption failed");
+      }
+      byte[] plain = SM2Cipher.decrypt(key, cipher, INIT);
+      try {
+        return new String(plain, StandardCharsets.UTF_8);
+      } finally {
+        Arrays.fill(plain, (byte) 0);
+      }
+    } finally {
+      Arrays.fill(key, (byte) 0);
+    }
   }
 
+  /**
+   * Signs the UTF-8 encoding of content; returns r, 'h', s as 64 hex digits each.
+   *
+   * @throws IllegalArgumentException for an invalid key, or a user ID or content that is null, not
+   *     valid Unicode, or (for the ID) 8192 bytes or longer
+   * @throws IllegalStateException when the operating system's random source fails
+   */
   public static String sm2Sign(String userId, String content, String privateKey)
       throws IllegalArgumentException, Exception {
-    return SM2Cipher.sm2Sign(
-        ConvertUtil.byteToHex(userId.getBytes(StandardCharsets.UTF_8)),
-        ConvertUtil.hexToByte(privateKey),
-        content.getBytes(StandardCharsets.UTF_8),
-        INIT);
+    byte[] key = decodePrivateKey(privateKey);
+    try {
+      return SM2Cipher.sm2Sign(
+          ConvertUtil.byteToHex(ConvertUtil.utf8Bytes(userId)),
+          key,
+          ConvertUtil.utf8Bytes(content),
+          INIT);
+    } finally {
+      Arrays.fill(key, (byte) 0);
+    }
   }
 
+  /** Verifies a signature; every invalid input of any kind gives false. */
   public static boolean sm2VerifySign(
       String userId, String signature, String content, String publicKey) {
-    return SM2Cipher.sm2SignVerify(
-        ConvertUtil.byteToHex(userId.getBytes(StandardCharsets.UTF_8)),
-        ConvertUtil.hexToByte(publicKey),
-        content.getBytes(StandardCharsets.UTF_8),
-        signature,
-        INIT);
+    try {
+      return SM2Cipher.sm2SignVerify(
+          ConvertUtil.byteToHex(ConvertUtil.utf8Bytes(userId)),
+          ConvertUtil.hexToByte(publicKey),
+          ConvertUtil.utf8Bytes(content),
+          signature,
+          INIT);
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  private static byte[] decodePrivateKey(String privateKey) {
+    if (privateKey == null || privateKey.length() != PRIVATE_KEY_HEX_LENGTH) {
+      throw new IllegalArgumentException("Invalid private key");
+    }
+    try {
+      return ConvertUtil.hexToByte(privateKey);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid private key");
+    }
   }
 
   public static SM2KeySwapParams getSb(

@@ -647,13 +647,19 @@ final class Sm2Field {
     return r;
   }
 
-  /** Converts a non-negative value below 2^256 to limbs. */
+  /** Converts a value in [0, 2^256) to limbs; anything else is rejected, never truncated. */
   static int[] fromBigInteger(BigInteger v) {
+    if (v == null || v.signum() < 0 || v.bitLength() > 256) {
+      throw new IllegalArgumentException("Value out of range");
+    }
     byte[] raw = v.toByteArray();
     byte[] fixed = new byte[32];
     int n = Math.min(raw.length, 32);
     System.arraycopy(raw, raw.length - n, fixed, 32 - n, n);
-    return fromBytes(fixed, 0);
+    int[] limbs = fromBytes(fixed, 0);
+    java.util.Arrays.fill(fixed, (byte) 0);
+    java.util.Arrays.fill(raw, (byte) 0);
+    return limbs;
   }
 
   static BigInteger toBigInteger(int[] a) {

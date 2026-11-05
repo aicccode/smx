@@ -1,22 +1,25 @@
 package site.aicc.sm3;
 
-import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import site.aicc.sm2.util.ConvertUtil;
 
 /**
- * SM3 cryptographic hash algorithm (GB/T 32905).
+ * SM3 cryptographic hash algorithm (GB/T 32905). An instance is stateful and not thread-safe.
  *
  * <p>Whole blocks are compressed straight from the caller's array, and one schedule array serves
- * every block, so hashing allocates only per instance and per result.
+ * every block, so hashing allocates only per instance and per result. The input buffer and message
+ * schedule are cleared whenever a hash completes, because SM2 hashes shared secrets.
  */
 public class SM3 {
+  /** Longest message: the length field holds 2^64 - 1 bits, and this keeps it whole bytes. */
+  private static final long MAX_MESSAGE_BYTES = (1L << 61) - 1;
+
   private static final int[] IV = {
     0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600, 0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E
   };
 
   /** Round constants rotated by the round number, as the standard's T_j <<< j. */
   private static final int[] ROUND_CONSTANTS = new int[64];
-
-  private static final char[] HEX = "0123456789ABCDEF".toCharArray();
 
   static {
     for (int j = 0; j < 16; j++) {
@@ -32,21 +35,24 @@ public class SM3 {
   private final byte[] blockBuffer = new byte[64];
   private int bufferOffset;
 
-  /**
-   * Message length in bits, deliberately 32 bits wide: the padding has always encoded the length
-   * modulo 2^32, so inputs of 512 MiB or more hash differently from the standard. Widening it would
-   * change those digests, so it is kept and reported.
-   */
-  private int bitLength;
+  /** Bytes absorbed so far. */
+  private long messageBytes;
 
   private int[] digestWords;
   private String hexResult;
   private byte[] hashBytes;
 
+  private void addLength(long length) {
+    if (length > MAX_MESSAGE_BYTES - messageBytes) {
+      throw new IllegalArgumentException("Message too long for SM3");
+    }
+    messageBytes += length;
+  }
+
   /** Absorbs one byte. */
   public SM3 update(byte data) {
+    addLength(1);
     blockBuffer[bufferOffset++] = data;
-    bitLength += 8;
     if (bufferOffset == 64) {
       compress(blockBuffer, 0, 1);
       bufferOffset = 0;
@@ -54,22 +60,18 @@ public class SM3 {
     return this;
   }
 
-  /** Absorbs the UTF-8 encoding of a string. */
+  /** Absorbs the UTF-8 encoding of a string; rejects null and unpaired surrogates. */
   public SM3 update(String data) {
-    byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
+    byte[] bytes = ConvertUtil.utf8Bytes(data);
     return this.update(bytes, 0, bytes.length);
   }
 
-  /** Absorbs {@code length} bytes from {@code data}; a non-positive length is a no-op. */
+  /** Absorbs {@code length} bytes from {@code data}; an invalid range changes nothing. */
   public SM3 update(byte[] data, int inOffset, int length) {
-    if (length <= 0) {
-      return this;
+    if (data == null || inOffset < 0 || length < 0 || length > data.length - inOffset) {
+      throw new IllegalArgumentException("Invalid input range");
     }
-    if (inOffset < 0 || length > data.length - inOffset) {
-      throw new ArrayIndexOutOfBoundsException(
-          "offset " + inOffset + ", length " + length + ", array " + data.length);
-    }
-    bitLength += length << 3;
+    addLength(length);
     int offset = inOffset;
     int remaining = length;
     if (bufferOffset > 0) {
@@ -100,15 +102,11 @@ public class SM3 {
   /** The upper-case hex digest of the last {@link #finish()}, or null before the first one. */
   public String getHashCode() {
     if (hexResult == null && digestWords != null) {
-      char[] chars = new char[64];
+      byte[] bytes = new byte[32];
       for (int i = 0; i < 8; i++) {
-        int word = digestWords[i];
-        for (int j = 7; j >= 0; j--) {
-          chars[i * 8 + j] = HEX[word & 0xF];
-          word >>>= 4;
-        }
+        ConvertUtil.intToBigEndian(digestWords[i], bytes, i * 4);
       }
-      hexResult = new String(chars);
+      hexResult = ConvertUtil.getHexString(bytes, true);
     }
     return hexResult;
   }
@@ -132,9 +130,13 @@ public class SM3 {
 
   /**
    * Completes the hash, writes the 32-byte digest to {@code out} and resets to the initial state.
-   * Allocation-free alternative to {@link #finish()}; results of earlier finishes stay published.
+   * Allocation-free alternative to {@link #finish()}; results of earlier finishes stay published. A
+   * range that cannot hold the digest raises {@link IllegalArgumentException} and keeps the state.
    */
   public void finishInto(byte[] out, int outOffset) {
+    if (out == null || outOffset < 0 || outOffset > out.length - 32) {
+      throw new IllegalArgumentException("Invalid output range");
+    }
     pad();
     writeState(out, outOffset);
     reset();
@@ -142,50 +144,46 @@ public class SM3 {
 
   /** Makes this instance continue from the state of {@code other}, a cheap midstate restore. */
   public void copyFrom(SM3 other) {
+    if (other == null) {
+      throw new IllegalArgumentException("Source is null");
+    }
+    if (other == this) {
+      return;
+    }
     System.arraycopy(other.state, 0, state, 0, 8);
-    System.arraycopy(other.blockBuffer, 0, blockBuffer, 0, other.bufferOffset);
+    System.arraycopy(other.blockBuffer, 0, blockBuffer, 0, 64);
     bufferOffset = other.bufferOffset;
-    bitLength = other.bitLength;
+    messageBytes = other.messageBytes;
   }
 
   private void pad() {
     byte[] buffer = blockBuffer;
     int offset = bufferOffset;
+    long bits = messageBytes << 3;
     buffer[offset++] = (byte) 0x80;
     if (offset > 56) {
-      while (offset < 64) {
-        buffer[offset++] = 0;
-      }
+      Arrays.fill(buffer, offset, 64, (byte) 0);
       compress(buffer, 0, 1);
       offset = 0;
     }
-    while (offset < 60) {
-      buffer[offset++] = 0;
-    }
-    int bits = bitLength;
-    buffer[60] = (byte) (bits >>> 24);
-    buffer[61] = (byte) (bits >>> 16);
-    buffer[62] = (byte) (bits >>> 8);
-    buffer[63] = (byte) bits;
+    Arrays.fill(buffer, offset, 56, (byte) 0);
+    ConvertUtil.intToBigEndian((int) (bits >>> 32), buffer, 56);
+    ConvertUtil.intToBigEndian((int) bits, buffer, 60);
     compress(buffer, 0, 1);
   }
 
   private void writeState(byte[] out, int outOffset) {
-    int o = outOffset;
     for (int i = 0; i < 8; i++) {
-      int word = state[i];
-      out[o] = (byte) (word >>> 24);
-      out[o + 1] = (byte) (word >>> 16);
-      out[o + 2] = (byte) (word >>> 8);
-      out[o + 3] = (byte) word;
-      o += 4;
+      ConvertUtil.intToBigEndian(state[i], out, outOffset + i * 4);
     }
   }
 
   private void reset() {
     System.arraycopy(IV, 0, state, 0, 8);
+    Arrays.fill(blockBuffer, (byte) 0);
+    Arrays.fill(schedule, 0);
     bufferOffset = 0;
-    bitLength = 0;
+    messageBytes = 0;
   }
 
   private void compress(byte[] data, int offset, int blocks) {

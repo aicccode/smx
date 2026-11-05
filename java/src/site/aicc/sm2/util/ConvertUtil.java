@@ -2,11 +2,22 @@ package site.aicc.sm2.util;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 
-/** Data type conversion utilities. */
+/**
+ * Data type conversion utilities. Invalid input raises {@link IllegalArgumentException}.
+ *
+ * <p>Keys pass through the hex functions, so these use arithmetic instead of lookup tables and do
+ * not branch on digit values, and their error messages never quote the input.
+ */
 public class ConvertUtil {
+  /** Largest output or input handled by conversions whose size the caller chooses. */
+  private static final int MAX_CONVERSION_BYTES = 1 << 24;
 
+  private static final int MAX_HEX_INPUT_BYTES = (Integer.MAX_VALUE - 16) / 2;
+  private static final int HEX_LETTER_OFFSET_LOWER = 'a' - '0' - 10;
+  private static final int HEX_LETTER_OFFSET_UPPER = 'A' - '0' - 10;
+
+  /** Compares without an early exit; only the lengths are not hidden. */
   public static boolean byteArrayEqual(byte[] a, byte[] b) {
     if (a == b) {
       return true;
@@ -17,7 +28,6 @@ public class ConvertUtil {
     if (a.length != b.length) {
       return false;
     }
-    // No early exit: this compares MACs and hash values.
     int diff = 0;
     for (int i = 0; i != a.length; i++) {
       diff |= a[i] ^ b[i];
@@ -25,56 +35,56 @@ public class ConvertUtil {
     return diff == 0;
   }
 
+  /** Reads {@code len} little-endian 32-bit words as an unsigned number. */
   public static BigInteger toBigInteger(int len, int[] x) {
+    if (x == null || len < 0 || len > x.length || len > MAX_CONVERSION_BYTES >> 2) {
+      throw new IllegalArgumentException("Invalid word array");
+    }
     byte[] bs = new byte[len << 2];
     for (int i = 0; i < len; ++i) {
-      int x_i = x[i];
-      if (x_i != 0) {
-        intToBigEndian(x_i, bs, (len - 1 - i) << 2);
-      }
+      intToBigEndian(x[i], bs, (len - 1 - i) << 2);
     }
     return new BigInteger(1, bs);
   }
 
+  /** Encodes a value in [0, 2^256) as exactly 32 big-endian bytes. */
   public static byte[] bigIntegerTo32Bytes(BigInteger n) {
-    byte[] tmpd;
-    if (n == null) {
-      return null;
+    if (n == null || n.signum() < 0 || n.bitLength() > 256) {
+      throw new IllegalArgumentException("Value does not fit in 32 bytes");
     }
-    byte[] nArray = n.toByteArray();
-    if (nArray.length == 33) {
-      tmpd = new byte[32];
-      System.arraycopy(nArray, 1, tmpd, 0, 32);
-    } else if (nArray.length == 32) {
-      tmpd = nArray;
-    } else {
-      tmpd = new byte[32];
-      System.arraycopy(nArray, 0, tmpd, 32 - nArray.length, nArray.length);
-    }
-    return tmpd;
+    byte[] raw = n.toByteArray();
+    byte[] out = new byte[32];
+    int count = Math.min(raw.length, 32);
+    System.arraycopy(raw, raw.length - count, out, 32 - count, count);
+    return out;
   }
 
+  /** Encodes a non-negative value as exactly {@code length} big-endian bytes. */
   public static byte[] asUnsignedByteArray(int length, BigInteger value) {
-    byte[] bytes = value.toByteArray();
-    if (bytes.length == length) {
-      return bytes;
+    if (value == null || value.signum() < 0) {
+      throw new IllegalArgumentException("Value must be non-negative");
     }
-    int start = bytes[0] == 0 ? 1 : 0;
-    int count = bytes.length - start;
-    if (count > length) {
+    if (length < 0 || length > MAX_CONVERSION_BYTES) {
+      throw new IllegalArgumentException("Invalid length");
+    }
+    if (value.bitLength() > length * 8L) {
       throw new IllegalArgumentException("Value cannot be represented in the given length");
     }
-    byte[] tmp = new byte[length];
-    System.arraycopy(bytes, start, tmp, tmp.length - count, count);
-    return tmp;
+    byte[] raw = value.toByteArray();
+    byte[] out = new byte[length];
+    int count = Math.min(raw.length, length);
+    System.arraycopy(raw, raw.length - count, out, length - count, count);
+    return out;
   }
 
+  /** Reads a range of bytes as an unsigned big-endian number. */
   public static BigInteger fromUnsignedByteArray(byte[] buf, int off, int length) {
-    byte[] mag = buf;
-    if (off != 0 || length != buf.length) {
-      mag = new byte[length];
-      System.arraycopy(buf, off, mag, 0, length);
+    checkRange(buf, off, length);
+    if (off == 0 && length == buf.length) {
+      return new BigInteger(1, buf);
     }
+    byte[] mag = new byte[length];
+    System.arraycopy(buf, off, mag, 0, length);
     return new BigInteger(1, mag);
   }
 
@@ -82,86 +92,122 @@ public class ConvertUtil {
     return getHexString(bytes, false);
   }
 
-  public static byte[] hexToByte(String hex) throws IllegalArgumentException {
-    if (hex.length() % 2 != 0) {
+  /**
+   * Decodes hex of even length with digits 0-9, a-f and A-F, nothing else. Signs and non-ASCII
+   * digits are rejected, so every byte string has only its two case forms as encodings.
+   *
+   * @throws NumberFormatException for an invalid digit (an {@link IllegalArgumentException})
+   */
+  public static byte[] hexToByte(String hex) {
+    if (hex == null || hex.length() % 2 != 0) {
       throw new IllegalArgumentException("Input is not a hex string");
     }
     int length = hex.length();
-    byte[] digits = HEX_DIGITS;
     byte[] b = new byte[length / 2];
+    int invalid = 0;
     for (int i = 0, j = 0; i < length; i += 2, j++) {
-      char a = hex.charAt(i);
-      char c = hex.charAt(i + 1);
-      int hi = a < 128 ? digits[a] : -1;
-      int lo = c < 128 ? digits[c] : -1;
-      if ((hi | lo) < 0) {
-        // Signs and non-ASCII digits keep Integer.parseInt semantics.
-        b[j] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
-      } else {
-        b[j] = (byte) (hi << 4 | lo);
-      }
+      int hi = hexDigit(hex.charAt(i));
+      int lo = hexDigit(hex.charAt(i + 1));
+      invalid |= hi | lo;
+      b[j] = (byte) (hi << 4 | lo);
+    }
+    if (invalid < 0) {
+      throw new NumberFormatException("Input is not a hex string");
     }
     return b;
   }
 
+  /** Returns the digit's value, or -1, using no branch or table indexed by the character. */
+  private static int hexDigit(int c) {
+    int decimal = c - '0';
+    int letter = (c | 0x20) - 'a';
+    int notDecimal = (decimal | (9 - decimal)) >> 31;
+    int notLetter = (letter | (5 - letter)) >> 31;
+    return (decimal & ~notDecimal) | ((letter + 10) & ~notLetter) | (notDecimal & notLetter);
+  }
+
+  /** Splits a non-negative number into little-endian 32-bit words. */
   public static int[] fromBigInteger(int bits, BigInteger x) {
-    if (x.signum() < 0 || x.bitLength() > bits) {
-      throw new IllegalArgumentException();
+    if (x == null || x.signum() < 0 || bits < 0 || bits > MAX_CONVERSION_BYTES * 8L) {
+      throw new IllegalArgumentException("Invalid value");
     }
-    int len = (bits + 31) >> 5;
-    int[] z = new int[len];
+    if (x.bitLength() > bits) {
+      throw new IllegalArgumentException("Value does not fit");
+    }
+    int[] z = new int[(int) ((bits + 31L) >> 5)];
+    BigInteger rest = x;
     int i = 0;
-    while (x.signum() != 0) {
-      z[i++] = x.intValue();
-      x = x.shiftRight(32);
+    while (rest.signum() != 0) {
+      z[i++] = rest.intValue();
+      rest = rest.shiftRight(32);
     }
     return z;
   }
 
+  /** Returns a bit of a little-endian word array; bits beyond the array read as 0. */
   public static int getBit(int[] x, int bit) {
-    if (bit == 0) {
-      return x[0] & 1;
+    if (x == null || bit < 0) {
+      throw new IllegalArgumentException("Invalid bit position");
     }
     int w = bit >> 5;
-    if (w < 0 || w >= x.length) {
-      return 0;
-    }
-    int b = bit & 31;
-    return (x[w] >>> b) & 1;
+    return w < x.length ? (x[w] >>> (bit & 31)) & 1 : 0;
   }
 
-  private static final byte[] HEX_UPPER = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
-  private static final byte[] HEX_LOWER = "0123456789abcdef".getBytes(StandardCharsets.ISO_8859_1);
-
-  /** Value of each ASCII hex digit, -1 for everything else. */
-  private static final byte[] HEX_DIGITS = new byte[128];
-
-  static {
-    Arrays.fill(HEX_DIGITS, (byte) -1);
-    for (int i = 0; i < 10; i++) {
-      HEX_DIGITS['0' + i] = (byte) i;
-    }
-    for (int i = 0; i < 6; i++) {
-      HEX_DIGITS['a' + i] = (byte) (10 + i);
-      HEX_DIGITS['A' + i] = (byte) (10 + i);
-    }
-  }
-
+  /** Encodes bytes as hex in the requested case. */
   public static String getHexString(byte[] bytes, boolean upperCase) {
-    byte[] alphabet = upperCase ? HEX_UPPER : HEX_LOWER;
-    byte[] hexChars = new byte[bytes.length * 2];
+    if (bytes == null || bytes.length > MAX_HEX_INPUT_BYTES) {
+      throw new IllegalArgumentException("Invalid input for hex encoding");
+    }
+    int letterOffset = upperCase ? HEX_LETTER_OFFSET_UPPER : HEX_LETTER_OFFSET_LOWER;
+    byte[] hex = new byte[bytes.length * 2];
     for (int j = 0, o = 0; j < bytes.length; j++, o += 2) {
       int v = bytes[j] & 0xFF;
-      hexChars[o] = alphabet[v >>> 4];
-      hexChars[o + 1] = alphabet[v & 0x0F];
+      hex[o] = (byte) hexChar(v >>> 4, letterOffset);
+      hex[o + 1] = (byte) hexChar(v & 0x0F, letterOffset);
     }
-    return new String(hexChars, StandardCharsets.ISO_8859_1);
+    return new String(hex, StandardCharsets.ISO_8859_1);
   }
 
+  private static int hexChar(int nibble, int letterOffset) {
+    return nibble + '0' + (((9 - nibble) >> 31) & letterOffset);
+  }
+
+  /** Writes an int as four big-endian bytes at {@code off}. */
   public static void intToBigEndian(int n, byte[] bs, int off) {
+    checkRange(bs, off, 4);
     bs[off] = (byte) (n >>> 24);
-    bs[++off] = (byte) (n >>> 16);
-    bs[++off] = (byte) (n >>> 8);
-    bs[++off] = (byte) (n);
+    bs[off + 1] = (byte) (n >>> 16);
+    bs[off + 2] = (byte) (n >>> 8);
+    bs[off + 3] = (byte) (n);
+  }
+
+  /**
+   * Encodes text as UTF-8, rejecting unpaired surrogates. {@link String#getBytes} would replace
+   * them with '?', so two different strings would hash, sign or encrypt to the same bytes.
+   */
+  public static byte[] utf8Bytes(String text) {
+    if (text == null) {
+      throw new IllegalArgumentException("Text is null");
+    }
+    for (int i = 0, n = text.length(); i < n; i++) {
+      char c = text.charAt(i);
+      if (Character.isSurrogate(c)) {
+        boolean paired =
+            Character.isHighSurrogate(c)
+                && i + 1 < n
+                && Character.isLowSurrogate(text.charAt(i + 1));
+        if (!paired) {
+          throw new IllegalArgumentException("Text is not valid Unicode");
+        }
+        i++;
+      }
+    }
+    return text.getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static void checkRange(byte[] buf, int off, int length) {
+    if (buf == null || off < 0 || length < 0 || length > buf.length - off) {
+      throw new IllegalArgumentException("Invalid array range");
+    }
   }
 }

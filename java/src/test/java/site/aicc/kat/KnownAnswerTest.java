@@ -28,7 +28,7 @@ import site.aicc.sm4.SM4;
 /**
  * Known-answer tests. Standard vectors come from GB/T 32905, GB/T 32907 and GB/T 32918.5; {@code
  * kat-vectors.txt} was written by the unoptimized implementation (commit 3397c6d) and freezes its
- * outputs. This class passes unchanged against that implementation.
+ * outputs for valid input. Input the hardened library rejects has its own assertions here.
  */
 public class KnownAnswerTest {
   private static final BigInteger N =
@@ -126,17 +126,26 @@ public class KnownAnswerTest {
         sm3.finish().getHashCode());
   }
 
+  private static void assertRejected(org.junit.function.ThrowingRunnable call) {
+    org.junit.Assert.assertThrows(IllegalArgumentException.class, call);
+  }
+
   @Test
-  public void sm3OutOfRangeAndNonPositiveLengths() {
+  public void sm3InvalidRangesAreRejected() {
     SM3 sm3 = new SM3();
-    sm3.update((byte[]) null, 0, 0);
-    sm3.update(new byte[4], 100, -1);
-    try {
-      sm3.update(new byte[4], 2, 3);
-      fail();
-    } catch (IndexOutOfBoundsException expected) {
-      assertNotNull(expected);
-    }
+    assertRejected(() -> sm3.update((byte[]) null, 0, 0));
+    assertRejected(() -> sm3.update((String) null));
+    assertRejected(() -> sm3.update(new byte[4], 100, -1));
+    assertRejected(() -> sm3.update(new byte[4], 2, 3));
+    assertRejected(() -> sm3.update(new byte[4], -1, 1));
+    assertRejected(() -> sm3.update("\uD800"));
+    assertRejected(() -> sm3.finishInto(new byte[31], 0));
+    assertRejected(() -> sm3.finishInto(new byte[32], 1));
+    assertRejected(() -> sm3.copyFrom(null));
+    // A rejected call leaves the running hash intact.
+    assertEquals(
+        "1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B",
+        sm3.finish().getHashCode());
   }
 
   // ---------------------------------------------------------------- SM4
@@ -174,12 +183,24 @@ public class KnownAnswerTest {
   @Test
   public void sm4FrozenCbcVectors() throws Exception {
     for (String[] v : vectors("sm4")) {
-      SM4 sm4 = new SM4().setKey(utf8(v[2]), utf8(v[3]), Boolean.parseBoolean(v[1]));
+      boolean hex = Boolean.parseBoolean(v[1]);
+      String key = utf8(v[2]);
+      String iv = utf8(v[3]);
       String message = utf8(v[4]);
+      if (keySize(key, hex) != 16 || keySize(iv, hex) != 16) {
+        // Hashed, truncated or padded keys are gone; the frozen output must not be reproducible.
+        assertRejected(() -> new SM4().setKey(key, iv, hex));
+        continue;
+      }
+      SM4 sm4 = new SM4().setKey(key, iv, hex);
       assertEquals(v[5], sm4.encrypt(message));
       assertEquals(message, sm4.decrypt(v[5]));
       assertEquals(message, sm4.decrypt(v[5].toUpperCase()));
     }
+  }
+
+  private static int keySize(String value, boolean hex) {
+    return hex ? value.length() / 2 : value.getBytes(StandardCharsets.UTF_8).length;
   }
 
   @Test
@@ -196,53 +217,69 @@ public class KnownAnswerTest {
       "17dca70797ce0d8be4f3a37c7470400ef015ac7d0cf384b77a1de98e66227bd3";
 
   @Test
-  public void sm4LenientInputsKeepTheirBehavior() throws Exception {
-    SM4 sm4 = new SM4().setKey(SM4_KEY, "00000000000000000000000000000000", true);
+  public void sm4RejectsEveryMalformedInputWithOneError() throws Exception {
+    String iv = "00000000000000000000000000000000";
+    SM4 sm4 = new SM4().setKey(SM4_KEY, iv, true);
     String ct = sm4.encrypt("exactly-16-bytes");
-    // Trailing partial blocks are dropped.
-    assertEquals("exactly-16-bytes", sm4.decrypt(ct + "abcd"));
-    // Integer.parseInt semantics: a sign is a legal first character of a hex pair.
-    assertEquals(
-        new SM4().setKey("0a" + SM4_KEY.substring(2), "00", true).encrypt("x"),
-        new SM4().setKey("+a" + SM4_KEY.substring(2), "00", true).encrypt("x"));
-    assertEquals(
-        new SM4().setKey("f6" + SM4_KEY.substring(2), "00", true).encrypt("x"),
-        new SM4().setKey("-a" + SM4_KEY.substring(2), "00", true).encrypt("x"));
-    assertEquals(
-        new SM4().setKey("0a" + SM4_KEY.substring(2), "00", true).encrypt("x"),
-        new SM4().setKey("０a" + SM4_KEY.substring(2), "00", true).encrypt("x"));
-    try {
-      sm4.decrypt("zz");
-      fail();
-    } catch (NumberFormatException expected) {
-      assertNotNull(expected);
+    for (String bad :
+        new String[] {
+          ct + "abcd",
+          "zz",
+          "abc",
+          "",
+          ct.substring(2),
+          "+" + ct.substring(1),
+          null,
+          ct.substring(0, 32)
+        }) {
+      IllegalArgumentException e =
+          org.junit.Assert.assertThrows(IllegalArgumentException.class, () -> sm4.decrypt(bad));
+      assertEquals("SM4 decryption failed", e.getMessage());
     }
-    try {
-      sm4.decrypt("abc");
-      fail();
-    } catch (ArrayIndexOutOfBoundsException expected) {
-      assertNotNull(expected);
-    }
-    try {
-      sm4.decrypt("");
-      fail();
-    } catch (ArrayIndexOutOfBoundsException expected) {
-      assertNotNull(expected);
-    }
-    try {
-      new SM4().setKey(SM4_KEY + SM4_KEY, "00", true);
-      fail();
-    } catch (ArrayIndexOutOfBoundsException expected) {
-      assertNotNull(expected);
-    }
-    // A key that was never set means an all-zero round key schedule and IV.
+    // Signs and non-ASCII digits are not hex.
+    assertRejected(() -> new SM4().setKey("+a" + SM4_KEY.substring(2), iv, true));
+    assertRejected(() -> new SM4().setKey("-a" + SM4_KEY.substring(2), iv, true));
+    assertRejected(() -> new SM4().setKey("\uFF10a" + SM4_KEY.substring(2), iv, true));
+    assertRejected(() -> new SM4().setKey(SM4_KEY + SM4_KEY, iv, true));
+    assertRejected(() -> new SM4().setKey(SM4_KEY, "00", true));
+    assertRejected(() -> new SM4().setKey(null, iv, true));
+    assertRejected(() -> new SM4().setKey(SM4_KEY, null, false));
+    assertRejected(() -> new SM4().setKey("0123456789abcde", "0123456789abcdef", false));
+    assertRejected(() -> new SM4().setKey("0123456789abcdef", "0123456789abcde\uD800", false));
+    assertRejected(() -> sm4.encrypt(null));
+    assertRejected(() -> sm4.encrypt("\uDC00"));
+    // A rejected setKey keeps the previous key.
+    assertEquals(ct, sm4.encrypt("exactly-16-bytes"));
+    // A key that was never set is an error, not an all-zero key.
     SM4 unset = new SM4();
-    assertEquals("x", unset.decrypt(unset.encrypt("x")));
+    assertRejected(() -> unset.encrypt("x"));
+    assertRejected(() -> unset.decrypt(ct));
+    // A 16-byte text key still works exactly like the same bytes given as hex.
+    assertEquals(
+        new SM4().setKey("sixteen byte key", "sixteen byte iv!", false).encrypt("x"),
+        new SM4()
+            .setKey(
+                ConvertUtil.byteToHex("sixteen byte key".getBytes(StandardCharsets.UTF_8)),
+                ConvertUtil.byteToHex("sixteen byte iv!".getBytes(StandardCharsets.UTF_8)),
+                true)
+            .encrypt("x"));
     assertEquals(SM4.bytes2Hex(new byte[] {(byte) 0xAB}, true), "AB");
     assertEquals(SM4.bytes2Hex(new byte[] {(byte) 0xAB}, false), "ab");
   }
 
   // ---------------------------------------------------------------- SM2
+
+  /** Scalars wider than 256 bits are rejected by the multiplier, as the frozen file expects. */
+  private static final class GeneratorAccess {
+    AbstractECPoint multiplyChecked(BigInteger k) {
+      return SM2.decodePoint(GENERATOR_HEX).multiply(k);
+    }
+  }
+
+  private static final String GENERATOR_HEX =
+      "0432C4AE2C1F1981195F9904466A39C9948FE30BBFF2660BE1715A4589334C74C7"
+          + "BC3736A2F4F6779C59BDCEE36B692153D0A9877CC62A474002DF32E52139F0A0";
+  private static final GeneratorAccess GENERATOR = new GeneratorAccess();
 
   private static final String GBT_D =
       "3945208F7B2144B13F36E38AC6D39F95889393692860B51A42FB81EF4DF7C5B8";
@@ -267,7 +304,8 @@ public class KnownAnswerTest {
   @Test
   public void sm2FrozenGeneratorMultiples() throws Exception {
     for (String[] v : vectors("gmul")) {
-      assertEquals(v[1], v[2], encode(SM2.getPublicKey(new BigInteger(v[1], 16))));
+      // The group operation takes any scalar; getPublicKey only accepts valid private keys.
+      assertEquals(v[1], v[2], encode(GENERATOR.multiplyChecked(new BigInteger(v[1], 16))));
     }
   }
 
@@ -292,7 +330,7 @@ public class KnownAnswerTest {
       String id = utf8(v[2]);
       String message = utf8(v[3]);
       assertTrue(SM2.sm2VerifySign(id, v[4], message, v[1]));
-      assertTrue("raw 64-byte key", SM2.sm2VerifySign(id, v[4], message, v[1].substring(2)));
+      assertFalse("raw 64-byte key", SM2.sm2VerifySign(id, v[4], message, v[1].substring(2)));
       assertFalse(SM2.sm2VerifySign(id, v[4], message + "x", v[1]));
       assertFalse(SM2.sm2VerifySign(id + "x", v[4], message, v[1]));
     }
@@ -337,8 +375,6 @@ public class KnownAnswerTest {
       assertEquals(129, sig.length());
       assertEquals(sig.toLowerCase(), sig);
       assertEquals('h', sig.charAt(64));
-      // r and s are always drawn with a non-zero top hex digit.
-      assertTrue(sig.charAt(0) != '0' && sig.charAt(65) != '0');
       assertTrue(SM2.sm2VerifySign("id", sig, "message " + i, GBT_PUB));
     }
   }
@@ -374,12 +410,9 @@ public class KnownAnswerTest {
         assertNotNull(expected);
       }
     }
-    try {
-      SM2.sm2Decrypt(ct.substring(0, 100), d);
-      fail();
-    } catch (IndexOutOfBoundsException expected) {
-      assertNotNull(expected);
-    }
+    assertRejected(() -> SM2.sm2Decrypt(ct.substring(0, 100), d));
+    assertRejected(() -> SM2.sm2Decrypt("", d));
+    assertRejected(() -> SM2.sm2Decrypt(null, d));
     // Wrong key: C3 no longer matches.
     try {
       SM2.sm2Decrypt(ct, "01" + d.substring(2));
@@ -389,81 +422,80 @@ public class KnownAnswerTest {
     }
   }
 
-  /** Quirks of the baseline that are reported rather than fixed, pinned so they cannot drift. */
+  /** Input the baseline accepted, or failed on with the wrong error, and which is now rejected. */
   @Test
-  public void sm2BaselineBehaviorIsPinned() throws Exception {
+  public void sm2RejectsInvalidInput() throws Exception {
     String[] parts = GBT_SIG.split("h");
     BigInteger r = new BigInteger(parts[0], 16);
     BigInteger s = new BigInteger(parts[1], 16);
     String message = "message digest";
     String id = "1234567812345678";
-    // s is not range checked: s - n (negative) and small s + n are accepted by the baseline.
-    assertTrue(
-        SM2.sm2VerifySign(id, r.toString(16) + "h" + s.subtract(N).toString(16), message, GBT_PUB));
-    // s + n does not fit into 256 bits here, so the multiplier rejects it.
-    assertFalse(
-        SM2.sm2VerifySign(id, r.toString(16) + "h" + s.add(N).toString(16), message, GBT_PUB));
-    assertFalse(
-        SM2.sm2VerifySign(id, r.add(N).toString(16) + "h" + s.toString(16), message, GBT_PUB));
-    assertFalse(SM2.sm2VerifySign(id, "nothing", message, GBT_PUB));
-    assertFalse(SM2.sm2VerifySign(id, "h", message, GBT_PUB));
-    assertFalse(SM2.sm2VerifySign(id, "zzhzz", message, GBT_PUB));
-    assertFalse(SM2.sm2VerifySign(id, null, message, GBT_PUB));
-    // r + s = n, t = 0.
-    assertFalse(
-        SM2.sm2VerifySign(id, r.toString(16) + "h" + N.subtract(r).toString(16), message, GBT_PUB));
-    // s = 0 is computed, not short-circuited, and still fails.
-    assertFalse(SM2.sm2VerifySign(id, r.toString(16) + "h0", message, GBT_PUB));
-    // The format byte of an encoded point is ignored.
+    // s is range checked: s - n, s + n, r + n and short forms were accepted or crashed before.
+    for (String bad :
+        new String[] {
+          r.toString(16) + "h" + s.subtract(N).toString(16),
+          r.toString(16) + "h" + s.add(N).toString(16),
+          r.add(N).toString(16) + "h" + s.toString(16),
+          "nothing",
+          "h",
+          "zzhzz",
+          null,
+          r.toString(16) + "h" + N.subtract(r).toString(16),
+          r.toString(16) + "h0",
+          GBT_SIG + "h",
+          "+" + GBT_SIG.substring(1),
+          GBT_SIG.replace('h', 'H')
+        }) {
+      assertFalse(String.valueOf(bad), SM2.sm2VerifySign(id, bad, message, GBT_PUB));
+    }
+    // Verify never throws, whatever the argument.
+    assertFalse(SM2.sm2VerifySign(id, GBT_SIG, message, "zz"));
+    assertFalse(SM2.sm2VerifySign(id, GBT_SIG, message, "abc"));
+    assertFalse(SM2.sm2VerifySign(id, GBT_SIG, message, null));
+    assertFalse(SM2.sm2VerifySign(id, GBT_SIG, null, GBT_PUB));
+    assertFalse(SM2.sm2VerifySign(null, GBT_SIG, message, GBT_PUB));
+    assertFalse(SM2.sm2VerifySign("\uD800", GBT_SIG, message, GBT_PUB));
+    // The format byte of an encoded point is checked.
+    assertRejected(() -> SM2.decodePoint("07" + GBT_PUB.substring(2)));
+    assertRejected(() -> SM2.decodePoint(GBT_PUB.substring(2)));
+    assertRejected(() -> SM2.decodePoint(GBT_PUB.substring(0, 128) + "ff"));
+    assertRejected(() -> SM2.decodePoint(null));
+    // Private keys are in [1, n - 2], for every API that takes one.
+    BigInteger nMinus1 = N.subtract(BigInteger.ONE);
+    for (BigInteger bad :
+        new BigInteger[] {
+          BigInteger.ZERO, BigInteger.ONE.negate(), nMinus1, N, BigInteger.ONE.shiftLeft(256), null
+        }) {
+      assertRejected(() -> SM2.getPublicKey(bad));
+    }
     assertEquals(
-        encode(SM2.decodePoint(GBT_PUB)), encode(SM2.decodePoint("07" + GBT_PUB.substring(2))));
-    try {
-      SM2.decodePoint(GBT_PUB.substring(2));
-      fail();
-    } catch (IllegalArgumentException expected) {
-      assertEquals("Invalid point encoding length", expected.getMessage());
+        encode(SM2.decodePoint(GENERATOR_HEX).multiply(N.subtract(BigInteger.valueOf(2)))),
+        encode(SM2.getPublicKey(N.subtract(BigInteger.valueOf(2)))));
+    for (String bad : new String[] {nMinus1.toString(16), N.toString(16), "00", "", null, "zz"}) {
+      assertRejected(() -> SM2.sm2Sign(id, message, bad));
+      assertRejected(() -> SM2.sm2Decrypt("00", bad));
     }
-    try {
-      SM2.decodePoint(GBT_PUB.substring(0, 128) + "ff");
-      fail();
-    } catch (IllegalArgumentException expected) {
-      assertEquals("Point is not on the curve", expected.getMessage());
-    }
-    // A scalar wider than 256 bits is rejected by the multiplier installed in SM2.
-    try {
-      SM2.getPublicKey(BigInteger.ONE.shiftLeft(256));
-      fail();
-    } catch (IllegalStateException expected) {
-      assertEquals("Invalid multiplier", expected.getMessage());
-    }
-    // sm2Sign reads the key as signed: a key with the top bit set signs as d - 2^256.
+    assertRejected(() -> SM2.sm2Sign(id, message, "00" + nMinus1.toString(16)));
+    assertRejected(() -> SM2.sm2Encrypt(null, GBT_PUB));
+    assertRejected(() -> SM2.sm2Encrypt("x", null));
+    assertRejected(() -> SM2.sm2Encrypt("\uD800", GBT_PUB));
+    // A key with the top bit set is read unsigned and signs under its true public key.
     BigInteger big = BigInteger.ONE.shiftLeft(255).add(BigInteger.TEN);
     String sig = SM2.sm2Sign(id, message, big.toString(16));
-    String pub = encode(SM2.getPublicKey(big.subtract(BigInteger.ONE.shiftLeft(256))));
-    assertTrue(SM2.sm2VerifySign(id, sig, message, pub));
-    assertFalse(SM2.sm2VerifySign(id, sig, message, encode(SM2.getPublicKey(big))));
-    // d = n - 1 (with a sign byte) has no valid signature: 1 + d is not invertible.
-    try {
-      SM2.sm2Sign(id, message, "00" + N.subtract(BigInteger.ONE).toString(16));
-      fail();
-    } catch (ArithmeticException expected) {
-      assertNotNull(expected);
-    }
+    assertTrue(SM2.sm2VerifySign(id, sig, message, encode(SM2.getPublicKey(big))));
   }
 
   @Test
-  public void sm2GeneratedKeysKeepTheirShape() throws Exception {
-    for (int i = 0; i < 10; i++) {
+  public void sm2GeneratedKeysHaveFixedEncodings() throws Exception {
+    boolean sawTopBit = false;
+    for (int i = 0; i < 40; i++) {
       site.aicc.sm2.keygen.ECKeyPair pair = SM2.genSM2KeyPair();
       assertEquals(64, pair.getHexPriKey().length());
       assertEquals(130, pair.getHexPubKey().length());
-      AbstractECPoint q = pair.getPointPubKey();
-      assertEquals(
-          64,
-          q.getXCoord().toBigInteger().toByteArray().length
-              + q.getYCoord().toBigInteger().toByteArray().length);
+      sawTopBit |= pair.getBIPriKey().bitLength() == 256;
       assertEquals(encode(SM2.getPublicKey(pair.getBIPriKey())), pair.getHexPubKey());
     }
+    assertTrue("keys are uniform, not filtered to a short form", sawTopBit);
   }
 
   @Test
@@ -474,8 +506,33 @@ public class KnownAnswerTest {
     assertTrue(ConvertUtil.byteArrayEqual(new byte[] {1, 2}, new byte[] {1, 2}));
     assertFalse(ConvertUtil.byteArrayEqual(new byte[] {1, 2}, new byte[] {1, 3}));
     assertArrayEquals(new byte[] {(byte) 0xab, 0x0c}, ConvertUtil.hexToByte("AB0c"));
-    assertArrayEquals(new byte[] {10}, ConvertUtil.hexToByte("+a"));
-    assertArrayEquals(new byte[] {(byte) 0xf6}, ConvertUtil.hexToByte("-a"));
+    assertRejected(() -> ConvertUtil.hexToByte("+a"));
+    assertRejected(() -> ConvertUtil.hexToByte("-a"));
+    assertRejected(() -> ConvertUtil.hexToByte("\uFF10\uFF10"));
+    assertRejected(() -> ConvertUtil.hexToByte(null));
+    for (int c = 0; c < 0x10000; c++) {
+      int digit = Character.digit(c, 16);
+      boolean ascii = c < 128 && digit >= 0;
+      String pair = "0" + (char) c;
+      if (ascii) {
+        assertArrayEquals(new byte[] {(byte) digit}, ConvertUtil.hexToByte(pair));
+      } else {
+        assertRejected(() -> ConvertUtil.hexToByte(pair));
+      }
+    }
+    byte[] everyByte = new byte[256];
+    for (int i = 0; i < 256; i++) {
+      everyByte[i] = (byte) i;
+    }
+    assertArrayEquals(everyByte, ConvertUtil.hexToByte(ConvertUtil.byteToHex(everyByte)));
+    assertArrayEquals(everyByte, ConvertUtil.hexToByte(ConvertUtil.getHexString(everyByte, true)));
+    assertEquals(
+        ConvertUtil.byteToHex(everyByte).toUpperCase(), ConvertUtil.getHexString(everyByte, true));
+    assertEquals(
+        64, ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(BigInteger.ONE)).length());
+    assertRejected(() -> ConvertUtil.bigIntegerTo32Bytes(null));
+    assertRejected(() -> ConvertUtil.bigIntegerTo32Bytes(BigInteger.ONE.negate()));
+    assertRejected(() -> ConvertUtil.bigIntegerTo32Bytes(BigInteger.ONE.shiftLeft(256)));
     assertEquals("ab0c", ConvertUtil.byteToHex(new byte[] {(byte) 0xab, 0x0c}));
     assertEquals("AB0C", ConvertUtil.getHexString(new byte[] {(byte) 0xab, 0x0c}, true));
     try {

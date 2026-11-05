@@ -1,5 +1,6 @@
 package site.aicc.sm2;
 
+import java.util.Arrays;
 import site.aicc.sm2.ec.AbstractECPoint;
 import site.aicc.sm2.util.ConvertUtil;
 import site.aicc.sm3.SM3;
@@ -8,6 +9,15 @@ import site.aicc.sm3.SM3;
 final class SM2KdfUtil {
   private static final int HASH_BYTES = 32;
 
+  /** True when every byte in the range is zero; visits them all. */
+  static boolean isAllZero(byte[] data, int offset, int length) {
+    int any = 0;
+    for (int i = 0; i < length; i++) {
+      any |= data[offset + i];
+    }
+    return any == 0;
+  }
+
   private SM2KdfUtil() {}
 
   /**
@@ -15,11 +25,16 @@ final class SM2KdfUtil {
    * prefix is hashed once; each counter value then only continues from that saved state.
    */
   static byte[] kdf(int keylen, AbstractECPoint point, byte[] za, byte[] zb) {
+    if (keylen < 0 || point == null || point.isInfinity()) {
+      throw new IllegalArgumentException("Invalid KDF input");
+    }
     byte[] result = new byte[keylen];
-    int blocks = (keylen + HASH_BYTES - 1) / HASH_BYTES;
-    if (blocks <= 0) {
+    if (keylen == 0) {
       return result;
     }
+    // An int length is far below the standard's limit of (2^32 - 1) * 32 bytes; computed in long so
+    // that lengths near Integer.MAX_VALUE cannot wrap.
+    int blocks = (int) ((keylen + (long) HASH_BYTES - 1) / HASH_BYTES);
     SM3 prefix = new SM3();
     byte[] px = point.getXCoord().getEncoded();
     prefix.update(px, 0, px.length);
@@ -47,6 +62,11 @@ final class SM2KdfUtil {
     byte[] last = new byte[HASH_BYTES];
     sm3.finishInto(last, 0);
     System.arraycopy(last, 0, result, offset, keylen - offset);
+    Arrays.fill(last, (byte) 0);
+    Arrays.fill(px, (byte) 0);
+    Arrays.fill(py, (byte) 0);
+    prefix.finishInto(last, 0);
+    Arrays.fill(last, (byte) 0);
     return result;
   }
 }

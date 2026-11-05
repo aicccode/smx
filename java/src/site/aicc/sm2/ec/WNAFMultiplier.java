@@ -19,6 +19,7 @@ public class WNAFMultiplier extends AbstractECMultiplier {
 
   @Override
   protected AbstractECPoint multiplyPositive(AbstractECPoint p, BigInteger k) {
+    requireOperands(p, k);
     AbstractECPoint fast = Sm2Engine.tryMultiply(p, k);
     if (fast != null) {
       return fast;

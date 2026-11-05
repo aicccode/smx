@@ -3,10 +3,8 @@ package site.aicc.demo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
 import site.aicc.sm2.SM2;
 import site.aicc.sm2.SM2KeySwapParams;
@@ -19,6 +17,9 @@ import site.aicc.sm2.util.ConvertUtil;
 /** 密钥交换API处理 */
 public class KeySwapHandler implements HttpHandler {
 
+  /** The SM4 key the crypto test uses; any other length could not be used afterwards. */
+  private static final int SESSION_KEY_BYTES = 16;
+
   // 服务端B的固定密钥对（实际使用应该从配置加载）
   private final ECKeyPair serverKeyPair;
   private final String serverId = "server@demo.aicc";
@@ -27,10 +28,7 @@ public class KeySwapHandler implements HttpHandler {
     this.serverKeyPair = SM2.genSM2KeyPair();
     System.out.println("Server keypair generated");
     AbstractECPoint q = ((ECPublicKey) serverKeyPair.getPublic()).getQ();
-    System.out.println(
-        "Server public key: 04"
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(q.getXCoord().toBigInteger()))
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(q.getYCoord().toBigInteger())));
+    System.out.println("Server public key: " + ConvertUtil.byteToHex(q.getEncoded()));
   }
 
   @Override
@@ -49,12 +47,12 @@ public class KeySwapHandler implements HttpHandler {
     }
 
     if (!"POST".equals(method)) {
-      sendResponse(exchange, 405, "{\"error\":\"Method not allowed\"}");
+      DemoHttp.sendError(exchange, 405, "Method not allowed");
       return;
     }
 
     try {
-      String body = readBody(exchange);
+      Map<String, String> body = DemoHttp.parseObject(DemoHttp.readBody(exchange));
       String response;
 
       if (path.endsWith("/init")) {
@@ -62,34 +60,47 @@ public class KeySwapHandler implements HttpHandler {
       } else if (path.endsWith("/confirm")) {
         response = handleConfirm(body);
       } else {
-        sendResponse(exchange, 404, "{\"error\":\"Not found\"}");
+        DemoHttp.sendError(exchange, 404, "Not found");
         return;
       }
 
-      sendResponse(exchange, 200, response);
+      DemoHttp.sendResponse(exchange, 200, response);
+    } catch (DemoHttp.RequestException e) {
+      DemoHttp.sendError(exchange, e.status, e.getMessage());
     } catch (Exception e) {
-      e.printStackTrace();
-      sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+      DemoHttp.sendInternalError(exchange, e);
     }
   }
 
-  /** 处理密钥交换初始化请求 */
-  private String handleInit(String body) throws Exception {
-    // 简单JSON解析
-    String idA = extractJsonValue(body, "IDa");
-    String pAHex = extractJsonValue(body, "pA");
-    String rAHex = extractJsonValue(body, "Ra");
-    int keyLen = Integer.parseInt(extractJsonValue(body, "keyLen"));
+  private static AbstractECPoint decodePeerPoint(String hex) throws DemoHttp.RequestException {
+    try {
+      return SM2.decodePoint(hex);
+    } catch (IllegalArgumentException e) {
+      throw new DemoHttp.RequestException(400, "Invalid public key");
+    }
+  }
 
-    System.out.println("\n=== KeySwap Init ===");
-    System.out.println("IDa: " + idA);
-    System.out.println("pA: " + pAHex);
-    System.out.println("Ra: " + rAHex);
-    System.out.println("keyLen: " + keyLen);
+  private static int parseKeyLength(String value) throws DemoHttp.RequestException {
+    try {
+      if (Integer.parseInt(value) == SESSION_KEY_BYTES) {
+        return SESSION_KEY_BYTES;
+      }
+    } catch (NumberFormatException e) {
+      // Reported below.
+    }
+    throw new DemoHttp.RequestException(400, "Invalid key length");
+  }
+
+  /** 处理密钥交换初始化请求 */
+  private String handleInit(Map<String, String> body) throws Exception {
+    String idA = DemoHttp.require(body, "IDa");
+    int keyLen = parseKeyLength(DemoHttp.require(body, "keyLen"));
+
+    System.out.println("Key exchange init received");
 
     // 解析A的公钥和随机公钥
-    AbstractECPoint pA = SM2.decodePoint(pAHex);
-    AbstractECPoint rA = SM2.decodePoint(rAHex);
+    AbstractECPoint pA = decodePeerPoint(DemoHttp.require(body, "pA"));
+    AbstractECPoint rA = decodePeerPoint(DemoHttp.require(body, "Ra"));
 
     // 获取B的密钥
     AbstractECPoint pB = ((ECPublicKey) serverKeyPair.getPublic()).getQ();
@@ -104,11 +115,8 @@ public class KeySwapHandler implements HttpHandler {
     SM2KeySwapParams result = SM2.getSb(keyLen, pA, rA, pB, dB, rB, rb, idA, serverId);
 
     if (!result.isSuccess()) {
-      throw new Exception("getSb failed: " + result.getMessage());
+      throw new DemoHttp.RequestException(400, "Key exchange failed");
     }
-
-    System.out.println("Sb: " + result.getSb());
-    System.out.println("Kb: " + result.getKb());
 
     // 创建会话
     String sessionId = UUID.randomUUID().toString();
@@ -119,9 +127,7 @@ public class KeySwapHandler implements HttpHandler {
     session.pA = pA;
     session.rA = rA;
     session.pB = pB;
-    session.dB = dB;
     session.rB = rB;
-    session.rb = rb;
     session.kB = result.getKb();
     session.v = result.getV();
     session.zA = result.getZa();
@@ -130,91 +136,41 @@ public class KeySwapHandler implements HttpHandler {
     SessionStore.put(sessionId, session);
 
     // 构建响应
-    String pBHex =
-        "04"
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(pB.getXCoord().toBigInteger()))
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(pB.getYCoord().toBigInteger()));
-    String rBHex =
-        "04"
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(rB.getXCoord().toBigInteger()))
-            + ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(rB.getYCoord().toBigInteger()));
-
     return String.format(
         "{\"sessionId\":\"%s\",\"IDb\":\"%s\",\"pB\":\"%s\",\"Rb\":\"%s\",\"Sb\":\"%s\"}",
-        sessionId, serverId, pBHex, rBHex, result.getSb());
+        sessionId,
+        serverId,
+        ConvertUtil.byteToHex(pB.getEncoded()),
+        ConvertUtil.byteToHex(rB.getEncoded()),
+        result.getSb());
   }
 
   /** 处理密钥交换确认请求 */
-  private String handleConfirm(String body) throws Exception {
-    String sessionId = extractJsonValue(body, "sessionId");
-    String sA = extractJsonValue(body, "Sa");
-
-    System.out.println("\n=== KeySwap Confirm ===");
-    System.out.println("sessionId: " + sessionId);
-    System.out.println("Sa: " + sA);
+  private String handleConfirm(Map<String, String> body) throws Exception {
+    String sessionId = DemoHttp.require(body, "sessionId");
+    String sA = DemoHttp.require(body, "Sa");
 
     SessionStore.Session session = SessionStore.get(sessionId);
     if (session == null) {
-      throw new Exception("Session not found");
+      throw new DemoHttp.RequestException(500, "Session not found");
     }
 
     // 验证Sa
-    boolean valid =
-        SM2.checkSa(
-            session.v, session.zA, session.zB, session.rA, session.rB, ConvertUtil.hexToByte(sA));
+    byte[] saBytes;
+    try {
+      saBytes = ConvertUtil.hexToByte(sA);
+    } catch (IllegalArgumentException e) {
+      throw new DemoHttp.RequestException(400, "Sa verification failed");
+    }
+    boolean valid = SM2.checkSa(session.v, session.zA, session.zB, session.rA, session.rB, saBytes);
 
-    System.out.println("checkSa result: " + valid);
+    System.out.println("Key exchange confirm received, valid: " + valid);
 
     if (!valid) {
-      throw new Exception("Sa verification failed");
+      throw new DemoHttp.RequestException(500, "Sa verification failed");
     }
 
     session.confirmed = true;
     return "{\"success\":true}";
-  }
-
-  private String readBody(HttpExchange exchange) throws IOException {
-    InputStream is = exchange.getRequestBody();
-    byte[] bytes = new byte[is.available()];
-    is.read(bytes);
-    return new String(bytes, StandardCharsets.UTF_8);
-  }
-
-  private void sendResponse(HttpExchange exchange, int code, String response) throws IOException {
-    exchange.getResponseHeaders().add("Content-Type", "application/json");
-    byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-    exchange.sendResponseHeaders(code, bytes.length);
-    OutputStream os = exchange.getResponseBody();
-    os.write(bytes);
-    os.close();
-  }
-
-  private String extractJsonValue(String json, String key) {
-    String pattern = "\"" + key + "\"";
-    int keyIndex = json.indexOf(pattern);
-    if (keyIndex == -1) return null;
-
-    int colonIndex = json.indexOf(":", keyIndex);
-    if (colonIndex == -1) return null;
-
-    int start = colonIndex + 1;
-    while (start < json.length() && Character.isWhitespace(json.charAt(start))) {
-      start++;
-    }
-
-    if (json.charAt(start) == '"') {
-      // 字符串值
-      start++;
-      int end = json.indexOf('"', start);
-      return json.substring(start, end);
-    } else {
-      // 数字值
-      int end = start;
-      while (end < json.length()
-          && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '.')) {
-        end++;
-      }
-      return json.substring(start, end);
-    }
   }
 }

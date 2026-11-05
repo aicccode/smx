@@ -222,11 +222,31 @@ public class Sm2DifferentialTest {
       assertEquals(expected, Sm2Engine.signatureS(d, k, rv));
     }
     assertNull(Sm2Engine.signatureS(val(5), val(9), N.subtract(val(9))));
-    assertTrue(Sm2Engine.isSigningKeyInRange(BigInteger.ONE));
-    assertTrue(Sm2Engine.isSigningKeyInRange(N.subtract(val(2))));
-    assertFalse(Sm2Engine.isSigningKeyInRange(BigInteger.ZERO));
-    assertFalse(Sm2Engine.isSigningKeyInRange(N.subtract(BigInteger.ONE)));
-    assertFalse(Sm2Engine.isSigningKeyInRange(val(-1)));
+    for (BigInteger good : new BigInteger[] {BigInteger.ONE, N.subtract(val(2))}) {
+      assertTrue(Sm2Engine.isValidPrivateKey(Sm2BytesForTest.of(good)));
+    }
+    for (BigInteger bad :
+        new BigInteger[] {
+          BigInteger.ZERO,
+          N.subtract(BigInteger.ONE),
+          N,
+          N.add(BigInteger.ONE),
+          TWO_256.subtract(BigInteger.ONE)
+        }) {
+      assertFalse(Sm2Engine.isValidPrivateKey(Sm2BytesForTest.of(bad)));
+    }
+    assertFalse(Sm2Engine.isValidPrivateKey((byte[]) null));
+    assertFalse(Sm2Engine.isValidPrivateKey((BigInteger) null));
+    assertFalse(Sm2Engine.isValidPrivateKey(new byte[31]));
+    assertFalse(Sm2Engine.isValidPrivateKey(new byte[33]));
+  }
+
+  private static final class Sm2BytesForTest {
+    static byte[] of(BigInteger v) {
+      byte[] out = new byte[32];
+      Sm2Field.toBytes(limbs(v), out, 0);
+      return out;
+    }
   }
 
   @Test
@@ -319,8 +339,11 @@ public class Sm2DifferentialTest {
       Sm2Group.addAffineVt(q, limbs(b[0]), limbs(b[1]), w);
       samePoint("addAffineVt", expected, q);
       q = toJacobian(a, r);
-      Sm2Group.addAffineMasked(q, limbs(b[0]), limbs(b[1]), 0, w);
-      samePoint("addAffineMasked", expected, q);
+      // This variant documents that it never sees q = p: the comb cannot produce that case.
+      if (a == null || !a[0].equals(b[0]) || !a[1].equals(b[1])) {
+        Sm2Group.addAffineMasked(q, limbs(b[0]), limbs(b[1]), 0, w);
+        samePoint("addAffineMasked", expected, q);
+      }
     } else {
       q = toJacobian(a, r);
       Sm2Group.addAffineMasked(q, new int[8], new int[8], -1, w);
@@ -498,6 +521,10 @@ public class Sm2DifferentialTest {
     }
   }
 
+  private static byte[] bytes32(BigInteger v) {
+    return Sm2BytesForTest.of(v);
+  }
+
   @Test
   public void keyExchangePointMatchesReference() {
     Random r = new Random(13);
@@ -505,27 +532,69 @@ public class Sm2DifferentialTest {
       BigInteger[] pub = refMul(G, new BigInteger(256, r).mod(N));
       BigInteger[] rnd = refMul(G, new BigInteger(256, r).mod(N));
       BigInteger x = BigInteger.ONE.shiftLeft(127).add(new BigInteger(127, r));
-      BigInteger t =
-          i == 0
-              ? BigInteger.ZERO
-              : i == 1
-                  ? BigInteger.ONE
-                  : i == 2 ? N.subtract(BigInteger.ONE) : new BigInteger(256, r).mod(N);
-      BigInteger[] expected = refMul(refAdd(pub, refMul(rnd, x)), t);
-      same(expected, Sm2Engine.keyExchangePoint(point(pub), point(rnd), x, t));
+      BigInteger y = BigInteger.ONE.shiftLeft(127).add(new BigInteger(127, r));
+      BigInteger d = i == 0 ? BigInteger.ONE : new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger rv = i == 1 ? N.subtract(val(2)) : new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger t = d.add(x.multiply(rv)).mod(N);
+      BigInteger[] expected = refMul(refAdd(pub, refMul(rnd, y)), t);
+      same(expected, Sm2Engine.keyExchangePoint(d, rv, x, y, point(pub), point(rnd)));
     }
-    // pub = -x * rnd: the inner sum is infinity.
+    // pub = -y * rnd: the inner sum is infinity, which the caller must reject.
     BigInteger[] rnd = refMul(G, val(7));
-    BigInteger x = BigInteger.ONE.shiftLeft(127).add(val(3));
-    BigInteger[] pub = refNeg(refMul(rnd, x));
-    assertTrue(Sm2Engine.keyExchangePoint(point(pub), point(rnd), x, val(5)).isInfinity());
-    // Not eligible: off-curve point, infinity, or out-of-range t.
+    BigInteger y = BigInteger.ONE.shiftLeft(127).add(val(3));
+    BigInteger[] pub = refNeg(refMul(rnd, y));
+    assertTrue(
+        Sm2Engine.keyExchangePoint(val(5), val(6), y, y, point(pub), point(rnd)).isInfinity());
+    // t = 0 gives infinity too.
+    BigInteger x = BigInteger.ONE.shiftLeft(127).add(val(1));
+    BigInteger rv = val(9);
+    BigInteger d = N.subtract(x.multiply(rv).mod(N));
+    assertTrue(Sm2Engine.keyExchangePoint(d, rv, x, y, point(G), point(rnd)).isInfinity());
+    // Not eligible: off-curve point, infinity, out-of-range scalar.
     AbstractECPoint good = point(G);
     AbstractECPoint bad = CURVE.createPoint(G[0], G[1].add(BigInteger.ONE));
-    assertNull(Sm2Engine.keyExchangePoint(bad, good, x, val(5)));
-    assertNull(Sm2Engine.keyExchangePoint(good, bad, x, val(5)));
-    assertNull(Sm2Engine.keyExchangePoint(CURVE.getInfinity(), good, x, val(5)));
-    assertNull(Sm2Engine.keyExchangePoint(good, good, x, N));
+    BigInteger v5 = val(5);
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.keyExchangePoint(v5, v5, x, y, bad, good));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.keyExchangePoint(v5, v5, x, y, good, bad));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class,
+        () -> Sm2Engine.keyExchangePoint(v5, v5, x, y, CURVE.getInfinity(), good));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.keyExchangePoint(N, v5, x, y, good, good));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class,
+        () -> Sm2Engine.keyExchangePoint(v5, val(-1), x, y, good, good));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class,
+        () -> Sm2Engine.keyExchangePoint(v5, v5, TWO_256, y, good, good));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class,
+        () -> Sm2Engine.keyExchangePoint(null, v5, x, y, good, good));
+  }
+
+  @Test
+  public void engineScalarsAreNeverTruncated() {
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Field.fromBigInteger(val(-1)));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Field.fromBigInteger(TWO_256));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Field.fromBigInteger(null));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.publicPoint(CURVE, val(-1)));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.publicPoint(CURVE, new byte[31]));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.sign(new byte[32], new byte[32]));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.sign(bytes32(val(5)), new byte[31]));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.sharedPoint(new byte[32], point(G)));
+    org.junit.Assert.assertThrows(
+        IllegalArgumentException.class, () -> Sm2Engine.encapsulate(CURVE.getInfinity()));
+    assertFalse(Sm2Engine.isStandardDomain(null, null, null));
   }
 
   /** Square root in Fp; p = 3 mod 4. Returns null for a non-residue. */
@@ -548,23 +617,51 @@ public class Sm2DifferentialTest {
       }
       BigInteger e = new BigInteger(256, r);
       BigInteger rv = e.add(sum[0]).mod(N);
-      assertEquals(Boolean.TRUE, Sm2Engine.verify(point(pub), s, t, e, rv));
-      assertEquals(
-          Boolean.FALSE, Sm2Engine.verify(point(pub), s, t, e, rv.add(BigInteger.ONE).mod(N)));
-      assertEquals(Boolean.FALSE, Sm2Engine.verify(point(pub), s, t, e.add(BigInteger.ONE), rv));
-      assertEquals(Boolean.TRUE, Sm2Engine.verify(point(pub), s.subtract(N), t, e, rv));
-      assertEquals(Boolean.FALSE, Sm2Engine.verify(point(pub), s, t, e, rv.add(N)));
-      assertEquals(Boolean.FALSE, Sm2Engine.verify(point(pub), s, t, e, rv.subtract(N)));
+      // verify derives t = r + s, so choose s to match the t used above.
+      BigInteger s2 = t.subtract(rv).mod(N);
+      BigInteger[] sum2 = refAdd(refMul(G, s2), refMul(pub, t));
+      if (sum2 == null || rv.signum() == 0 || s2.signum() == 0) {
+        continue;
+      }
+      rv = e.add(sum2[0]).mod(N);
+      s2 = t.subtract(rv).mod(N);
+      BigInteger tt = rv.add(s2).mod(N);
+      BigInteger[] sum3 = refAdd(refMul(G, s2), refMul(pub, tt));
+      boolean expected = sum3 != null && rv.equals(e.add(sum3[0]).mod(N));
+      assertEquals(expected, Sm2Engine.verify(point(pub), rv, s2, bytes32(e)));
     }
-    assertEquals(Boolean.FALSE, Sm2Engine.verify(point(G), TWO_256, val(1), val(1), val(1)));
-    assertEquals(
-        Boolean.FALSE, Sm2Engine.verify(point(G), TWO_256.negate(), val(1), val(1), val(1)));
-    // s*G + t*G = infinity is a failure, not an exception.
-    assertEquals(
-        Boolean.FALSE, Sm2Engine.verify(point(G), N.subtract(val(5)), val(5), val(1), val(1)));
-    assertNull(
+    // Valid signatures built from the signing equation.
+    for (int i = 0; i < 300; i++) {
+      BigInteger d = new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger k = new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger e = new BigInteger(256, r);
+      byte[] sig = Sm2Engine.signWithNonce(limbs(d), limbs(k), bytes32(e));
+      BigInteger rv = new BigInteger(1, java.util.Arrays.copyOf(sig, 32));
+      BigInteger s = new BigInteger(1, java.util.Arrays.copyOfRange(sig, 32, 64));
+      assertEquals(e.mod(N).add(refMul(G, k)[0]).mod(N), rv);
+      assertEquals(
+          d.add(BigInteger.ONE).modInverse(N).multiply(k.subtract(rv.multiply(d))).mod(N), s);
+      AbstractECPoint pub = point(refMul(G, d));
+      assertTrue(Sm2Engine.verify(pub, rv, s, bytes32(e)));
+      assertFalse(Sm2Engine.verify(pub, rv.add(BigInteger.ONE).mod(N), s, bytes32(e)));
+      assertFalse(Sm2Engine.verify(pub, rv, s, bytes32(e.add(BigInteger.ONE).mod(TWO_256))));
+      assertFalse(Sm2Engine.verify(pub, rv, s.subtract(N), bytes32(e)));
+      assertFalse(Sm2Engine.verify(pub, rv.add(N), s, bytes32(e)));
+      assertFalse(Sm2Engine.verify(pub, rv.subtract(N), s, bytes32(e)));
+    }
+    assertFalse(Sm2Engine.verify(point(G), TWO_256, val(1), new byte[32]));
+    assertFalse(Sm2Engine.verify(point(G), val(1), TWO_256, new byte[32]));
+    assertFalse(Sm2Engine.verify(point(G), val(1), N.subtract(val(1)), new byte[32]));
+    assertFalse(Sm2Engine.verify(point(G), BigInteger.ZERO, val(1), new byte[32]));
+    assertFalse(Sm2Engine.verify(point(G), null, val(1), new byte[32]));
+    assertFalse(Sm2Engine.verify(null, val(1), val(1), new byte[32]));
+    assertFalse(Sm2Engine.verify(point(G), val(1), val(1), new byte[31]));
+    // s*G + t*G = infinity is a failure, not an exception: s + t = n with t = r + s.
+    BigInteger sInf = N.subtract(val(5)).multiply(BigInteger.valueOf(2).modInverse(N)).mod(N);
+    assertFalse(Sm2Engine.verify(point(G), val(5), sInf, new byte[32]));
+    assertFalse(
         Sm2Engine.verify(
-            CURVE.createPoint(G[0], G[1].add(BigInteger.ONE)), val(1), val(1), val(1), val(1)));
+            CURVE.createPoint(G[0], G[1].add(BigInteger.ONE)), val(1), val(1), new byte[32]));
 
     // A sum point whose x lies in [n, p) needs the second field representative.
     int found = 0;
@@ -575,15 +672,31 @@ public class Sm2DifferentialTest {
       }
       found++;
       BigInteger[] target = {x, y};
-      BigInteger t = new BigInteger(255, r).add(BigInteger.ONE);
-      BigInteger s = new BigInteger(255, r);
-      // Solve s*G + t*pub = target for pub.
-      BigInteger[] pub = refMul(refAdd(target, refNeg(refMul(G, s))), t.modInverse(N));
       BigInteger e = new BigInteger(256, r);
       BigInteger rv = e.add(x).mod(N);
-      assertEquals(Boolean.TRUE, Sm2Engine.verify(point(pub), s, t, e, rv));
-      assertEquals(
-          Boolean.FALSE, Sm2Engine.verify(point(pub), s, t, e, rv.add(BigInteger.ONE).mod(N)));
+      BigInteger s = new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger t = rv.add(s).mod(N);
+      // Solve s*G + t*pub = target for pub.
+      BigInteger[] pub = refMul(refAdd(target, refNeg(refMul(G, s))), t.modInverse(N));
+      assertTrue(Sm2Engine.verify(point(pub), rv, s, bytes32(e)));
+      assertFalse(Sm2Engine.verify(point(pub), rv.add(BigInteger.ONE).mod(N), s, bytes32(e)));
+    }
+  }
+
+  /**
+   * With t = 0 the equation reduces to s*G, so anyone can pick s and solve for the digest. Only the
+   * explicit t check stops this forgery: e is chosen here so that everything else holds.
+   */
+  @Test
+  public void verifyRejectsTheZeroTForgery() {
+    Random r = new Random(18);
+    for (int i = 0; i < 50; i++) {
+      BigInteger s = new BigInteger(255, r).add(BigInteger.ONE);
+      BigInteger rv = N.subtract(s);
+      BigInteger x = refMul(G, s)[0];
+      BigInteger e = rv.subtract(x).mod(N);
+      AbstractECPoint anyKey = point(refMul(G, new BigInteger(255, r).add(BigInteger.ONE)));
+      assertFalse(Sm2Engine.verify(anyKey, rv, s, bytes32(e)));
     }
   }
 

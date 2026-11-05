@@ -9,7 +9,15 @@ public class ECKeyPair {
   private final ECKey publicKey;
   private final ECKey privateKey;
 
+  /**
+   * Pairs an {@link ECPublicKey} with an {@link ECPrivateKey}.
+   *
+   * @throws IllegalArgumentException for a null key or a key of the wrong kind
+   */
   public ECKeyPair(ECKey publicKey, ECKey privateKey) {
+    if (!(publicKey instanceof ECPublicKey) || !(privateKey instanceof ECPrivateKey)) {
+      throw new IllegalArgumentException("Expected a public key and a private key");
+    }
     this.publicKey = publicKey;
     this.privateKey = privateKey;
   }
@@ -26,8 +34,9 @@ public class ECKeyPair {
     return ConvertUtil.byteToHex(getPointPubKey().getEncoded());
   }
 
+  /** The private key as exactly 64 hex digits. Handle with care: this String cannot be erased. */
   public String getHexPriKey() {
-    return ConvertUtil.byteToHex(getBIPriKey().toByteArray());
+    return ConvertUtil.byteToHex(ConvertUtil.bigIntegerTo32Bytes(getBIPriKey()));
   }
 
   public AbstractECPoint getPointPubKey() {

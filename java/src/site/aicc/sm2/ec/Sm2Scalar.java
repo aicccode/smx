@@ -36,6 +36,30 @@ final class Sm2Scalar {
     return v.signum() >= 0 && v.compareTo(N_BIG) < 0;
   }
 
+  /** Returns all ones when {@code a < n}, else 0, with no early exit. */
+  static int isBelowN(int[] a) {
+    long c = 0;
+    for (int i = 0; i < 8; i++) {
+      c += (a[i] & M) - (N[i] & M);
+      c >>= 32;
+    }
+    return (int) c;
+  }
+
+  /** Sets r = a + b modulo 2^256, leaving all ones in r when the sum overflows 256 bits. */
+  static void addUnreduced(int[] r, int[] a, int[] b) {
+    long c = 0;
+    for (int i = 0; i < 8; i++) {
+      c += (a[i] & M) + (b[i] & M);
+      r[i] = (int) c;
+      c >>>= 32;
+    }
+    int overflow = -(int) c;
+    for (int i = 0; i < 8; i++) {
+      r[i] |= overflow;
+    }
+  }
+
   /** Sets {@code r = a * b / 2^256 mod n}; r may alias a or b. */
   private static void montMul(int[] r, int[] a, int[] b) {
     long[] t = new long[10];

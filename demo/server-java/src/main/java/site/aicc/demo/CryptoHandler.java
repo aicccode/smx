@@ -3,9 +3,7 @@ package site.aicc.demo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import site.aicc.sm4.SM4;
 
 /** 加密解密API处理 - 双向加解密验证 */
@@ -26,17 +24,17 @@ public class CryptoHandler implements HttpHandler {
     }
 
     if (!"POST".equals(method)) {
-      sendResponse(exchange, 405, "{\"error\":\"Method not allowed\"}");
+      DemoHttp.sendError(exchange, 405, "Method not allowed");
       return;
     }
 
     try {
-      String body = readBody(exchange);
-      String response = handleTest(body);
-      sendResponse(exchange, 200, response);
+      String response = handleTest(DemoHttp.parseObject(DemoHttp.readBody(exchange)));
+      DemoHttp.sendResponse(exchange, 200, response);
+    } catch (DemoHttp.RequestException e) {
+      DemoHttp.sendError(exchange, e.status, e.getMessage());
     } catch (Exception e) {
-      e.printStackTrace();
-      sendResponse(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+      DemoHttp.sendInternalError(exchange, e);
     }
   }
 
@@ -48,103 +46,53 @@ public class CryptoHandler implements HttpHandler {
    *
    * <p>响应格式: { "clientDecrypted": "string", // 服务端解密客户端密文的结果 "clientDecryptMatch": true, // 是否与原文匹配
    * "serverPlaintext": "string", // 服务端发送的原文 "serverCiphertext": "hex" // 服务端加密的数据 }
+   *
+   * <p>Echoing the decrypted text, and answering differently when decryption fails, are what this
+   * self-test exists to do, and in real traffic they would be a padding oracle.
    */
-  private String handleTest(String body) throws Exception {
-    String sessionId = extractJsonValue(body, "sessionId");
-    String clientCiphertext = extractJsonValue(body, "clientCiphertext");
-    String clientPlaintext = extractJsonValue(body, "clientPlaintext");
+  private String handleTest(Map<String, String> body) throws Exception {
+    String sessionId = DemoHttp.require(body, "sessionId");
+    String clientCiphertext = DemoHttp.require(body, "clientCiphertext");
+    String clientPlaintext = DemoHttp.require(body, "clientPlaintext");
 
-    System.out.println("\n=== Crypto Test (Bidirectional) ===");
-    System.out.println("sessionId: " + sessionId);
-    System.out.println("clientPlaintext: " + clientPlaintext);
-    System.out.println("clientCiphertext: " + clientCiphertext);
+    System.out.println("Crypto test request received");
 
     SessionStore.Session session = SessionStore.get(sessionId);
     if (session == null) {
-      throw new Exception("Session not found");
+      throw new DemoHttp.RequestException(500, "Session not found");
     }
 
     if (!session.confirmed) {
-      throw new Exception("Key exchange not confirmed");
+      throw new DemoHttp.RequestException(500, "Key exchange not confirmed");
     }
 
     // 使用协商密钥 (SM4-CBC模式，IV使用全零)
+    // The all-zero IV is part of this demo's protocol; never reuse an IV like this in real traffic.
     String iv = "00000000000000000000000000000000";
     SM4 sm4 = new SM4();
     sm4.setKey(session.kB, iv, true);
 
     // 1. 服务端解密客户端的密文
-    String clientDecrypted = sm4.decrypt(clientCiphertext);
+    String clientDecrypted;
+    try {
+      clientDecrypted = sm4.decrypt(clientCiphertext);
+    } catch (IllegalArgumentException e) {
+      throw new DemoHttp.RequestException(400, "Decryption failed");
+    }
     boolean clientDecryptMatch = clientPlaintext.equals(clientDecrypted);
-
-    System.out.println("clientDecrypted: " + clientDecrypted);
-    System.out.println("clientDecryptMatch: " + clientDecryptMatch);
 
     // 2. 服务端加密一段响应消息
     String serverPlaintext = "Response from Java Server: " + System.currentTimeMillis();
     String serverCiphertext = sm4.encrypt(serverPlaintext);
 
-    System.out.println("serverPlaintext: " + serverPlaintext);
-    System.out.println("serverCiphertext: " + serverCiphertext);
+    System.out.println("Crypto test completed, match: " + clientDecryptMatch);
 
     // 返回结果（对特殊字符进行转义）
     return String.format(
         "{\"clientDecrypted\":\"%s\",\"clientDecryptMatch\":%s,\"serverPlaintext\":\"%s\",\"serverCiphertext\":\"%s\"}",
-        escapeJson(clientDecrypted),
+        DemoHttp.escapeJson(clientDecrypted),
         clientDecryptMatch,
-        escapeJson(serverPlaintext),
+        DemoHttp.escapeJson(serverPlaintext),
         serverCiphertext);
-  }
-
-  private String escapeJson(String s) {
-    if (s == null) return "";
-    return s.replace("\\", "\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t");
-  }
-
-  private String readBody(HttpExchange exchange) throws IOException {
-    InputStream is = exchange.getRequestBody();
-    byte[] bytes = new byte[is.available()];
-    is.read(bytes);
-    return new String(bytes, StandardCharsets.UTF_8);
-  }
-
-  private void sendResponse(HttpExchange exchange, int code, String response) throws IOException {
-    exchange.getResponseHeaders().add("Content-Type", "application/json");
-    byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-    exchange.sendResponseHeaders(code, bytes.length);
-    OutputStream os = exchange.getResponseBody();
-    os.write(bytes);
-    os.close();
-  }
-
-  private String extractJsonValue(String json, String key) {
-    String pattern = "\"" + key + "\"";
-    int keyIndex = json.indexOf(pattern);
-    if (keyIndex == -1) return null;
-
-    int colonIndex = json.indexOf(":", keyIndex);
-    if (colonIndex == -1) return null;
-
-    int start = colonIndex + 1;
-    while (start < json.length() && Character.isWhitespace(json.charAt(start))) {
-      start++;
-    }
-
-    if (json.charAt(start) == '"') {
-      start++;
-      int end = json.indexOf('"', start);
-      return json.substring(start, end);
-    } else {
-      int end = start;
-      while (end < json.length()
-          && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '.')) {
-        end++;
-      }
-      return json.substring(start, end);
-    }
   }
 }

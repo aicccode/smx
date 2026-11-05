@@ -18,6 +18,9 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   protected boolean satisfiesCurveEquation() {
+    if (this.isInfinity()) {
+      return true;
+    }
     AbstractECElement lhs = this.y.square();
     AbstractECElement rhs = this.x.square().add(curve.getA()).multiply(this.x).add(curve.getB());
     return lhs.equals(rhs);
@@ -25,6 +28,7 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   public AbstractECPoint subtract(AbstractECPoint b) {
+    requirePoint(b);
     if (b.isInfinity()) {
       return this;
     }
@@ -33,6 +37,7 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   public AbstractECPoint add(AbstractECPoint b) {
+    requirePoint(b);
     if (this.isInfinity()) {
       return b;
     }
@@ -78,6 +83,7 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   public AbstractECPoint twicePlus(AbstractECPoint b) {
+    requirePoint(b);
     if (this == b) {
       return threeTimes();
     }
@@ -145,9 +151,7 @@ public class FpPoint extends AbstractECPoint {
 
   @Override
   public AbstractECPoint timesPow2(int e) {
-    if (e < 0) {
-      throw new IllegalArgumentException("'e' cannot be negative");
-    }
+    checkDoublingCount(e);
     if (e == 0 || this.isInfinity()) {
       return this;
     }
@@ -187,7 +191,16 @@ public class FpPoint extends AbstractECPoint {
     return new FpPoint(curve, x1.multiply(zInv2), y1.multiply(zInv3));
   }
 
+  private static void requirePoint(AbstractECPoint b) {
+    if (b == null) {
+      throw new IllegalArgumentException("Point is null");
+    }
+  }
+
   protected AbstractECElement two(AbstractECElement x) {
+    if (x == null) {
+      throw new IllegalArgumentException("Field element is null");
+    }
     return x.add(x);
   }
 

@@ -1,19 +1,22 @@
 package site.aicc.sm2.ec;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 
 /**
  * Point arithmetic on the SM2 curve y^2 = x^3 - 3x + b in Jacobian coordinates.
  *
  * <p>Secret scalars go through {@link #mulGenerator} and {@link #mulVariable}: signed fixed-window
- * methods with a fixed sequence of field operations and full-table scans under masks. Only {@link
- * #wnafGeneratorPlusPoint} and {@link #wnafAdd} are variable time; they are for public scalars (the
- * verification equation and the public half of the key exchange).
+ * methods with a fixed sequence of field operations, full-table scans under masks and no branch on
+ * the scalar. Only {@link #wnafGeneratorPlusPoint} and {@link #wnafAdd} are variable time; they are
+ * for public scalars (the verification equation and the public half of the key exchange).
  *
- * <p>The exceptional case of the addition formulas (adding a point to itself) is detected under a
- * mask and handled in a branch. It is unreachable in the generator method, and in the variable-base
- * method it needs a scalar within a few units of n, so the branch reveals nothing about a random
- * secret.
+ * <p>The addition formulas fail when a point is added to itself. For a scalar below the prime group
+ * order that cannot happen in {@link #mulGenerator}: each partial sum is smaller in magnitude than
+ * the next table entry's scalar, and the top digit cannot reach n. In {@link #mulVariable} it can
+ * only happen in the last window (when the accumulated value is n + digit, for a scalar within 2^6
+ * of n), and there the doubling is computed unconditionally and chosen under a mask. Tests cover
+ * the scalars next to n.
  */
 final class Sm2Group {
   static final BigInteger B_BIG =
@@ -70,6 +73,12 @@ final class Sm2Group {
     boolean isInfinity() {
       return Sm2Field.isZero(z) != 0;
     }
+
+    void wipe() {
+      Arrays.fill(x, 0);
+      Arrays.fill(y, 0);
+      Arrays.fill(z, 0);
+    }
   }
 
   /**
@@ -85,6 +94,15 @@ final class Sm2Group {
     final int[] t6 = new int[8];
     final int[] t7 = new int[8];
     Point out = new Point();
+    final Point doubled = new Point();
+
+    void wipe() {
+      for (int[] t : new int[][] {t0, t1, t2, t3, t4, t5, t6, t7}) {
+        Arrays.fill(t, 0);
+      }
+      out.wipe();
+      doubled.wipe();
+    }
   }
 
   // ---------------------------------------------------------------- formulas
@@ -212,14 +230,13 @@ final class Sm2Group {
     o.z = t;
   }
 
-  /** Masked q += (px, py) where pInf marks a zero digit. */
+  /**
+   * Masked q += (px, py) where pInf marks a zero digit. Must not be used where q can equal the
+   * added point; see the class comment for why the generator method is safe.
+   */
   static void addAffineMasked(Point q, int[] px, int[] py, int pInf, Work w) {
     int qInf = Sm2Field.isZero(q.z);
     addAffineRaw(q, px, py, w);
-    if ((Sm2Field.isZero(w.t4) & Sm2Field.isZero(w.t5) & ~qInf & ~pInf) != 0) {
-      dbl(q, w);
-      return;
-    }
     Point o = w.out;
     Sm2Field.select(o.x, px, qInf);
     Sm2Field.select(o.y, py, qInf);
@@ -230,15 +247,32 @@ final class Sm2Group {
     take(q, w);
   }
 
-  /** Masked q += p where pInf marks a zero digit. */
-  static void addMasked(Point q, Point p, int pInf, Work w) {
+  /** Masked q += p for a window where q cannot equal p; pInf marks a zero digit. */
+  private static void addMaskedNoDoubling(Point q, Point p, int pInf, Work w) {
     int qInf = Sm2Field.isZero(q.z);
     addRaw(q, p, w);
-    if ((Sm2Field.isZero(w.t4) & Sm2Field.isZero(w.t5) & ~qInf & ~pInf) != 0) {
-      dbl(q, w);
-      return;
-    }
     Point o = w.out;
+    Sm2Field.select(o.x, p.x, qInf);
+    Sm2Field.select(o.y, p.y, qInf);
+    Sm2Field.select(o.z, p.z, qInf);
+    Sm2Field.select(o.x, q.x, pInf);
+    Sm2Field.select(o.y, q.y, pInf);
+    Sm2Field.select(o.z, q.z, pInf);
+    take(q, w);
+  }
+
+  /** Masked q += p handling every case, including q = p, with one fixed sequence of operations. */
+  static void addMasked(Point q, Point p, int pInf, Work w) {
+    int qInf = Sm2Field.isZero(q.z);
+    Point doubled = w.doubled;
+    doubled.set(q);
+    dbl(doubled, w);
+    addRaw(q, p, w);
+    int same = Sm2Field.isZero(w.t4) & Sm2Field.isZero(w.t5) & ~qInf & ~pInf;
+    Point o = w.out;
+    Sm2Field.select(o.x, doubled.x, same);
+    Sm2Field.select(o.y, doubled.y, same);
+    Sm2Field.select(o.z, doubled.z, same);
     Sm2Field.select(o.x, p.x, qInf);
     Sm2Field.select(o.y, p.y, qInf);
     Sm2Field.select(o.z, p.z, qInf);
@@ -361,6 +395,7 @@ final class Sm2Group {
         dbl(next, w);
         toAffine(next, bx, by);
       }
+      checkTable(table);
       return table;
     }
   }
@@ -385,7 +420,17 @@ final class Sm2Group {
       }
       int[] table = new int[entries * 16];
       normalizeInto(row, table, 0);
+      checkTable(table);
       return table;
+    }
+  }
+
+  /** Rejects a corrupted precomputed table: every entry must be a curve point. */
+  private static void checkTable(int[] table) {
+    for (int o = 0; o < table.length; o += 16) {
+      if (!isOnCurve(copy(table, o), copy(table, o + 8))) {
+        throw new IllegalStateException("SM2 table self-check failed");
+      }
     }
   }
 
@@ -441,6 +486,9 @@ final class Sm2Group {
       Sm2Field.condNeg(py, py, -(coded & 1));
       addAffineMasked(q, px, py, (magnitude - 1) >> 31, w);
     }
+    w.wipe();
+    Arrays.fill(px, 0);
+    Arrays.fill(py, 0);
     return q;
   }
 
@@ -535,8 +583,15 @@ final class Sm2Group {
       int magnitude = coded >>> 1;
       scanJacobian(table, magnitude, p);
       Sm2Field.condNeg(p.y, p.y, -(coded & 1));
-      addMasked(q, p, (magnitude - 1) >> 31, w);
+      int pInf = (magnitude - 1) >> 31;
+      if (window == 0) {
+        addMasked(q, p, pInf, w);
+      } else {
+        addMaskedNoDoubling(q, p, pInf, w);
+      }
     }
+    w.wipe();
+    p.wipe();
     return q;
   }
 

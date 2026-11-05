@@ -5,6 +5,9 @@ import java.math.BigInteger;
 /** Prime field elliptic curve Fp. */
 public class FpCurve extends AbstractECCurve {
 
+  private static final int MAX_FIELD_BITS = 1024;
+  private static final int PRIME_CERTAINTY = 64;
+
   private final BigInteger q;
   private final BigInteger r;
   private final AbstractECMultiplier multiplier;
@@ -22,6 +25,16 @@ public class FpCurve extends AbstractECCurve {
       BigInteger b,
       BigInteger order,
       BigInteger cofactor) {
+    if (multiplier == null || a == null || b == null) {
+      throw new IllegalArgumentException("Curve parameter is null");
+    }
+    checkField(q);
+    if (order != null && order.signum() <= 0) {
+      throw new IllegalArgumentException("Curve order must be positive");
+    }
+    if (cofactor != null && (cofactor.signum() <= 0 || cofactor.bitLength() > q.bitLength())) {
+      throw new IllegalArgumentException("Invalid curve cofactor");
+    }
     this.multiplier = multiplier;
     this.q = q;
     this.r = FpElement.calculateResidue(q);
@@ -33,9 +46,36 @@ public class FpCurve extends AbstractECCurve {
     this.sm2 = Sm2Engine.isSm2Curve(q, a, b);
   }
 
+  /** The field inversion only terminates for an odd prime modulus, so nothing else is accepted. */
+  private static void checkField(BigInteger q) {
+    if (q == null || q.signum() <= 0 || q.bitLength() > MAX_FIELD_BITS) {
+      throw new IllegalArgumentException("Invalid field prime");
+    }
+    if (!q.equals(Sm2Field.P_BIG) && (!q.testBit(0) || !q.isProbablePrime(PRIME_CERTAINTY))) {
+      throw new IllegalArgumentException("Invalid field prime");
+    }
+  }
+
   /** True when p, a and b are exactly the SM2 parameters. */
   boolean isSm2() {
     return sm2;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (!(obj instanceof FpCurve)) {
+      return false;
+    }
+    FpCurve other = (FpCurve) obj;
+    return q.equals(other.q) && a.equals(other.a) && b.equals(other.b);
+  }
+
+  @Override
+  public int hashCode() {
+    return super.hashCode();
   }
 
   @Override

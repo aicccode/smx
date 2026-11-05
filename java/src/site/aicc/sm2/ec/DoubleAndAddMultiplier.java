@@ -8,10 +8,11 @@ public class DoubleAndAddMultiplier extends AbstractECMultiplier {
 
   @Override
   protected AbstractECPoint multiplyPositive(AbstractECPoint p, BigInteger k) {
+    requireOperands(p, k);
     AbstractECCurve curve = p.getCurve();
     int size = getCombSize(curve);
     if (k.bitLength() > size) {
-      throw new IllegalStateException("Invalid multiplier");
+      throw new IllegalArgumentException("Invalid multiplier");
     }
     AbstractECPoint fast = Sm2Engine.tryMultiply(p, k);
     if (fast != null) {
