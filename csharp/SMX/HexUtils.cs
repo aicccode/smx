@@ -7,7 +7,8 @@ namespace SMX;
 
 /// <summary>
 /// Hex conversion. All paths use arithmetic or vector shuffles over constant tables rather than indexing by the data,
-/// because private keys pass through here.
+/// and decoding examines every digit before reporting a failure, because private keys pass through here. Error messages
+/// never quote the input.
 /// </summary>
 public static class HexUtils
 {
@@ -15,21 +16,52 @@ public static class HexUtils
     private const byte UpperCaseBit = 0;
     private const int StackHexLimit = 128;
 
+    /// <summary>The largest byte count whose hex fits in a .NET string (limited to about 2^30 characters).</summary>
+    internal const int MaxHexBytes = 0x1FFFFFE0;
+
     /// <summary>Set by tests to exercise the scalar paths on hardware that has vector support.</summary>
     internal static bool ForceScalar { get; set; }
 
+    /// <exception cref="ArgumentNullException"><paramref name="bytes"/> is null.</exception>
+    /// <exception cref="ArgumentException">The input is too long for its hex form to fit in a string.</exception>
     public static string BytesToHex(byte[] bytes) => ToHexString(bytes, LowerCaseBit);
 
+    /// <inheritdoc cref="BytesToHex"/>
     public static string BytesToHexUpper(byte[] bytes) => ToHexString(bytes, UpperCaseBit);
 
+    /// <summary>
+    /// Decodes an even number of hex digits of either case, with an optional single "0x" prefix. Unlike earlier versions,
+    /// odd lengths are rejected rather than padded.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="hex"/> is null.</exception>
+    /// <exception cref="ArgumentException">The input is not valid hex.</exception>
     public static byte[] HexToBytes(string hex)
     {
-        _ = hex.Length;
-        return HexToBytes(hex.AsSpan());
+        ArgumentNullException.ThrowIfNull(hex);
+        ReadOnlySpan<char> digits = hex;
+        if (digits.Length >= 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X'))
+        {
+            digits = digits[2..];
+        }
+        if ((digits.Length & 1) != 0)
+        {
+            throw new ArgumentException("Invalid hex length");
+        }
+        var bytes = new byte[digits.Length / 2];
+        if (!TryDecode(digits, bytes))
+        {
+            throw new ArgumentException("Invalid hex character");
+        }
+        return bytes;
     }
 
     private static string ToHexString(byte[] bytes, byte caseBit)
     {
+        ArgumentNullException.ThrowIfNull(bytes);
+        if (bytes.Length > MaxHexBytes)
+        {
+            throw new ArgumentException("Input too long to convert to hex");
+        }
         return string.Create(bytes.Length * 2, (bytes, caseBit), static (chars, state) =>
             Encode(state.bytes, chars, state.caseBit));
     }
@@ -97,49 +129,43 @@ public static class HexUtils
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static char NibbleToChar(int n, int letterOffset) => (char)('0' + n + (((9 - n) >> 31) & letterOffset));
 
-    internal static byte[] HexToBytes(ReadOnlySpan<char> hex)
+    /// <summary>
+    /// Decodes exactly bytes.Length * 2 hex digits of either case with no prefix. Every digit is processed whether or not
+    /// an earlier one was invalid. False means the input was wrong and the output contents are meaningless.
+    /// </summary>
+    internal static bool TryDecode(ReadOnlySpan<char> hex, Span<byte> bytes)
     {
-        if (hex.Length >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X'))
+        if (hex.Length != bytes.Length * 2)
         {
-            hex = hex[2..];
+            return false;
         }
 
-        // An odd length means an implied leading zero nibble.
-        var bytes = new byte[(hex.Length + 1) / 2];
-        if ((hex.Length & 1) == 1)
-        {
-            bytes[0] = (byte)CharToNibble(hex[0]);
-            DecodeEven(hex[1..], bytes.AsSpan(1));
-        }
-        else
-        {
-            DecodeEven(hex, bytes);
-        }
-        return bytes;
-    }
-
-    /// <summary>Decodes an even number of hex digits; throws for the first invalid character in reading order.</summary>
-    internal static void DecodeEven(ReadOnlySpan<char> hex, Span<byte> bytes)
-    {
         int i = 0;
+        bool valid = true;
         if (Ssse3.IsSupported && !ForceScalar)
         {
-            i = DecodeVector(hex, bytes);
+            i = DecodeVector(hex, bytes, out valid);
         }
-        for (; i < hex.Length / 2; i++)
+
+        int invalid = 0;
+        for (; i < bytes.Length; i++)
         {
-            bytes[i] = (byte)((CharToNibble(hex[i * 2]) << 4) | CharToNibble(hex[i * 2 + 1]));
+            int high = CharToNibble(hex[i * 2], ref invalid);
+            int low = CharToNibble(hex[i * 2 + 1], ref invalid);
+            bytes[i] = (byte)((high << 4) | low);
         }
+        return valid & invalid == 0;
     }
 
-    /// <summary>Decodes whole 32-digit groups and stops at the first group holding an invalid digit.</summary>
-    private static int DecodeVector(ReadOnlySpan<char> hex, Span<byte> bytes)
+    private static int DecodeVector(ReadOnlySpan<char> hex, Span<byte> bytes, out bool valid)
     {
         ref ushort src = ref Unsafe.As<char, ushort>(ref MemoryMarshal.GetReference(hex));
         ref byte dst = ref MemoryMarshal.GetReference(bytes);
-        int count = hex.Length / 2;
+        var weights = Vector128.Create((ushort)0x0110).AsSByte();
+        var allValid = Vector128<byte>.AllBitsSet;
+
         int i = 0;
-        for (; i + 16 <= count; i += 16)
+        for (; i + 16 <= bytes.Length; i += 16)
         {
             var c0 = Vector128.LoadUnsafe(ref src, (nuint)(i * 2));
             var c1 = Vector128.LoadUnsafe(ref src, (nuint)(i * 2 + 8));
@@ -147,22 +173,19 @@ public static class HexUtils
             var c3 = Vector128.LoadUnsafe(ref src, (nuint)(i * 2 + 24));
 
             // Saturating pack: any character above 0xFF becomes 0x00 or 0xFF, both of which are rejected below.
-            if (!TryNibbles(Sse2.PackUnsignedSaturate(c0.AsInt16(), c1.AsInt16()), out var n0)
-                || !TryNibbles(Sse2.PackUnsignedSaturate(c2.AsInt16(), c3.AsInt16()), out var n1))
-            {
-                break;
-            }
+            var n0 = Nibbles(Sse2.PackUnsignedSaturate(c0.AsInt16(), c1.AsInt16()), ref allValid);
+            var n1 = Nibbles(Sse2.PackUnsignedSaturate(c2.AsInt16(), c3.AsInt16()), ref allValid);
 
             // Each pair h,l becomes h*16 + l in a 16-bit lane; packing then yields sixteen output bytes.
-            var weights = Vector128.Create((ushort)0x0110).AsSByte();
             var packed = Sse2.PackUnsignedSaturate(Ssse3.MultiplyAddAdjacent(n0, weights), Ssse3.MultiplyAddAdjacent(n1, weights));
             packed.StoreUnsafe(ref dst, (nuint)i);
         }
+        valid = allValid == Vector128<byte>.AllBitsSet;
         return i;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool TryNibbles(Vector128<byte> chars, out Vector128<byte> nibbles)
+    private static Vector128<byte> Nibbles(Vector128<byte> chars, ref Vector128<byte> allValid)
     {
         // Digits map to 0..9 and letters of either case to 0..5, with everything else wrapping above those ranges.
         // Comparing as signed after a bias of 0x80 is the unsigned comparison SSE2 lacks.
@@ -171,21 +194,19 @@ public static class HexUtils
         var letter = (chars | Vector128.Create((byte)0x20)) - Vector128.Create((byte)'a');
         var digitMask = Vector128.LessThan((digit ^ bias).AsSByte(), Vector128.Create(unchecked((sbyte)(10 ^ 0x80)))).AsByte();
         var letterMask = Vector128.LessThan((letter ^ bias).AsSByte(), Vector128.Create(unchecked((sbyte)(6 ^ 0x80)))).AsByte();
-        nibbles = (digit & digitMask) | ((letter + Vector128.Create((byte)10)) & letterMask);
-        return (digitMask | letterMask) == Vector128<byte>.AllBitsSet;
+        allValid &= digitMask | letterMask;
+        return (digit & digitMask) | ((letter + Vector128.Create((byte)10)) & letterMask);
     }
 
-    private static int CharToNibble(char c)
+    /// <summary>The digit's value, or an arbitrary value with a bit set in <paramref name="invalid"/>. No branches.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int CharToNibble(char c, ref int invalid)
     {
-        // Branch-free classification, so that a valid digit's value does not influence control flow.
         int digit = c - '0';
         int letter = (c | 0x20) - 'a';
         int isDigit = ((digit | (9 - digit)) >> 31) + 1;
         int isLetter = ((letter | (5 - letter)) >> 31) + 1;
-        if ((isDigit | isLetter) == 0)
-        {
-            throw new ArgumentException($"Invalid hex character: {c}");
-        }
+        invalid |= (isDigit | isLetter) ^ 1;
         return (digit & -isDigit) | ((letter + 10) & -isLetter);
     }
 }

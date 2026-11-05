@@ -244,7 +244,7 @@ public class InternalArithmeticTests
             }
             Assert.Equal(BigInteger.ModPow(ToBig(a), ToBig(e), ToBig(m)), ToBig(a.ModPow(e, m)));
         }
-        Assert.Throws<DivideByZeroException>(() => BigInt256.One.ModMul(BigInt256.One, BigInt256.Zero));
+        Assert.Throws<ArgumentException>(() => BigInt256.One.ModMul(BigInt256.One, BigInt256.Zero));
     }
 
     [Fact]

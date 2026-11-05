@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SMX.Tests", "SMX.Tests\SMX.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SMX.Bench", "SMX.Bench\SMX.Bench.csproj", "{25C675C0-FAEE-4662-B06C-7C086884F658}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SMX.Fuzz", "SMX.Fuzz\SMX.Fuzz.csproj", "{5D8B1457-370D-488A-A608-FF6A5FFD7297}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +32,9 @@ Global
 		{25C675C0-FAEE-4662-B06C-7C086884F658}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{25C675C0-FAEE-4662-B06C-7C086884F658}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{25C675C0-FAEE-4662-B06C-7C086884F658}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5D8B1457-370D-488A-A608-FF6A5FFD7297}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5D8B1457-370D-488A-A608-FF6A5FFD7297}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5D8B1457-370D-488A-A608-FF6A5FFD7297}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5D8B1457-370D-488A-A608-FF6A5FFD7297}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

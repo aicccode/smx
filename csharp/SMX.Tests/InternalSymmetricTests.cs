@@ -14,6 +14,29 @@ public class InternalSymmetricTests
 {
     private static readonly byte[] StandardKey = Convert.FromHexString("0123456789ABCDEFFEDCBA9876543210");
 
+    /// <summary>The published S-box (GB/T 32907), which the library itself no longer contains.</summary>
+    private static readonly byte[] StandardSBox = Convert.FromHexString(
+        "D690E9FECCE13DB716B614C228FB2C052B679A762ABE04C3AA441326498606999C4250F491EF987A33540B43EDCFAC62" +
+        "E4B31CA9C908E89580DF94FA758F3FA64707A7FCF37317BA83593C19E6854FA8686B81B27164DA8BF8EB0F4B70569D35" +
+        "1E240E5E6358D1A225227C3B01217887D40046579FD327524C3602E7A0C4C89EEABF8AD240C738B5A3F7F2CEF96115A1" +
+        "E0AE5DA49B341A55AD933230F58CB1E31DF6E22E8266CA60C02923AB0D534E6FD5DB3745DEFD8E2F03FF6A726D6C5B51" +
+        "8D1BAF92BBDDBC7F11D95C411F105AD80AC13188A5CD7BBD2D74D012B8E5B4B08969974A0C96777E65B9F109C56EC684" +
+        "18F07DEC3ADC4D2079EE5F3ED7CB3948");
+
+    [Fact]
+    public void Sm4CircuitMatchesStandardSBoxForAllBytesInAllPositions()
+    {
+        for (int i = 0; i < 256; i++)
+        {
+            for (int shift = 0; shift < 32; shift += 8)
+            {
+                uint fill = 0x5A5A5A5A & ~(0xFFu << shift);
+                uint fillOutput = StandardSBox[0x5A] * 0x01010101u & ~(0xFFu << shift);
+                Assert.Equal(((uint)StandardSBox[i] << shift) | fillOutput, Sm4SBoxCircuit.Substitute(fill | ((uint)i << shift)));
+            }
+        }
+    }
+
     /// <summary>Runs the action once per implementation path this machine can actually execute.</summary>
     private static void OnEveryPath(Action action)
     {
@@ -77,11 +100,11 @@ public class InternalSymmetricTests
         }
         for (int i = 0; i < 256; i++)
         {
-            uint expected = Sm4Core.SBox[i];
+            uint expected = StandardSBox[i];
             for (int shift = 0; shift < 32; shift += 8)
             {
                 uint fill = 0x5A5A5A5A & ~(0xFFu << shift);
-                uint fillOutput = (uint)Sm4Core.SBox[0x5A] * 0x01010101u & ~(0xFFu << shift);
+                uint fillOutput = (uint)StandardSBox[0x5A] * 0x01010101u & ~(0xFFu << shift);
                 Assert.Equal((expected << shift) | fillOutput, Sm4Core.SubstituteWithHardware(fill | ((uint)i << shift)));
             }
         }
@@ -140,7 +163,8 @@ public class InternalSymmetricTests
         OnEveryPath(() =>
         {
             var c = new SM4();
-            c.SetKey(Encoding.UTF8.GetBytes("this is the key"), Encoding.UTF8.GetBytes("this is the iv"));
+            c.SetKey(Encoding.ASCII.GetBytes("157224F19FD4C080"), Encoding.ASCII.GetBytes("65B06A99625C008A"));
+
             const string Plain = "国密SM4对称加密算法";
             var cipher = c.Encrypt(Plain);
             Assert.Equal("09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc", cipher);
@@ -195,7 +219,7 @@ public class InternalSymmetricTests
                         var chars = new string('a', 64).ToCharArray();
                         chars[position] = c;
                         var ex = Assert.Throws<ArgumentException>(() => HexUtils.HexToBytes(new string(chars)));
-                        Assert.Equal($"Invalid hex character: {c}", ex.Message);
+                        Assert.Equal("Invalid hex character", ex.Message);
                     }
                 }
             }

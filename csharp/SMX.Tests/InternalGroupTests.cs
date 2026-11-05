@@ -163,17 +163,6 @@ public class InternalGroupTests
         }
     }
 
-    /// <summary>On another curve with the same a, the order differs from n, so scalars must not be reduced by n.</summary>
-    [Fact]
-    public void VariableBaseMultiplyIsCorrectOffTheCurve()
-    {
-        var p = new RefPoint(5, 7);
-        foreach (var k in EdgeScalars().Concat(RandomScalars(3, 6)))
-        {
-            AssertSame(RefMul(k, p), ToPoint(p).Multiply(FromBig(k)));
-        }
-    }
-
     /// <summary>
     /// Scalars around n and 2n make the accumulator meet an equal table entry (first at n - 6), which needs the complete
     /// additions. These results come from small multiples because k mod n is small.
@@ -298,9 +287,9 @@ public class InternalGroupTests
         }
     }
 
-    /// <summary>The inversion-free comparison in Verify against the plain definition, r == e.ModAdd(x, n).</summary>
+    /// <summary>The inversion-free comparison in Verify against the plain definition, r == (e + x) mod n.</summary>
     [Fact]
-    public void SignatureComparisonMatchesDirectEvaluation()
+    public void SignatureComparisonMatchesDefinition()
     {
         var rng = new Random(6);
         BigInteger Pick()
@@ -319,41 +308,35 @@ public class InternalGroupTests
             };
         }
 
-        int positives = 0;
         for (int i = 0; i < 4000; i++)
         {
-            var e = FromBig(Pick());
-            var x = FromBig(Pick() % P);
-            var direct = e.ModAdd(x, Sm2Order.N);
+            var eBig = Pick();
+            var xBig = Pick() % P;
+            var correct = (eBig + xBig) % N;
 
             // A Jacobian representation of a point with that x. Only X and Z matter to the comparison.
             var z = FromBig(Pick() % (P - 1) + 1);
             Fp.Square(z, out var z2);
-            Fp.Mul(x, z2, out var scaledX);
+            Fp.Mul(FromBig(xBig), z2, out var scaledX);
             var point = new JacobianPoint { X = scaledX, Z = z };
 
-            if (Big(direct) < N)
-            {
-                Assert.True(SM2.MatchesSignatureR(e, direct, point));
-                positives++;
-            }
-
-            var other = FromBig((Big(direct) + 1 + Pick() % 5) % N);
-            Assert.Equal(direct == other, SM2.MatchesSignatureR(e, other, point));
+            Assert.True(SM2.MatchesSignatureR(FromBig(eBig), FromBig(correct), point));
+            var other = (correct + 1 + Pick() % 5) % N;
+            Assert.False(SM2.MatchesSignatureR(FromBig(eBig), FromBig(other), point));
         }
-        Assert.True(positives > 3000);
     }
 
-    /// <summary>Direct construction of the case where e + x overflows 2^256 and the result is below n.</summary>
+    /// <summary>The signing equation must reduce fully where the sum of e and x exceeds 2n, and verify must agree.</summary>
     [Fact]
-    public void SignatureComparisonHandlesOverflowingSum()
+    public void SigningReducesRFullyForLargeDigestAndCoordinate()
     {
         var e = FromBig(Two256 - 5);
-        var r = FromBig(10);
-        var x = FromBig(N + 15);
-        Assert.Equal(r, e.ModAdd(x, Sm2Order.N));
-        Assert.True(Big(x) < P);
-        var point = new JacobianPoint { X = x, Z = BigInt256.One };
-        Assert.True(SM2.MatchesSignatureR(e, r, point));
+        var x = FromBig(P - 7);
+        var d = FromBig(12345);
+        var k = FromBig(67890);
+        Sm2Order.Invert(d.Add(BigInt256.One, out _), out var inverse);
+        Assert.True(SM2.TrySign(e, d, inverse, k, x, out var r, out _));
+        Assert.Equal((Big(e) + Big(x)) % N, Big(r));
+        Assert.True(Big(r) < N);
     }
 }

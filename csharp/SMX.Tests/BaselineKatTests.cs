@@ -151,6 +151,10 @@ public class BaselineKatTests
         return c;
     }
 
+    private static readonly StreamWriter? DiffLog = Environment.GetEnvironmentVariable("SMX_KAT_DIFF") is { Length: > 0 } p
+        ? new StreamWriter(p, append: false) { AutoFlush = true }
+        : null;
+
     private static void Replay(TextReader reader)
     {
         var failures = new List<string>();
@@ -179,6 +183,10 @@ public class BaselineKatTests
             catch (Exception ex)
             {
                 actual = "threw " + ex;
+            }
+            if (actual != expected)
+            {
+                DiffLog?.WriteLine(line + "\t=>\t" + actual.Replace('\n', ' '));
             }
             if (actual != expected && failures.Count < 20)
             {

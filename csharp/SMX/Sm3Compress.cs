@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace SMX;
 
@@ -588,6 +589,9 @@ internal static class Sm3Compress
             g ^= g0;
             h ^= h0;
         }
+
+        // The expanded schedule of a block can derive from secrets; do not leave it on the stack.
+        CryptographicOperations.ZeroMemory(new Span<byte>(w, WordsPerBlock * sizeof(uint)));
 
         state.A = a;
         state.B = b;

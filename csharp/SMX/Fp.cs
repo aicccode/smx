@@ -64,6 +64,9 @@ internal static class Fp
         r.L3 = Bits.Select(keepReduced, d3, s3);
     }
 
+    /// <summary>Brings any 256-bit value into [0, p). One subtraction suffices because 2p exceeds 2^256.</summary>
+    public static void Canonicalize(in BigInt256 a, out BigInt256 r) => ReduceOnce(a.L0, a.L1, a.L2, a.L3, 0, out r);
+
     public static void Negate(in BigInt256 a, out BigInt256 r) => Sub(default, a, out r);
 
     [SkipLocalsInit]

@@ -20,6 +20,13 @@ public class SM2KeySwapParams
     public string Message { get; set; } = "";
 }
 
+/// <summary>
+/// SM2 sign, verify, encrypt, decrypt and key exchange. Hex keys and signature halves must have their exact length, in
+/// either case and with no prefix. Failures: <see cref="Verify"/> and <see cref="CheckSa"/> return false, GetSa and GetSb
+/// report through <see cref="SM2KeySwapParams.Success"/>, and everything else throws <see cref="ArgumentException"/> for
+/// invalid input and <see cref="InvalidOperationException"/> for ciphertext that fails verification.
+/// <see cref="CryptographicException"/> means the system random generator failed or returned unusable output.
+/// </summary>
 public static class SM2
 {
     private const int CoordinateSize = 32;
@@ -29,6 +36,26 @@ public static class SM2
     private const int C3HexLength = HashSize * 2;
     private const int StackUtf8Chars = 170;
     private const int ScalarHexLength = CoordinateSize * 2;
+    private const int MaxUserIdBytes = 8191;
+    private const int MaxExchangeKeyBytes = 1024 * 1024;
+    private const int ExpectedConfirmationSize = HashSize;
+
+    /// <summary>Attempts before concluding the RNG is broken: any one draw is rejected with probability about 2^-32.</summary>
+    private const int MaxRandomDraws = 128;
+
+    /// <summary>Attempts at signing or encrypting, each of which can fail only with negligible probability.</summary>
+    private const int MaxNonceAttempts = 16;
+
+    private const string InvalidPrivateKey = "invalid private key";
+    private const string InvalidPublicKey = "invalid public key";
+    private const string DecryptionFailed = "decryption verification failed";
+
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>A source of random bytes, replaced only by tests to exercise failures.</summary>
+    internal delegate void RandomSource(Span<byte> output);
+
+    private static readonly RandomSource SystemRandom = RandomNumberGenerator.Fill;
 
     /// <summary>The fixed part of the Z hash input: curve parameters a, b, Gx and Gy.</summary>
     private static readonly byte[] CurveParameters = BuildCurveParameters();
@@ -43,25 +70,35 @@ public static class SM2
         return o;
     }
 
+    /// <summary>Generates a private key uniformly in [1, n-2] from the system CSPRNG, and its public key.</summary>
+    /// <exception cref="CryptographicException">The system random generator failed.</exception>
     public static (string privateKey, string publicKey) GenKeyPair()
     {
-        var pri = NextScalar();
+        var pri = NextPrivateKey(SystemRandom);
         Sm2Group.MultiplyGeneratorSecret(pri, out var pub);
         return (pri.ToHex(), Sm2Group.ToAffine(pub).ToHexEncoded());
     }
 
+    /// <summary>Encrypts the UTF-8 form of the text, giving C1 || C3 || C2 in lowercase hex.</summary>
+    /// <exception cref="ArgumentException">Empty or unencodable text, or an invalid public key.</exception>
+    /// <exception cref="CryptographicException">The system random generator failed.</exception>
     public static string Encrypt(string plaintext, string publicKey)
     {
-        int messageLength = Encoding.UTF8.GetByteCount(plaintext);
+        ArgumentNullException.ThrowIfNull(plaintext);
+        ArgumentNullException.ThrowIfNull(publicKey);
+        int messageLength = StrictUtf8.GetByteCount(plaintext);
         if (messageLength == 0)
         {
             throw new ArgumentException("plaintext cannot be empty");
         }
-
-        var pubPoint = ECPoint.FromHexEncoded(publicKey);
-        if (!pubPoint.IsOnCurve())
+        if (messageLength > HexUtils.MaxHexBytes - C1Size - HashSize)
         {
-            throw new ArgumentException("invalid public key");
+            throw new ArgumentException("plaintext too long");
+        }
+
+        if (!ECPoint.TryParse(publicKey, out var pubPoint))
+        {
+            throw new ArgumentException(InvalidPublicKey);
         }
 
         // One buffer laid out as C1 || C3 || C2; C2 starts as the plaintext and is enciphered in place.
@@ -69,12 +106,12 @@ public static class SM2
         Span<byte> c1Out = output.AsSpan(0, C1Size);
         Span<byte> c3Out = output.AsSpan(C1Size, HashSize);
         Span<byte> c2 = output.AsSpan(C1Size + HashSize);
-        Encoding.UTF8.GetBytes(plaintext, c2);
+        StrictUtf8.GetBytes(plaintext, c2);
         var basePoint = JacobianPoint.FromAffine(pubPoint);
 
-        while (true)
+        for (int attempt = 0; attempt < MaxNonceAttempts; attempt++)
         {
-            var k = NextScalar();
+            var k = NextNonce(SystemRandom);
             Sm2Group.MultiplyGeneratorSecret(k, out var c1Jacobian);
             Sm2Group.MultiplySecret(basePoint, k, out var p2Jacobian);
             if (p2Jacobian.IsInfinity)
@@ -92,48 +129,85 @@ public static class SM2
                 return HexUtils.BytesToHex(output);
             }
         }
+        CryptographicOperations.ZeroMemory(output);
+        throw new CryptographicException("encryption failed");
     }
 
+    /// <summary>Decrypts C1 || C3 || C2 hex. C2 must not be empty, and the plaintext must be valid UTF-8.</summary>
+    /// <exception cref="ArgumentException">Malformed ciphertext, or an invalid private key.</exception>
+    /// <exception cref="InvalidOperationException">The ciphertext does not verify under this key.</exception>
     public static string Decrypt(string ciphertext, string privateKey)
     {
-        if (ciphertext.Length < C1HexLength + C3HexLength)
+        ArgumentNullException.ThrowIfNull(ciphertext);
+        ArgumentNullException.ThrowIfNull(privateKey);
+        if (ciphertext.Length <= C1HexLength + C3HexLength)
         {
             throw new ArgumentException("ciphertext too short");
         }
+        if ((ciphertext.Length & 1) != 0)
+        {
+            throw new ArgumentException("invalid ciphertext");
+        }
 
         ReadOnlySpan<char> text = ciphertext;
-        var c1 = ECPoint.FromHexEncoded(text[..C1HexLength]);
-        if (!c1.IsOnCurve())
+        if (!ECPoint.TryParse(text[..C1HexLength], out var c1))
         {
             throw new ArgumentException("invalid C1 point");
         }
 
-        var c3 = HexUtils.HexToBytes(text.Slice(C1HexLength, C3HexLength));
-        var c2 = HexUtils.HexToBytes(text[(C1HexLength + C3HexLength)..]);
+        Span<byte> c3 = stackalloc byte[HashSize];
+        var c2 = new byte[(ciphertext.Length - C1HexLength - C3HexLength) / 2];
+        if (!HexUtils.TryDecode(text.Slice(C1HexLength, C3HexLength), c3)
+            || !HexUtils.TryDecode(text[(C1HexLength + C3HexLength)..], c2))
+        {
+            throw new ArgumentException("invalid ciphertext");
+        }
 
-        var d = BigInt256.FromHex(privateKey);
-        var p2 = c1.Multiply(d);
+        var d = ParsePrivateKey(privateKey);
+        Sm2Group.MultiplySecret(JacobianPoint.FromAffine(c1), d, out var p2Jacobian);
+        var p2 = Sm2Group.ToAffine(p2Jacobian);
         if (p2.Infinity)
         {
-            throw new InvalidOperationException("invalid decryption");
+            throw new InvalidOperationException(DecryptionFailed);
         }
 
-        KdfXor(p2, c2);
-
-        Span<byte> computedC3 = stackalloc byte[HashSize];
-        HashWithPoint(p2, c2, computedC3);
-        if (!CryptographicOperations.FixedTimeEquals(computedC3, c3))
+        try
         {
-            throw new InvalidOperationException("decryption verification failed");
-        }
+            bool keystreamUsable = KdfXor(p2, c2);
 
-        return Encoding.UTF8.GetString(c2);
+            Span<byte> computedC3 = stackalloc byte[HashSize];
+            HashWithPoint(p2, c2, computedC3);
+            bool hashMatches = CryptographicOperations.FixedTimeEquals(computedC3, c3);
+            if (!keystreamUsable || !hashMatches)
+            {
+                throw new InvalidOperationException(DecryptionFailed);
+            }
+
+            try
+            {
+                return StrictUtf8.GetString(c2);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new InvalidOperationException(DecryptionFailed);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(c2);
+        }
     }
 
+    /// <summary>Signs and returns r and s in lowercase hex, joined by "h". The user ID may be up to 8191 UTF-8 bytes.</summary>
+    /// <exception cref="ArgumentException">An invalid private key, or text that is too long or not encodable.</exception>
+    /// <exception cref="CryptographicException">The system random generator failed.</exception>
     public static string Sign(string userID, string message, string privateKey)
     {
-        var d = BigInt256.FromHex(privateKey);
-        var k = NextScalar();
+        ArgumentNullException.ThrowIfNull(userID);
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(privateKey);
+        var d = ParsePrivateKey(privateKey);
+        var k = NextNonce(SystemRandom);
 
         // The public key and the first nonce point are normalized together to share one field inversion.
         Sm2Group.MultiplyGeneratorSecret(d, out var publicJacobian);
@@ -143,7 +217,7 @@ public static class SM2
         var e = MessageDigest(userID, message, publicKey);
         Sm2Order.Invert(d.Add(BigInt256.One, out _), out var dPlus1Inverse);
 
-        while (true)
+        for (int attempt = 0; attempt < MaxNonceAttempts; attempt++)
         {
             if (TrySign(e, d, dPlus1Inverse, k, noncePoint.X.Value, out var r, out var s))
             {
@@ -157,17 +231,22 @@ public static class SM2
                 return new string(chars);
             }
 
-            k = NextScalar();
+            k = NextNonce(SystemRandom);
             Sm2Group.MultiplyGeneratorSecret(k, out nonceJacobian);
             noncePoint = Sm2Group.ToAffine(nonceJacobian);
         }
+        throw new CryptographicException("signing failed");
     }
 
     /// <summary>The signing equations for a given nonce; false when the standard requires drawing a new one.</summary>
     internal static bool TrySign(in BigInt256 e, in BigInt256 d, in BigInt256 dPlus1Inverse, in BigInt256 k, in BigInt256 nonceX, out BigInt256 r, out BigInt256 s)
     {
         s = default;
-        r = e.ModAdd(nonceX, Sm2Order.N);
+
+        // Both e and x can be at or above n, so each is reduced before the modular addition assumes otherwise.
+        Sm2Order.ReduceOnce(e, out var eReduced);
+        Sm2Order.ReduceOnce(nonceX, out var xReduced);
+        r = eReduced.ModAdd(xReduced, Sm2Order.N);
         if (r.IsZero)
         {
             return false;
@@ -185,29 +264,50 @@ public static class SM2
         return !s.IsZero;
     }
 
+    /// <summary>
+    /// True only for a signature of exactly 64 hex digits for each of r and s, joined by "h", that is valid for the exact
+    /// encoding of a valid public key. Every kind of invalid input, null included, gives false; this never throws for
+    /// them. Uppercase digits are accepted for interoperability.
+    /// </summary>
     public static bool Verify(string userID, string signature, string message, string publicKey)
     {
-        int separator = signature.IndexOf('h');
-        if (separator < 0 || signature.IndexOf('h', separator + 1) >= 0)
+        if (userID is null || signature is null || message is null || publicKey is null)
         {
             return false;
         }
 
-        var r = BigInt256.FromHex(signature.AsSpan(0, separator));
-        var s = BigInt256.FromHex(signature.AsSpan(separator + 1));
+        if (signature.Length != 2 * ScalarHexLength + 1 || signature[ScalarHexLength] != 'h')
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> text = signature;
+        if (!BigInt256.TryParseExact(text[..ScalarHexLength], out var r)
+            || !BigInt256.TryParseExact(text[(ScalarHexLength + 1)..], out var s))
+        {
+            return false;
+        }
 
         if ((Sm2Order.InRangeMask(r) & Sm2Order.InRangeMask(s)) == 0)
         {
             return false;
         }
 
-        var pubPoint = ECPoint.FromHexEncoded(publicKey);
-        if (!pubPoint.IsOnCurve())
+        if (!ECPoint.TryParse(publicKey, out var pubPoint))
         {
             return false;
         }
 
-        var e = MessageDigest(userID, message, pubPoint);
+        BigInt256 e;
+        try
+        {
+            e = MessageDigest(userID, message, pubPoint);
+        }
+        catch (ArgumentException)
+        {
+            // The ID is too long, or some text has no UTF-8 form. No signature can cover those.
+            return false;
+        }
 
         var t = r.ModAdd(s, Sm2Order.N);
         if (t.IsZero)
@@ -225,24 +325,21 @@ public static class SM2
     }
 
     /// <summary>
-    /// Tests whether r = e + x (the same reduction as <see cref="BigInt256.ModAdd"/>, modulo n) where x is the affine x
-    /// of a finite point, without the field inversion: each candidate value c of x is checked as c * Z^2 = X. Candidates
-    /// are r - e when non-negative, and r + n - e taken modulo 2^256, which includes the case where e + x overflows.
+    /// Tests whether r = (e + x) mod n, where x is the affine x of a finite point, without the field inversion. Since x
+    /// lies in [0, p) and p exceeds n, its candidates are c = (r - e) mod n and c + n, each checked as c * Z^2 = X.
     /// </summary>
     internal static bool MatchesSignatureR(in BigInt256 e, in BigInt256 r, in JacobianPoint point)
     {
         Fp.Square(point.Z, out var zSquared);
-
-        var withoutWrap = r.Sub(e, out ulong borrow);
-        if (borrow == 0 && IsAffineX(withoutWrap, zSquared, point.X))
+        Sm2Order.ReduceOnce(e, out var eReduced);
+        var candidate = r.ModSub(eReduced, Sm2Order.N);
+        if (IsAffineX(candidate, zSquared, point.X))
         {
             return true;
         }
 
-        var plusN = r.Add(Sm2Order.N, out ulong carry);
-        var withWrap = plusN.Sub(e, out ulong wrapBorrow);
-        bool representable = carry == wrapBorrow || wrapBorrow != 0;
-        return representable && IsAffineX(withWrap, zSquared, point.X);
+        var plusN = candidate.Add(Sm2Order.N, out ulong carry);
+        return carry == 0 && IsAffineX(plusN, zSquared, point.X);
     }
 
     private static bool IsAffineX(in BigInt256 candidate, in BigInt256 zSquared, in BigInt256 x)
@@ -255,13 +352,14 @@ public static class SM2
         return scaled == x;
     }
 
+    /// <summary>
+    /// Responder's step of key exchange. Validates all points and private values. Fails through Success and Message, with a
+    /// key length outside 1 to 1 MiB bytes, an invalid point or private value, or a user ID over 8191 bytes.
+    /// </summary>
     public static SM2KeySwapParams GetSb(int byteLen, ECPoint pA, ECPoint rA, ECPoint pB,
         BigInt256 dB, ECPoint rB, BigInt256 rb, string idA, string idB)
     {
         var result = new SM2KeySwapParams();
-
-        var x2 = CalcX(rB.X.Value);
-        var tb = CalcT(rb, dB, x2);
 
         if (!rA.IsOnCurve())
         {
@@ -269,6 +367,15 @@ public static class SM2
             return result;
         }
 
+        var failure = ValidateExchange(byteLen, pA, pB, rB, dB, rb, idA, idB);
+        if (failure != null)
+        {
+            result.Message = failure;
+            return result;
+        }
+
+        var x2 = CalcX(rB.X.Value);
+        var tb = CalcT(rb, dB, x2);
         var x1 = CalcX(rA.X.Value);
         var v = CalcPoint(tb, x1, pA, rA);
         if (v.Infinity)
@@ -285,6 +392,7 @@ public static class SM2
 
         result.Sb = HexUtils.BytesToHex(sb);
         result.Kb = HexUtils.BytesToHex(kb);
+        CryptographicOperations.ZeroMemory(kb);
         result.V = v;
         result.Za = za;
         result.Zb = zb;
@@ -292,13 +400,14 @@ public static class SM2
         return result;
     }
 
+    /// <summary>
+    /// Initiator's step of key exchange, with the same validation as <see cref="GetSb"/>. The confirmation value from B
+    /// must be exactly 32 bytes and match; the comparison is constant time.
+    /// </summary>
     public static SM2KeySwapParams GetSa(int byteLen, ECPoint pB, ECPoint rB, ECPoint pA,
         BigInt256 dA, ECPoint rA, BigInt256 ra, string idA, string idB, byte[] sb)
     {
         var result = new SM2KeySwapParams();
-
-        var x1 = CalcX(rA.X.Value);
-        var ta = CalcT(ra, dA, x1);
 
         if (!rB.IsOnCurve())
         {
@@ -306,6 +415,21 @@ public static class SM2
             return result;
         }
 
+        var failure = ValidateExchange(byteLen, pA, pB, rA, dA, ra, idA, idB);
+        if (failure != null)
+        {
+            result.Message = failure;
+            return result;
+        }
+
+        if (sb == null || sb.Length != ExpectedConfirmationSize)
+        {
+            result.Message = "B's verification value does not match";
+            return result;
+        }
+
+        var x1 = CalcX(rA.X.Value);
+        var ta = CalcT(ra, dA, x1);
         var x2 = CalcX(rB.X.Value);
         var u = CalcPoint(ta, x2, pB, rB);
         if (u.Infinity)
@@ -322,6 +446,7 @@ public static class SM2
 
         if (!CryptographicOperations.FixedTimeEquals(s1, sb))
         {
+            CryptographicOperations.ZeroMemory(ka);
             result.Message = "B's verification value does not match";
             return result;
         }
@@ -329,36 +454,116 @@ public static class SM2
         var sa = CreateS(0x03, u, za, zb, rA, rB);
         result.Sa = HexUtils.BytesToHex(sa);
         result.Ka = HexUtils.BytesToHex(ka);
+        CryptographicOperations.ZeroMemory(ka);
         result.Success = true;
         return result;
     }
 
+    /// <summary>Checks everything shared by both sides of the exchange; returns the failure, or null when all is valid.</summary>
+    private static string? ValidateExchange(int byteLen, in ECPoint pA, in ECPoint pB, in ECPoint ownR, in BigInt256 ownD, in BigInt256 ownEphemeral, string idA, string idB)
+    {
+        if (byteLen < 1 || byteLen > MaxExchangeKeyBytes)
+        {
+            return "invalid key length";
+        }
+        if (!pA.IsOnCurve() || !pB.IsOnCurve() || !ownR.IsOnCurve())
+        {
+            return InvalidPublicKey;
+        }
+        if ((Sm2Order.PrivateKeyRangeMask(ownD) & Sm2Order.PrivateKeyRangeMask(ownEphemeral)) == 0)
+        {
+            return InvalidPrivateKey;
+        }
+        return IsUsableUserId(idA) && IsUsableUserId(idB) ? null : "invalid user ID";
+    }
+
+    private static bool IsUsableUserId(string id)
+    {
+        if (id is null)
+        {
+            return false;
+        }
+        try
+        {
+            return StrictUtf8.GetByteCount(id) <= MaxUserIdBytes;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Responder's final check of A's confirmation value. Gives false for invalid points, a Z value or confirmation that
+    /// is not exactly 32 bytes, or a mismatch. The comparison is constant time.
+    /// </summary>
     public static bool CheckSa(ECPoint v, byte[] za, byte[] zb, ECPoint rA, ECPoint rB, byte[] sa)
     {
+        if (za == null || zb == null || sa == null
+            || za.Length != HashSize || zb.Length != HashSize || sa.Length != ExpectedConfirmationSize)
+        {
+            return false;
+        }
+        if (!v.IsOnCurve() || !rA.IsOnCurve() || !rB.IsOnCurve())
+        {
+            return false;
+        }
         var s2 = CreateS(0x03, v, za, zb, rA, rB);
         return CryptographicOperations.FixedTimeEquals(s2, sa);
     }
 
+    /// <exception cref="ArgumentNullException"><paramref name="hexStr"/> is null.</exception>
+    /// <exception cref="ArgumentException">The input is not an exact encoding of a point on the curve.</exception>
     public static ECPoint DecodePoint(string hexStr) => ECPoint.FromHexEncoded(hexStr);
 
-    public static ECPoint GetPublicKey(BigInt256 privateKey) => ECPoint.Generator().Multiply(privateKey);
+    /// <summary>The public key of a private key in [1, n-2].</summary>
+    /// <exception cref="ArgumentException">The private key is out of range.</exception>
+    public static ECPoint GetPublicKey(BigInt256 privateKey)
+    {
+        if (Sm2Order.PrivateKeyRangeMask(privateKey) == 0)
+        {
+            throw new ArgumentException(InvalidPrivateKey);
+        }
+        Sm2Group.MultiplyGeneratorSecret(privateKey, out var result);
+        return Sm2Group.ToAffine(result);
+    }
 
     // --- internal helpers ---
 
-    /// <summary>A uniformly random scalar in [1, n-1], from the system CSPRNG by rejection sampling.</summary>
-    private static BigInt256 NextScalar()
+    /// <summary>Exactly 64 hex digits, in [1, n-2]. The check examines all digits and limbs; the error says nothing else.</summary>
+    private static BigInt256 ParsePrivateKey(ReadOnlySpan<char> hex)
+    {
+        bool wellFormed = BigInt256.TryParseExact(hex, out var d);
+        if (!wellFormed || Sm2Order.PrivateKeyRangeMask(d) == 0)
+        {
+            throw new ArgumentException(InvalidPrivateKey);
+        }
+        return d;
+    }
+
+    /// <summary>A uniformly random signature or encryption nonce in [1, n-1], by rejection sampling.</summary>
+    internal static BigInt256 NextNonce(RandomSource random) => NextScalar(random, static (in BigInt256 k) => Sm2Order.InRangeMask(k));
+
+    /// <summary>A uniformly random private key in [1, n-2], by rejection sampling.</summary>
+    internal static BigInt256 NextPrivateKey(RandomSource random) => NextScalar(random, static (in BigInt256 k) => Sm2Order.PrivateKeyRangeMask(k));
+
+    private delegate ulong RangeMask(in BigInt256 k);
+
+    private static BigInt256 NextScalar(RandomSource random, RangeMask inRange)
     {
         Span<byte> bytes = stackalloc byte[CoordinateSize];
-        while (true)
+        for (int attempt = 0; attempt < MaxRandomDraws; attempt++)
         {
-            RandomNumberGenerator.Fill(bytes);
+            random(bytes);
             var candidate = BigInt256.FromBigEndian(bytes);
-            if (Sm2Order.InRangeMask(candidate) != 0)
+            if (inRange(candidate) != 0)
             {
                 CryptographicOperations.ZeroMemory(bytes);
                 return candidate;
             }
         }
+        CryptographicOperations.ZeroMemory(bytes);
+        throw new CryptographicException("random generator returned no usable value");
     }
 
     /// <summary>SM3(x || data || y), as used for C3.</summary>
@@ -372,6 +577,8 @@ public static class SM2
         p.Y.Value.WriteBigEndian(coordinate);
         h.Update(coordinate);
         h.Finish(digest);
+        h.Wipe();
+        CryptographicOperations.ZeroMemory(coordinate);
     }
 
     /// <summary>XORs the KDF(x || y) stream into data; returns false when the whole stream was zero.</summary>
@@ -379,9 +586,15 @@ public static class SM2
     {
         var prefix = Sm3Hasher.Create();
         UpdateCoordinates(ref prefix, p2);
-        return KdfXor(prefix, data);
+        bool usable = KdfXor(prefix, data);
+        prefix.Wipe();
+        return usable;
     }
 
+    /// <summary>
+    /// The exchanged key. Unlike encryption's keystream, an all-zero result is not rejected: the standard has no such step,
+    /// and for a one-byte key it is an ordinary outcome of one exchange in 256.
+    /// </summary>
     private static byte[] KdfKeySwap(int keyLength, in ECPoint vu, byte[] za, byte[] zb)
     {
         var key = new byte[keyLength];
@@ -390,6 +603,7 @@ public static class SM2
         prefix.Update(za);
         prefix.Update(zb);
         KdfXor(prefix, key);
+        prefix.Wipe();
         return key;
     }
 
@@ -424,6 +638,7 @@ public static class SM2
                 tail[i] ^= block[i];
             }
         }
+        CryptographicOperations.ZeroMemory(block);
         return seen != 0;
     }
 
@@ -433,6 +648,7 @@ public static class SM2
         p.X.Value.WriteBigEndian(coordinates);
         p.Y.Value.WriteBigEndian(coordinates[CoordinateSize..]);
         h.Update(coordinates);
+        CryptographicOperations.ZeroMemory(coordinates);
     }
 
     private static void UpdateUtf8(ref Sm3Hasher h, string text)
@@ -440,19 +656,24 @@ public static class SM2
         if (text.Length <= StackUtf8Chars)
         {
             Span<byte> bytes = stackalloc byte[StackUtf8Chars * 3];
-            int written = Encoding.UTF8.GetBytes(text, bytes);
+            int written = StrictUtf8.GetBytes(text, bytes);
             h.Update(bytes[..written]);
         }
         else
         {
-            h.Update(Encoding.UTF8.GetBytes(text));
+            h.Update(StrictUtf8.GetBytes(text));
         }
     }
 
     private static void ComputeZ(string userID, in ECPoint publicKey, Span<byte> z)
     {
-        // The length field is 16 bits; identities of 8 KiB or more wrap, as they always have here.
-        int idByteCount = Encoding.UTF8.GetByteCount(userID);
+        // The length field holds a bit count in 16 bits, so longer identities cannot be represented. GetByteCount also
+        // rejects text with no UTF-8 form, which could otherwise collide with a different string after replacement.
+        int idByteCount = StrictUtf8.GetByteCount(userID);
+        if (idByteCount > MaxUserIdBytes)
+        {
+            throw new ArgumentException("user ID too long");
+        }
         ushort entl = (ushort)(idByteCount * 8);
         Span<byte> entlBytes = stackalloc byte[sizeof(ushort)];
         BinaryPrimitives.WriteUInt16BigEndian(entlBytes, entl);
@@ -518,6 +739,9 @@ public static class SM2
         UpdateCoordinates(ref h, ra);
         UpdateCoordinates(ref h, rb);
         h.Finish(inner);
+        h.Wipe();
+
+        CryptographicOperations.ZeroMemory(coordinate);
 
         var outer = Sm3Hasher.Create();
         outer.UpdateByte(tag);
@@ -526,6 +750,9 @@ public static class SM2
         outer.Update(inner);
         var result = new byte[HashSize];
         outer.Finish(result);
+        outer.Wipe();
+        CryptographicOperations.ZeroMemory(coordinate);
+        CryptographicOperations.ZeroMemory(inner);
         return result;
     }
 }

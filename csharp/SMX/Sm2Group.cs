@@ -28,12 +28,12 @@ internal struct AffineEntry
 }
 
 /// <summary>
-/// Group operations on y^2 = x^3 - 3x + b. None of the formulas uses b, so they also act correctly on points given by
-/// callers that lie on a different curve with the same a, matching the historical behaviour of the public API.
+/// Group operations on y^2 = x^3 - 3x + b. Every public entry point validates its points before they arrive here.
 ///
 /// Timing, as far as managed code can promise it: the *Secret operations execute the same instructions and touch the
 /// same memory for every scalar, using masks instead of branches and scanning whole tables. The JIT does not formally
-/// guarantee this, and secrets cannot be reliably wiped from the managed stack or moved copies of it. The *Public
+/// guarantee this (the optimized code has been inspected; tier-0 code emits set-condition instructions from the same
+/// source), and secrets in temporaries cannot be reliably wiped from the managed stack or from copies the GC moved. The *Public
 /// operations branch on their scalars and may be used only when those are public, as in signature verification.
 /// </summary>
 internal static class Sm2Group
@@ -173,24 +173,17 @@ internal static class Sm2Group
     }
 
     /// <summary>
-    /// Constant-time full addition. Sets <paramref name="sameInput"/> to all ones when p = q, both finite, unless
-    /// <paramref name="complete"/> asks for that case to be resolved in place by also computing the doubling.
+    /// Constant-time complete addition: the doubling is always computed too and selected by mask when p = q, so that no
+    /// control flow depends on whether a secret scalar reached that case.
     /// </summary>
-    private static void AddSecret(in JacobianPoint p, in JacobianPoint q, bool complete, ref ulong sameInput, out JacobianPoint r)
+    private static void AddSecret(in JacobianPoint p, in JacobianPoint q, out JacobianPoint r)
     {
         AddFormula(p, q, out var sum, out var h, out var s);
         ulong pInfinite = p.Z.IsZeroMask();
         ulong qInfinite = q.Z.IsZeroMask();
         ulong same = h.IsZeroMask() & s.IsZeroMask() & ~pInfinite & ~qInfinite;
-        if (complete)
-        {
-            Double(p, out var doubled);
-            Select(same, doubled, sum, out sum);
-        }
-        else
-        {
-            sameInput |= same;
-        }
+        Double(p, out var doubled);
+        Select(same, doubled, sum, out sum);
         Select(pInfinite, q, sum, out sum);
         Select(qInfinite, p, sum, out r);
     }
@@ -232,6 +225,7 @@ internal static class Sm2Group
     /// k*p for a secret k, by a fixed window with constant-time table lookups. p itself is treated as public: an infinite
     /// or degenerate input may be detected by branches. Doublings and additions always alternate in the same pattern.
     /// </summary>
+    [SkipLocalsInit]
     public static void MultiplySecret(in JacobianPoint p, in BigInt256 k, out JacobianPoint r)
     {
         if (p.IsInfinity)
@@ -240,21 +234,6 @@ internal static class Sm2Group
             return;
         }
 
-        // The additions here see equal finite inputs only for k within about 2^6 of a multiple of the point's order, such
-        // as n - 6 on the SM2 curve, or for a point on some other curve passed in through the public API. Such a case is
-        // recorded and the whole product recomputed with complete additions. For a random scalar the chance is about
-        // 2^-250, and that one bit of timing is all the recomputation can reveal.
-        Compute(p, k, complete: false, out r, out ulong sameInput);
-        if (sameInput != 0)
-        {
-            Compute(p, k, complete: true, out r, out _);
-        }
-    }
-
-    [SkipLocalsInit]
-    private static void Compute(in JacobianPoint p, in BigInt256 k, bool complete, out JacobianPoint r, out ulong sameInput)
-    {
-        sameInput = 0;
         Span<JacobianPoint> table = stackalloc JacobianPoint[VariableTableSize];
         table[0] = p;
         for (int i = 1; i < VariableTableSize; i += 2)
@@ -262,7 +241,7 @@ internal static class Sm2Group
             Double(table[i / 2], out table[i]);
             if (i + 1 < VariableTableSize)
             {
-                AddSecret(table[i], table[0], complete, ref sameInput, out table[i + 1]);
+                AddSecret(table[i], table[0], out table[i + 1]);
             }
         }
 
@@ -276,7 +255,7 @@ internal static class Sm2Group
             int digit = BoothDigit(k, window * VariableWindowBits, VariableWindowBits, out ulong negative);
             LookupJacobian(table, digit, out var entry);
             NegateIf(negative, ref entry.Y);
-            AddSecret(q, entry, complete, ref sameInput, out q);
+            AddSecret(q, entry, out q);
         }
         r = q;
     }

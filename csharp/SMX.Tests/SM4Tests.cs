@@ -5,11 +5,16 @@ namespace SMX.Tests;
 
 public class SM4Tests
 {
+    private const string DerivedKey = "157224F19FD4C080";
+    private const string DerivedIv = "65B06A99625C008A";
+
     [Fact]
     public void EncryptDecrypt()
     {
         var sm4 = new SM4();
-        sm4.SetKey(Encoding.UTF8.GetBytes("this is the key"), Encoding.UTF8.GetBytes("this is the iv"));
+        // SetKey no longer derives keys from other lengths. These are the values that derivation gave for the 15-byte key
+        // "this is the key" and the 14-byte IV "this is the iv", so the ciphertext below stays the original KAT.
+        sm4.SetKey(Encoding.ASCII.GetBytes(DerivedKey), Encoding.ASCII.GetBytes(DerivedIv));
 
         string plaintext = "国密SM4对称加密算法";
 

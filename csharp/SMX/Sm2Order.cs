@@ -37,6 +37,14 @@ internal static class Sm2Order
         SafeGcd.Invert(reduced, SafeGcd.GroupOrder, out r);
     }
 
+    /// <summary>All ones when k is a usable private key, 0 &lt; k &lt; n - 1, otherwise zero. Constant time.</summary>
+    public static ulong PrivateKeyRangeMask(in BigInt256 k)
+    {
+        // n - 1 is excluded because signing divides by d + 1.
+        k.Sub(new BigInt256(N0 - 1, N1, N2, N3), out ulong borrow);
+        return Bits.MaskFromBit(borrow) & ~k.IsZeroMask();
+    }
+
     /// <summary>All ones when 0 &lt; k &lt; n, otherwise zero. Constant time.</summary>
     public static ulong InRangeMask(in BigInt256 k)
     {

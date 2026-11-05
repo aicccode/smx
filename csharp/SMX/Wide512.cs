@@ -110,7 +110,7 @@ internal struct Wide512
         int bits = modulus.BitLength();
         if (bits == 0)
         {
-            throw new DivideByZeroException();
+            throw new ArgumentException("Modulus must not be zero");
         }
 
         int n = (bits + 63) / 64;

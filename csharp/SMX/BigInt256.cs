@@ -1,15 +1,22 @@
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 
 namespace SMX;
 
 /// <summary>
 /// 256-bit unsigned integer stored as 4 ulong limbs in little-endian order.
 /// L0 is the least significant 64-bit word.
+/// <para>
+/// Add, Sub, ModAdd, ModSub, and ModMul or ModInverse with modulus SM2_N or SM2_P run in constant time. With any other
+/// modulus, and always in ModPow's exponent, they do not: do not use those with secrets.
+/// </para>
 /// </summary>
 public struct BigInt256 : IEquatable<BigInt256>
 {
+    private const int ByteSize = 32;
+
     public ulong L0, L1, L2, L3;
 
     public BigInt256(ulong l0, ulong l1, ulong l2, ulong l3)
@@ -23,43 +30,60 @@ public struct BigInt256 : IEquatable<BigInt256>
     public static readonly BigInt256 Zero = new(0, 0, 0, 0);
     public static readonly BigInt256 One = new(1, 0, 0, 0);
 
+    /// <summary>
+    /// Parses a number: up to 64 hex digits of either case, at least one, with an optional single "0x" prefix. Shorter
+    /// values are left-padded with zeros because that keeps the same number. Longer values are rejected, where earlier
+    /// versions silently dropped the high digits. Keys and signatures must use exact 64-digit parsing instead.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="s"/> is null.</exception>
+    /// <exception cref="ArgumentException">The input is not such a number.</exception>
     public static BigInt256 FromHex(string s)
     {
-        _ = s.Length;
-        return FromHex(s.AsSpan());
+        ArgumentNullException.ThrowIfNull(s);
+        ReadOnlySpan<char> digits = s;
+        if (digits.Length >= 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X'))
+        {
+            digits = digits[2..];
+        }
+        if (digits.IsEmpty || digits.Length > 2 * ByteSize)
+        {
+            throw new ArgumentException("Invalid hex number");
+        }
+
+        Span<char> padded = stackalloc char[2 * ByteSize];
+        padded[..^digits.Length].Fill('0');
+        digits.CopyTo(padded[^digits.Length..]);
+        bool valid = TryParseExact(padded, out var value);
+        padded.Clear();
+        return valid ? value : throw new ArgumentException("Invalid hex number");
     }
 
-    internal static BigInt256 FromHex(ReadOnlySpan<char> s)
+    /// <summary>Parses exactly 64 hex digits of either case, examining them all, with no prefix.</summary>
+    internal static bool TryParseExact(ReadOnlySpan<char> s, out BigInt256 value)
     {
-        // The usual case: exactly 32 bytes of hex with no prefix.
-        if (s.Length == 64 && s[1] != 'x' && s[1] != 'X')
-        {
-            Span<byte> exact = stackalloc byte[32];
-            HexUtils.DecodeEven(s, exact);
-            return FromBigEndian(exact);
-        }
-
-        if (s.Length >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-        {
-            s = s[2..];
-        }
-        return FromBEBytes(HexUtils.HexToBytes(s));
+        Span<byte> bytes = stackalloc byte[ByteSize];
+        bool valid = HexUtils.TryDecode(s, bytes);
+        value = FromBigEndian(bytes);
+        CryptographicOperations.ZeroMemory(bytes);
+        return valid;
     }
 
+    /// <summary>A big-endian number of at most 32 bytes; shorter input is left-padded with zeros.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="b"/> is null.</exception>
+    /// <exception cref="ArgumentException">The input is longer than 32 bytes. Earlier versions kept the low 32 bytes.</exception>
     public static BigInt256 FromBEBytes(byte[] b)
     {
-        if (b.Length == 32)
+        ArgumentNullException.ThrowIfNull(b);
+        if (b.Length > ByteSize)
         {
-            return FromBigEndian(b);
+            throw new ArgumentException("Value exceeds 256 bits");
         }
-        if (b.Length > 32)
-        {
-            return FromBigEndian(b.AsSpan(b.Length - 32));
-        }
-        Span<byte> padded = stackalloc byte[32];
-        padded.Clear();
-        b.CopyTo(padded[(32 - b.Length)..]);
-        return FromBigEndian(padded);
+        Span<byte> padded = stackalloc byte[ByteSize];
+        padded[..^b.Length].Clear();
+        b.CopyTo(padded[^b.Length..]);
+        var value = FromBigEndian(padded);
+        CryptographicOperations.ZeroMemory(padded);
+        return value;
     }
 
     /// <summary>Reads exactly 32 big-endian bytes.</summary>
@@ -168,6 +192,7 @@ public struct BigInt256 : IEquatable<BigInt256>
         return diff.Add(new BigInt256(m.L0 & mask, m.L1 & mask, m.L2 & mask, m.L3 & mask), out _);
     }
 
+    /// <exception cref="ArgumentException"><paramref name="m"/> is zero.</exception>
     public readonly BigInt256 ModMul(in BigInt256 b, in BigInt256 m)
     {
         if (m == Sm2Order.N)
@@ -184,6 +209,7 @@ public struct BigInt256 : IEquatable<BigInt256>
         return w.Mod(m);
     }
 
+    /// <exception cref="ArgumentException"><paramref name="m"/> is zero.</exception>
     public readonly BigInt256 ModSquare(in BigInt256 m)
     {
         if (m == Fp.P)
@@ -205,23 +231,37 @@ public struct BigInt256 : IEquatable<BigInt256>
         return r;
     }
 
+    /// <summary>The inverse modulo a prime m. The result is checked: anything without an inverse is rejected.</summary>
+    /// <exception cref="ArgumentException">No inverse was found: the value is 0 modulo m, or m is not a prime above 1.</exception>
     public readonly BigInt256 ModInverse(in BigInt256 m)
     {
+        BigInt256 r;
         if (m == Sm2Order.N)
         {
-            Sm2Order.Invert(this, out var r);
-            return r;
+            Sm2Order.Invert(this, out r);
         }
-        if (m == Fp.P)
+        else if (m == Fp.P)
         {
-            Fp.Invert(this, out var r);
-            return r;
+            Fp.Invert(this, out r);
         }
-        var pMinus2 = m.Sub(new BigInt256(2, 0, 0, 0), out _);
-        return ModPow(pMinus2, m);
+        else
+        {
+            if (m.IsZero)
+            {
+                throw new ArgumentException("Modulus must not be zero");
+            }
+            var pMinus2 = m.Sub(new BigInt256(2, 0, 0, 0), out _);
+            r = ModPow(pMinus2, m);
+        }
+        if (!ModMul(r, m).IsOne)
+        {
+            throw new ArgumentException("Value has no inverse for this modulus");
+        }
+        return r;
     }
 
     /// <summary>Left-to-right binary exponentiation. Timing depends on <paramref name="exp"/>, so keep it public.</summary>
+    /// <exception cref="ArgumentException"><paramref name="m"/> is zero.</exception>
     public readonly BigInt256 ModPow(in BigInt256 exp, in BigInt256 m)
     {
         if (exp.IsZero)
@@ -243,7 +283,7 @@ public struct BigInt256 : IEquatable<BigInt256>
 
     public readonly bool GetBit(int i)
     {
-        if (i >= 256)
+        if (i is < 0 or >= 256)
         {
             return false;
         }

@@ -1,9 +1,14 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace SMX;
 
-/// <summary>Streaming SM3 hash; the working state lives in <see cref="Sm3Hasher"/> so internal callers need no heap.</summary>
+/// <summary>
+/// Streaming SM3 hash; the working state lives in <see cref="Sm3Hasher"/> so internal callers need no heap. An instance
+/// holds mutable state and is not safe for concurrent use. Finish resets it for a new message.
+/// </summary>
 public class SM3
 {
     private Sm3Hasher _hasher = Sm3Hasher.Create();
@@ -11,9 +16,16 @@ public class SM3
     private BigInt256 _digest;
     private bool _hasDigest;
 
+    /// <exception cref="ArgumentException">The message would exceed the SM3 limit of 2^61 - 1 bytes.</exception>
     public void UpdateByte(byte b) => _hasher.UpdateByte(b);
 
-    public void Update(byte[] data) => _hasher.Update(data);
+    /// <exception cref="ArgumentNullException"><paramref name="data"/> is null.</exception>
+    /// <exception cref="ArgumentException">The message would exceed the SM3 limit of 2^61 - 1 bytes.</exception>
+    public void Update(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        _hasher.Update(data);
+    }
 
     public void Finish()
     {
@@ -35,7 +47,10 @@ internal struct Sm3Hasher
 {
     public const int DigestSize = 32;
     private const int BlockSize = 64;
-    private const int LengthOffset = BlockSize - sizeof(uint);
+    private const int LengthOffset = BlockSize - sizeof(ulong);
+
+    /// <summary>The bit length field is 64 bits wide, which limits a message to this many bytes.</summary>
+    internal const ulong MaxMessageBytes = (1UL << 61) - 1;
 
     private Sm3State _state;
     private ulong _totalBytes;
@@ -50,15 +65,36 @@ internal struct Sm3Hasher
 
     public static Sm3Hasher Create()
     {
-        Unsafe.SkipInit(out Sm3Hasher h);
+        Sm3Hasher h = default;
         h._state = Sm3State.Initial;
-        h._totalBytes = 0;
-        h._bufferedBytes = 0;
         return h;
+    }
+
+    /// <summary>A hasher that has notionally absorbed this many bytes already, to test the length limit.</summary>
+    internal static Sm3Hasher CreateWithLengthForTest(ulong totalBytes)
+    {
+        Sm3Hasher h = Create();
+        h._totalBytes = totalBytes;
+        return h;
+    }
+
+    /// <summary>Best-effort erasure of absorbed data and chaining state, for hashers that held secrets.</summary>
+    public void Wipe()
+    {
+        CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(new Span<Sm3Hasher>(ref this)));
+    }
+
+    private readonly void CheckLength(ulong additional)
+    {
+        if (additional > MaxMessageBytes - _totalBytes)
+        {
+            throw new ArgumentException("SM3 message too long");
+        }
     }
 
     public void UpdateByte(byte b)
     {
+        CheckLength(1);
         Span<byte> buffer = _buffer;
         buffer[_bufferedBytes++] = b;
         _totalBytes++;
@@ -71,6 +107,7 @@ internal struct Sm3Hasher
 
     public void Update(ReadOnlySpan<byte> data)
     {
+        CheckLength((ulong)data.Length);
         _totalBytes += (ulong)data.Length;
         Span<byte> buffer = _buffer;
 
@@ -122,21 +159,19 @@ internal struct Sm3Hasher
         BinaryPrimitives.WriteUInt32BigEndian(block[_bufferedBytes..], counter);
         block[_bufferedBytes + sizeof(uint)] = 0x80;
         block[(_bufferedBytes + sizeof(uint) + 1)..LengthOffset].Clear();
-        BinaryPrimitives.WriteUInt32BigEndian(block[LengthOffset..], (uint)((_totalBytes + sizeof(uint)) << 3));
+        BinaryPrimitives.WriteUInt64BigEndian(block[LengthOffset..], (_totalBytes + sizeof(uint)) << 3);
 
         var state = _state;
         Sm3Compress.Blocks(ref state, block);
         state.WriteBigEndian(digest);
+        CryptographicOperations.ZeroMemory(block);
     }
 
-    /// <summary>
-    /// Pads and writes the digest. Only the low 32 bits of the message bit length are encoded, as the library has always
-    /// done, so results differ from standard SM3 for messages of 2^32 bits (512 MiB) or more.
-    /// </summary>
+    /// <summary>Pads with the 64-bit message bit length and writes the digest.</summary>
     public void Finish(Span<byte> digest)
     {
         Span<byte> buffer = _buffer;
-        uint bitLength = (uint)(_totalBytes << 3);
+        ulong bitLength = _totalBytes << 3;
 
         buffer[_bufferedBytes] = 0x80;
         buffer[(_bufferedBytes + 1)..].Clear();
@@ -145,7 +180,7 @@ internal struct Sm3Hasher
             Sm3Compress.Blocks(ref _state, buffer);
             buffer.Clear();
         }
-        BinaryPrimitives.WriteUInt32BigEndian(buffer[LengthOffset..], bitLength);
+        BinaryPrimitives.WriteUInt64BigEndian(buffer[LengthOffset..], bitLength);
         Sm3Compress.Blocks(ref _state, buffer);
         _state.WriteBigEndian(digest);
     }
