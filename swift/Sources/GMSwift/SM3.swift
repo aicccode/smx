@@ -12,110 +12,7 @@ struct SM3State {
     var g: UInt32 = 0xE38D_EE4D
     var h: UInt32 = 0xB0FB_0E4E
 
-    @inline(__always)
-    private static func rotl(_ x: UInt32, _ count: UInt32) -> UInt32 {
-        return (x &<< count) | (x &>> (32 &- count))
-    }
-
-    @inline(__always)
-    private static func p0(_ x: UInt32) -> UInt32 {
-        return x ^ rotl(x, 9) ^ rotl(x, 17)
-    }
-
-    @inline(__always)
-    private static func p1(_ x: UInt32) -> UInt32 {
-        return x ^ rotl(x, 15) ^ rotl(x, 23)
-    }
-
-    /// 处理 blocks 个连续的64字节分组
-    mutating func compress(_ input: UnsafePointer<UInt8>, blocks: Int) {
-        withUnsafeTemporaryAllocation(of: UInt32.self, capacity: 68) { schedule in
-            guard let w = schedule.baseAddress else {
-                return
-            }
-            var block = input
-            for _ in 0..<blocks {
-                compressBlock(block, schedule: w)
-                block += 64
-            }
-        }
-    }
-
-    /// 第 0...15 轮。调用方通过轮换实参代替逐轮搬移8个工作变量。
-    @inline(__always)
-    private static func roundEarly(
-        _ a: UInt32, _ b: inout UInt32, _ c: UInt32, _ d: inout UInt32,
-        _ e: UInt32, _ f: inout UInt32, _ g: UInt32, _ h: inout UInt32,
-        _ w: UnsafePointer<UInt32>, _ index: Int, _ constant: inout UInt32
-    ) {
-        let a12 = rotl(a, 12)
-        let ss1 = rotl(a12 &+ e &+ constant, 7)
-        let ss2 = ss1 ^ a12
-        d = (a ^ b ^ c) &+ d &+ ss2 &+ (w[index] ^ w[index &+ 4])
-        h = p0((e ^ f ^ g) &+ h &+ ss1 &+ w[index])
-        b = rotl(b, 9)
-        f = rotl(f, 19)
-        constant = rotl(constant, 1)
-    }
-
-    /// 第 16...63 轮
-    @inline(__always)
-    private static func roundLate(
-        _ a: UInt32, _ b: inout UInt32, _ c: UInt32, _ d: inout UInt32,
-        _ e: UInt32, _ f: inout UInt32, _ g: UInt32, _ h: inout UInt32,
-        _ w: UnsafePointer<UInt32>, _ index: Int, _ constant: inout UInt32
-    ) {
-        let a12 = rotl(a, 12)
-        let ss1 = rotl(a12 &+ e &+ constant, 7)
-        let ss2 = ss1 ^ a12
-        d = ((a & b) | ((a | b) & c)) &+ d &+ ss2 &+ (w[index] ^ w[index &+ 4])
-        h = p0((((f ^ g) & e) ^ g) &+ h &+ ss1 &+ w[index])
-        b = rotl(b, 9)
-        f = rotl(f, 19)
-        constant = rotl(constant, 1)
-    }
-
-    @inline(__always)
-    private mutating func compressBlock(_ block: UnsafePointer<UInt8>, schedule w: UnsafeMutablePointer<UInt32>) {
-        let raw = UnsafeRawPointer(block)
-        for index in 0..<16 {
-            w[index] = UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: index &* 4, as: UInt32.self))
-        }
-        for index in 16..<68 {
-            w[index] =
-                SM3State.p1(w[index &- 16] ^ w[index &- 9] ^ SM3State.rotl(w[index &- 3], 15))
-                ^ SM3State.rotl(w[index &- 13], 7) ^ w[index &- 6]
-        }
-
-        var (va, vb, vc, vd, ve, vf, vg, vh) = (a, b, c, d, e, f, g, h)
-        let schedule = UnsafePointer(w)
-
-        var constant: UInt32 = 0x79CC_4519
-        for index in stride(from: 0, to: 16, by: 4) {
-            SM3State.roundEarly(va, &vb, vc, &vd, ve, &vf, vg, &vh, schedule, index, &constant)
-            SM3State.roundEarly(vd, &va, vb, &vc, vh, &ve, vf, &vg, schedule, index &+ 1, &constant)
-            SM3State.roundEarly(vc, &vd, va, &vb, vg, &vh, ve, &vf, schedule, index &+ 2, &constant)
-            SM3State.roundEarly(vb, &vc, vd, &va, vf, &vg, vh, &ve, schedule, index &+ 3, &constant)
-        }
-
-        // 0x7A879D8A 循环左移16位
-        constant = 0x9D8A_7A87
-        for index in stride(from: 16, to: 64, by: 4) {
-            SM3State.roundLate(va, &vb, vc, &vd, ve, &vf, vg, &vh, schedule, index, &constant)
-            SM3State.roundLate(vd, &va, vb, &vc, vh, &ve, vf, &vg, schedule, index &+ 1, &constant)
-            SM3State.roundLate(vc, &vd, va, &vb, vg, &vh, ve, &vf, schedule, index &+ 2, &constant)
-            SM3State.roundLate(vb, &vc, vd, &va, vf, &vg, vh, &ve, schedule, index &+ 3, &constant)
-        }
-
-        a ^= va
-        b ^= vb
-        c ^= vc
-        d ^= vd
-        e ^= ve
-        f ^= vf
-        g ^= vg
-        h ^= vh
-    }
+    // 压缩函数在 SM3Compress.swift（由 Tools/gen_sm3_compress.py 生成）。
 }
 
 /// 流式 SM3，64字节缓冲直接存放在结构体内
@@ -240,16 +137,14 @@ struct SM3Core {
         withUnsafeMutableBytes(of: &buffer) { raw in
             raw[start] = 0x80
             let end = needsExtraBlock ? 64 : 56
-            for index in (start + 1)..<max(start + 1, end) {
-                raw[index] = 0
+            if end > start + 1, let base = raw.baseAddress {
+                (base + start + 1).initializeMemory(as: UInt8.self, repeating: 0, count: end - start - 1)
             }
         }
         if needsExtraBlock {
             compressBuffer()
             withUnsafeMutableBytes(of: &buffer) { raw in
-                for index in 0..<56 {
-                    raw[index] = 0
-                }
+                raw.baseAddress?.initializeMemory(as: UInt8.self, repeating: 0, count: 56)
             }
         }
         withUnsafeMutableBytes(of: &buffer) { raw in
@@ -258,16 +153,15 @@ struct SM3Core {
         compressBuffer()
         bufferOffset = 0
 
-        let words = (state.a, state.b, state.c, state.d, state.e, state.f, state.g, state.h)
-        withUnsafeBytes(of: words) { raw in
-            for index in 0..<8 {
-                let word = raw.load(fromByteOffset: index * 4, as: UInt32.self)
-                output[index * 4] = UInt8(truncatingIfNeeded: word &>> 24)
-                output[index * 4 + 1] = UInt8(truncatingIfNeeded: word &>> 16)
-                output[index * 4 + 2] = UInt8(truncatingIfNeeded: word &>> 8)
-                output[index * 4 + 3] = UInt8(truncatingIfNeeded: word)
-            }
-        }
+        let raw = UnsafeMutableRawPointer(output)
+        raw.storeBytes(of: state.a.bigEndian, toByteOffset: 0, as: UInt32.self)
+        raw.storeBytes(of: state.b.bigEndian, toByteOffset: 4, as: UInt32.self)
+        raw.storeBytes(of: state.c.bigEndian, toByteOffset: 8, as: UInt32.self)
+        raw.storeBytes(of: state.d.bigEndian, toByteOffset: 12, as: UInt32.self)
+        raw.storeBytes(of: state.e.bigEndian, toByteOffset: 16, as: UInt32.self)
+        raw.storeBytes(of: state.f.bigEndian, toByteOffset: 20, as: UInt32.self)
+        raw.storeBytes(of: state.g.bigEndian, toByteOffset: 24, as: UInt32.self)
+        raw.storeBytes(of: state.h.bigEndian, toByteOffset: 28, as: UInt32.self)
         return true
     }
 

@@ -15,7 +15,7 @@ let package = Package(
             path: "Sources/GMSwift",
             sources: [
                 "Hex.swift", "SM2.swift", "SM2BigInt.swift", "SM2ECPoint.swift", "SM2Field.swift", "SM2Point.swift",
-                "SM2Scalar.swift", "SM3.swift", "SM4.swift", "SM4SBox.swift",
+                "SM2Scalar.swift", "SM3.swift", "SM3Compress.swift", "SM4.swift", "SM4SBox.swift",
             ],
             publicHeadersPath: ""
         ),
