@@ -1,9 +1,70 @@
 import { BigInteger } from './biginteger.js'
+import { bigToBytes, bytesToBig } from './bytes.js'
+import {
+  G_X_BYTES,
+  G_Y_BYTES,
+  affineAdd,
+  affineDouble,
+  decompressY,
+  fieldDivBytes,
+  fieldMulBytes,
+  fieldSqrBytes,
+  isOnCurve,
+  mulG,
+  mulPoint,
+  mulPublic,
+} from './point.js'
 
 const ZERO = BigInteger.ZERO
 const ONE = BigInteger.ONE
 const TWO = BigInteger.nbv(2)
 const THREE = BigInteger.nbv(3)
+
+const SM2_P = new BigInteger(
+  'fffffffeffffffffffffffffffffffffffffffff00000000ffffffffffffffff',
+  16,
+)
+const SM2_A = new BigInteger(
+  'fffffffeffffffffffffffffffffffffffffffff00000000fffffffffffffffc',
+  16,
+)
+const SM2_B = new BigInteger(
+  '28e9fa9e9d9f5e344d5a9e4bcf6509a7f39789f515ab8f92ddbcbd414d940e93',
+  16,
+)
+const SM2_GX = bytesToBig(G_X_BYTES)
+const SM2_GY = bytesToBig(G_Y_BYTES)
+const SM2_BITS = 256
+
+// Reused across calls. JavaScript is single-threaded and nothing here yields.
+const bufA = new Uint8Array(32)
+const bufB = new Uint8Array(32)
+const bufC = new Uint8Array(32)
+const bufD = new Uint8Array(32)
+const outX = new Uint8Array(32)
+const outY = new Uint8Array(32)
+
+function isSm2Prime(q) {
+  return q === SM2_P || q.equals(SM2_P)
+}
+
+/** v mod q, skipping the division when one subtraction or addition is enough. */
+function reduce(v, q) {
+  if (q.s < 0) return v.mod(q)
+  if (v.s >= 0) {
+    if (v.compareTo(q) < 0) return v
+    const r = v.subtract(q)
+    if (r.compareTo(q) < 0) return r
+  } else {
+    const r = v.add(q)
+    if (r.s >= 0) return r
+  }
+  return v.mod(q)
+}
+
+function isExactlyOne(z) {
+  return z.t === 1 && z[0] === 1 && z.s === 0
+}
 
 /**
  * 椭圆曲线域元素 Fp
@@ -22,44 +83,67 @@ class ECFieldElementFp {
   toBigInteger() {
     return this.x
   }
+
   isZero() {
     return this.x.signum() === 0
   }
 
   negate() {
-    return new ECFieldElementFp(this.q, this.x.negate().mod(this.q))
+    return new ECFieldElementFp(this.q, reduce(this.x.negate(), this.q))
   }
 
   add(b) {
     return new ECFieldElementFp(
       this.q,
-      this.x.add(b.toBigInteger()).mod(this.q),
+      reduce(this.x.add(b.toBigInteger()), this.q),
     )
   }
 
   subtract(b) {
     return new ECFieldElementFp(
       this.q,
-      this.x.subtract(b.toBigInteger()).mod(this.q),
+      reduce(this.x.subtract(b.toBigInteger()), this.q),
     )
   }
 
   multiply(b) {
-    return new ECFieldElementFp(
-      this.q,
-      this.x.multiply(b.toBigInteger()).mod(this.q),
-    )
+    const q = this.q
+    if (isSm2Prime(q)) {
+      bigToBytes(reduce(this.x, q), bufA)
+      bigToBytes(reduce(b.toBigInteger(), q), bufB)
+      fieldMulBytes(bufA, bufB, bufC)
+      return new ECFieldElementFp(q, bytesToBig(bufC))
+    }
+    return new ECFieldElementFp(q, this.x.multiply(b.toBigInteger()).mod(q))
   }
 
   divide(b) {
+    const q = this.q
+    const divisor = b.toBigInteger()
+    // A divisor that is negative or 0 mod q keeps the generic path's behaviour.
+    if (isSm2Prime(q) && divisor.s >= 0) {
+      const reduced = reduce(divisor, q)
+      if (reduced.signum() !== 0) {
+        bigToBytes(reduce(this.x, q), bufA)
+        bigToBytes(reduced, bufB)
+        fieldDivBytes(bufA, bufB, bufC)
+        return new ECFieldElementFp(q, bytesToBig(bufC))
+      }
+    }
     return new ECFieldElementFp(
-      this.q,
-      this.x.multiply(b.toBigInteger().modInverse(this.q)).mod(this.q),
+      q,
+      this.x.multiply(divisor.modInverse(q)).mod(q),
     )
   }
 
   square() {
-    return new ECFieldElementFp(this.q, this.x.square().mod(this.q))
+    const q = this.q
+    if (isSm2Prime(q)) {
+      bigToBytes(reduce(this.x, q), bufA)
+      fieldSqrBytes(bufA, bufC)
+      return new ECFieldElementFp(q, bytesToBig(bufC))
+    }
+    return new ECFieldElementFp(q, this.x.square().mod(q))
   }
 }
 
@@ -77,6 +161,10 @@ export class ECPointFp {
 
   isValid() {
     if (this.isInfinity()) return true
+    if (this.curve._isSm2) {
+      this._coordinatesTo(bufA, bufB)
+      return isOnCurve(bufA, bufB)
+    }
     // y² = x³ + ax + b
     return this.x
       .square()
@@ -86,17 +174,39 @@ export class ECPointFp {
       .equals(this.y.square())
   }
 
-  getX() {
-    if (this.zinv === null) this.zinv = this.z.modInverse(this.curve.q)
-    return this.curve.fromBigInteger(
-      this.x.toBigInteger().multiply(this.zinv).mod(this.curve.q),
+  /** Writes the raw x and y, reduced mod q, ignoring z. */
+  _coordinatesTo(x, y) {
+    const q = this.curve.q
+    bigToBytes(reduce(this.x.toBigInteger(), q), x)
+    bigToBytes(reduce(this.y.toBigInteger(), q), y)
+  }
+
+  _pointFromBytes(x, y) {
+    return new ECPointFp(
+      this.curve,
+      this.curve.fromBigInteger(bytesToBig(x)),
+      this.curve.fromBigInteger(bytesToBig(y)),
+      this.z,
     )
   }
 
+  getX() {
+    return this._affine(this.x)
+  }
+
   getY() {
-    if (this.zinv === null) this.zinv = this.z.modInverse(this.curve.q)
+    return this._affine(this.y)
+  }
+
+  _affine(coordinate) {
+    const q = this.curve.q
+    if (isExactlyOne(this.z)) {
+      this.zinv = ONE
+      return this.curve.fromBigInteger(reduce(coordinate.toBigInteger(), q))
+    }
+    if (this.zinv === null) this.zinv = this.z.modInverse(q)
     return this.curve.fromBigInteger(
-      this.y.toBigInteger().multiply(this.zinv).mod(this.curve.q),
+      coordinate.toBigInteger().multiply(this.zinv).mod(q),
     )
   }
 
@@ -134,10 +244,18 @@ export class ECPointFp {
     if (b.isInfinity()) return this
     if (this === b) return this.twice()
 
-    const x1 = this.x,
-      y1 = this.y
-    const x2 = b.x,
-      y2 = b.y
+    if (this.curve._isSm2) {
+      this._coordinatesTo(bufA, bufB)
+      b._coordinatesTo(bufC, bufD)
+      const status = affineAdd(bufA, bufB, bufC, bufD, outX, outY)
+      if (status === 0) return this.curve.infinity
+      return status === 2 ? this.twice() : this._pointFromBytes(outX, outY)
+    }
+
+    const x1 = this.x
+    const y1 = this.y
+    const x2 = b.x
+    const y2 = b.y
     const dx = x2.subtract(x1)
     const dy = y2.subtract(y1)
 
@@ -155,8 +273,14 @@ export class ECPointFp {
     if (this.isInfinity()) return this
     if (!this.y.toBigInteger().signum()) return this.curve.infinity
 
-    const x1 = this.x,
-      y1 = this.y
+    if (this.curve._isSm2) {
+      this._coordinatesTo(bufA, bufB)
+      if (!affineDouble(bufA, bufB, outX, outY)) return this.curve.infinity
+      return this._pointFromBytes(outX, outY)
+    }
+
+    const x1 = this.x
+    const y1 = this.y
     const a = this.curve.a
     const gamma = x1
       .square()
@@ -184,17 +308,61 @@ export class ECPointFp {
 
   /**
    * 标量乘法 k * P
+   *
+   * On the SM2 curve this uses fixed windows and masked table selection, so k
+   * may be secret. Any other curve takes the generic, variable-time comb path.
    */
   multiply(k) {
     if (this.isInfinity()) return this
     if (k.signum() === 0) return this.curve.getInfinity()
-    const positive = this._multiplyPositive(k.abs())
+    const abs = k.abs()
+    const positive =
+      this.curve._isSm2 && isExactlyOne(this.z)
+        ? this._multiplySm2(abs, false)
+        : this._multiplyPositive(abs)
     const result = k.signum() > 0 ? positive : positive.negate()
     if (!result.isValid()) throw new Error('Invalid point')
     return result
   }
 
-  // ---- 内部: Comb 标量乘法 ----
+  /**
+   * Same result as multiply, in variable time. Only for a public k and only on
+   * the SM2 curve, e.g. the x-bar scalar in key exchange.
+   */
+  _multiplyPublic(k) {
+    if (this.isInfinity()) return this
+    if (k.signum() === 0) return this.curve.getInfinity()
+    if (k.signum() < 0 || !this.curve._isSm2 || !isExactlyOne(this.z)) {
+      return this.multiply(k)
+    }
+    const result = this._multiplySm2(k, true)
+    if (!result.isValid()) throw new Error('Invalid point')
+    return result
+  }
+
+  _multiplySm2(k, isPublic) {
+    if (k.bitLength() > SM2_BITS) throw new Error('k is too large')
+    bigToBytes(k, bufC)
+    this._coordinatesTo(bufA, bufB)
+    let finite
+    if (
+      !isPublic &&
+      this.x.toBigInteger().equals(SM2_GX) &&
+      this.y.toBigInteger().equals(SM2_GY)
+    ) {
+      finite = mulG(bufC, outX, outY)
+    } else {
+      // Reject off-curve input before any secret-dependent work starts.
+      if (!isOnCurve(bufA, bufB)) throw new Error('Invalid point')
+      finite = isPublic
+        ? mulPublic(bufA, bufB, bufC, outX, outY)
+        : mulPoint(bufA, bufB, bufC, outX, outY)
+    }
+    bufC.fill(0)
+    return finite ? this._pointFromBytes(outX, outY) : this.curve.infinity
+  }
+
+  // ---- 内部: 通用 Comb 标量乘法（非 SM2 曲线）----
 
   _multiplyPositive(k) {
     const size = this.curve.q.bitLength()
@@ -279,6 +447,8 @@ export class ECCurveFp {
     this.a = this.fromBigInteger(a)
     this.b = this.fromBigInteger(b)
     this.infinity = new ECPointFp(this, null, null)
+    /** Whether these are exactly the SM2 parameters, enabling the fast paths. */
+    this._isSm2 = q.equals(SM2_P) && a.equals(SM2_A) && b.equals(SM2_B)
   }
 
   getInfinity() {
@@ -312,6 +482,12 @@ export class ECCurveFp {
     }
   }
 
+  _sqrtOfCurveRhs(x) {
+    bigToBytes(reduce(x.toBigInteger(), this.q), bufA)
+    decompressY(bufA, bufB)
+    return this.fromBigInteger(bytesToBig(bufB))
+  }
+
   /**
    * 解析十六进制串为椭圆曲线点
    */
@@ -324,14 +500,16 @@ export class ECCurveFp {
       case 2:
       case 3: {
         const x = this.fromBigInteger(new BigInteger(s.substring(2), 16))
-        let y = this.fromBigInteger(
-          x
-            .multiply(x.square())
-            .add(x.multiply(this.a))
-            .add(this.b)
-            .toBigInteger()
-            .modPow(this.q.divide(new BigInteger('4')).add(ONE), this.q),
-        )
+        let y = this._isSm2
+          ? this._sqrtOfCurveRhs(x)
+          : this.fromBigInteger(
+              x
+                .multiply(x.square())
+                .add(x.multiply(this.a))
+                .add(this.b)
+                .toBigInteger()
+                .modPow(this.q.divide(new BigInteger('4')).add(ONE), this.q),
+            )
         if (
           !y
             .toBigInteger()

@@ -3,6 +3,8 @@
  * 统一使用 Uint8Array，消除有符号字节的复杂性
  */
 
+import { HEX_CODES, HEX_PAIRS, decodeStrictHex, parseHexPair } from './hex.js'
+
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8')
 
@@ -25,7 +27,8 @@ export function bytesToString(bytes) {
   return decoder.decode(new Uint8Array(bytes))
 }
 
-const HEX_CHARS = '0123456789abcdef'
+/** Above this size, filling char codes and decoding beats concatenating strings. */
+const HEX_DECODE_THRESHOLD = 256
 
 /**
  * 字节数组 → 十六进制字符串（小写）
@@ -33,12 +36,19 @@ const HEX_CHARS = '0123456789abcdef'
  * @returns {string}
  */
 export function bytesToHex(bytes) {
-  let hex = ''
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i] & 0xff
-    hex += HEX_CHARS[b >>> 4] + HEX_CHARS[b & 0x0f]
+  const n = bytes.length
+  if (n < HEX_DECODE_THRESHOLD) {
+    let hex = ''
+    for (let i = 0; i < n; i++) hex += HEX_PAIRS[bytes[i] & 0xff]
+    return hex
   }
-  return hex
+  const out = new Uint8Array(2 * n)
+  for (let i = 0; i < n; i++) {
+    const b = (bytes[i] & 0xff) << 1
+    out[2 * i] = HEX_CODES[b]
+    out[2 * i + 1] = HEX_CODES[b + 1]
+  }
+  return decoder.decode(out)
 }
 
 /**
@@ -48,11 +58,11 @@ export function bytesToHex(bytes) {
  */
 export function hexToBytes(hex) {
   if (hex.length & 1) hex = '0' + hex
+  const strict = decodeStrictHex(hex)
+  if (strict !== null) return strict
   const len = hex.length >>> 1
   const bytes = new Uint8Array(len)
-  for (let i = 0; i < len; i++) {
-    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  }
+  for (let i = 0; i < len; i++) bytes[i] = parseHexPair(hex, i)
   return bytes
 }
 

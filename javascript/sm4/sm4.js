@@ -4,8 +4,6 @@ import {
   bytesToString,
   bytesToHex,
   hexToBytes,
-  bytesToIntBE,
-  intToBytesBE,
 } from '../common/utils.js'
 
 // ---- SM4 常量 ----
@@ -35,10 +33,10 @@ const SBOX = new Uint8Array([
 ])
 
 /** 系统参数 FK */
-const FK = new Uint32Array([0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc])
+const FK = new Int32Array([0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc])
 
 /** 固定密钥 CK */
-const CK = new Uint32Array([
+const CK = new Int32Array([
   0x00070e15, 0x1c232a31, 0x383f464d, 0x545b6269, 0x70777e85, 0x8c939aa1,
   0xa8afb6bd, 0xc4cbd2d9, 0xe0e7eef5, 0xfc030a11, 0x181f262d, 0x343b4249,
   0x50575e65, 0x6c737a81, 0x888f969d, 0xa4abb2b9, 0xc0c7ced5, 0xdce3eaf1,
@@ -49,32 +47,84 @@ const CK = new Uint32Array([
 
 // ---- 内部函数 ----
 
-/** 32 位循环左移 */
-function rotl(x, n) {
-  return ((x << n) | (x >>> (32 - n))) >>> 0
+/**
+ * T 表：S 盒与线性变换 L 的组合，每个输入字节一张 256 项的表，加解密的每轮只需
+ * 四次查表。
+ *
+ * 缓存时序说明：与 S 盒实现一样，查表下标依赖密钥和数据。这些表更大，占用更多缓
+ * 存行，因此缓存时序侧信道的风险不低于基线。JavaScript 没有 AES-NI/GFNI 这样的硬
+ * 件路径，也无法提供常数时间保证；对本地攻击者敏感的场景应使用原生实现。
+ */
+const T0 = new Int32Array(256)
+const T1 = new Int32Array(256)
+const T2 = new Int32Array(256)
+const T3 = new Int32Array(256)
+for (let i = 0; i < 256; i++) {
+  const b = SBOX[i]
+  // L(b) = b ^ (b <<< 2) ^ (b <<< 10) ^ (b <<< 18) ^ (b <<< 24)，b 在最低字节
+  const l = b ^ (b << 2) ^ (b << 10) ^ (b << 18) ^ (b << 24)
+  T3[i] = l
+  T2[i] = (l << 8) | (l >>> 24)
+  T1[i] = (l << 16) | (l >>> 16)
+  T0[i] = (l << 24) | (l >>> 8)
 }
 
-/** 非线性变换 τ：4 字节 S 盒替换（纯位运算，不创建临时数组） */
-function tau(a) {
-  return (
-    ((SBOX[(a >>> 24) & 0xff] << 24) |
-      (SBOX[(a >>> 16) & 0xff] << 16) |
-      (SBOX[(a >>> 8) & 0xff] << 8) |
-      SBOX[a & 0xff]) >>>
-    0
-  )
+/** 32 位大端读取 */
+function readWord(b, o) {
+  return (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]
 }
 
-/** 合成置换 T（加密轮函数） */
-function T(a) {
-  const b = tau(a)
-  return (b ^ rotl(b, 2) ^ rotl(b, 10) ^ rotl(b, 18) ^ rotl(b, 24)) >>> 0
+/** 合成置换 T'（密钥扩展）：S 盒替换后接 L' */
+function tPrime(a) {
+  const b =
+    (SBOX[a >>> 24] << 24) |
+    (SBOX[(a >>> 16) & 0xff] << 16) |
+    (SBOX[(a >>> 8) & 0xff] << 8) |
+    SBOX[a & 0xff]
+  return b ^ ((b << 13) | (b >>> 19)) ^ ((b << 23) | (b >>> 9))
 }
 
-/** 合成置换 T'（密钥扩展） */
-function TPrime(a) {
-  const b = tau(a)
-  return (b ^ rotl(b, 13) ^ rotl(b, 23)) >>> 0
+/**
+ * 加密或解密一个块。step 为 +1 时按 rk[0..31] 使用轮密钥（加密），为 -1 时反向
+ * （解密）。输入和输出可以是同一缓冲区。
+ */
+function processBlock(rk, first, step, x0, x1, x2, x3, out, outOff) {
+  let k = first
+  for (let round = 0; round < 8; round++) {
+    let t = x1 ^ x2 ^ x3 ^ rk[k]
+    k += step
+    x0 ^=
+      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
+    t = x2 ^ x3 ^ x0 ^ rk[k]
+    k += step
+    x1 ^=
+      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
+    t = x3 ^ x0 ^ x1 ^ rk[k]
+    k += step
+    x2 ^=
+      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
+    t = x0 ^ x1 ^ x2 ^ rk[k]
+    k += step
+    x3 ^=
+      T0[t >>> 24] ^ T1[(t >>> 16) & 0xff] ^ T2[(t >>> 8) & 0xff] ^ T3[t & 0xff]
+  }
+  // 反序变换 R
+  out[outOff] = x3 >>> 24
+  out[outOff + 1] = x3 >>> 16
+  out[outOff + 2] = x3 >>> 8
+  out[outOff + 3] = x3
+  out[outOff + 4] = x2 >>> 24
+  out[outOff + 5] = x2 >>> 16
+  out[outOff + 6] = x2 >>> 8
+  out[outOff + 7] = x2
+  out[outOff + 8] = x1 >>> 24
+  out[outOff + 9] = x1 >>> 16
+  out[outOff + 10] = x1 >>> 8
+  out[outOff + 11] = x1
+  out[outOff + 12] = x0 >>> 24
+  out[outOff + 13] = x0 >>> 16
+  out[outOff + 14] = x0 >>> 8
+  out[outOff + 15] = x0
 }
 
 /**
@@ -101,7 +151,7 @@ function normalizeKeyFromString(str) {
  */
 export class SM4 {
   constructor() {
-    this._rk = new Uint32Array(32) // 轮密钥
+    this._rk = new Int32Array(32) // 轮密钥
     this._iv = new Uint8Array(16) // 初始向量
   }
 
@@ -128,16 +178,28 @@ export class SM4 {
   encrypt(text) {
     const input = pkcs7Pad(stringToBytes(text))
     const output = new Uint8Array(input.length)
-    const cbcIV = new Uint8Array(this._iv)
-    const block = new Uint8Array(16)
+    const rk = this._rk
+    let iv0 = readWord(this._iv, 0)
+    let iv1 = readWord(this._iv, 4)
+    let iv2 = readWord(this._iv, 8)
+    let iv3 = readWord(this._iv, 12)
 
     for (let off = 0; off < input.length; off += 16) {
-      // XOR with CBC IV
-      for (let i = 0; i < 16; i++) block[i] = input[off + i] ^ cbcIV[i]
-      // 加密一个块
-      this._encryptBlock(block, output, off)
-      // 更新 CBC IV
-      cbcIV.set(output.subarray(off, off + 16))
+      processBlock(
+        rk,
+        0,
+        1,
+        readWord(input, off) ^ iv0,
+        readWord(input, off + 4) ^ iv1,
+        readWord(input, off + 8) ^ iv2,
+        readWord(input, off + 12) ^ iv3,
+        output,
+        off,
+      )
+      iv0 = readWord(output, off)
+      iv1 = readWord(output, off + 4)
+      iv2 = readWord(output, off + 8)
+      iv3 = readWord(output, off + 12)
     }
 
     return bytesToHex(output)
@@ -151,15 +213,25 @@ export class SM4 {
   decrypt(cipherHex) {
     const input = hexToBytes(cipherHex)
     const output = new Uint8Array(input.length)
-    const cbcIV = new Uint8Array(this._iv)
+    const rk = this._rk
+    const iv = this._iv
 
     for (let off = 0; off < input.length; off += 16) {
-      // 解密一个块
-      this._decryptBlock(input, off, output, off)
-      // XOR with CBC IV
-      for (let i = 0; i < 16; i++) output[off + i] ^= cbcIV[i]
-      // 更新 CBC IV = 当前密文块
-      cbcIV.set(input.subarray(off, off + 16))
+      processBlock(
+        rk,
+        31,
+        -1,
+        readWord(input, off),
+        readWord(input, off + 4),
+        readWord(input, off + 8),
+        readWord(input, off + 12),
+        output,
+        off,
+      )
+      // XOR with CBC IV: 上一个密文块，第一块用初始向量
+      const previous = off === 0 ? iv : input
+      const base = off === 0 ? 0 : off - 16
+      for (let i = 0; i < 16; i++) output[off + i] ^= previous[base + i]
     }
 
     return bytesToString(pkcs7Unpad(output))
@@ -169,14 +241,20 @@ export class SM4 {
 
   /** 密钥扩展 */
   _expandKey(key) {
-    const K = new Uint32Array(36)
-    K[0] = bytesToIntBE(key, 0) ^ FK[0]
-    K[1] = bytesToIntBE(key, 4) ^ FK[1]
-    K[2] = bytesToIntBE(key, 8) ^ FK[2]
-    K[3] = bytesToIntBE(key, 12) ^ FK[3]
-    for (let i = 0; i < 32; i++) {
-      K[i + 4] = (K[i] ^ TPrime(K[i + 1] ^ K[i + 2] ^ K[i + 3] ^ CK[i])) >>> 0
-      this._rk[i] = K[i + 4]
+    const rk = this._rk
+    let k0 = readWord(key, 0) ^ FK[0]
+    let k1 = readWord(key, 4) ^ FK[1]
+    let k2 = readWord(key, 8) ^ FK[2]
+    let k3 = readWord(key, 12) ^ FK[3]
+    for (let i = 0; i < 32; i += 4) {
+      k0 ^= tPrime(k1 ^ k2 ^ k3 ^ CK[i])
+      rk[i] = k0
+      k1 ^= tPrime(k2 ^ k3 ^ k0 ^ CK[i + 1])
+      rk[i + 1] = k1
+      k2 ^= tPrime(k3 ^ k0 ^ k1 ^ CK[i + 2])
+      rk[i + 2] = k2
+      k3 ^= tPrime(k0 ^ k1 ^ k2 ^ CK[i + 3])
+      rk[i + 3] = k3
     }
   }
 
@@ -192,22 +270,17 @@ export class SM4 {
 
   /** 处理单块（加密/解密共用） */
   _processBlock(input, inOff, output, outOff, decrypt) {
-    const X = new Uint32Array(36)
-    X[0] = bytesToIntBE(input, inOff)
-    X[1] = bytesToIntBE(input, inOff + 4)
-    X[2] = bytesToIntBE(input, inOff + 8)
-    X[3] = bytesToIntBE(input, inOff + 12)
-
-    for (let i = 0; i < 32; i++) {
-      const rk = decrypt ? this._rk[31 - i] : this._rk[i]
-      X[i + 4] = (X[i] ^ T(X[i + 1] ^ X[i + 2] ^ X[i + 3] ^ rk)) >>> 0
-    }
-
-    // 反序变换 R
-    intToBytesBE(X[35], output, outOff)
-    intToBytesBE(X[34], output, outOff + 4)
-    intToBytesBE(X[33], output, outOff + 8)
-    intToBytesBE(X[32], output, outOff + 12)
+    processBlock(
+      this._rk,
+      decrypt ? 31 : 0,
+      decrypt ? -1 : 1,
+      readWord(input, inOff),
+      readWord(input, inOff + 4),
+      readWord(input, inOff + 8),
+      readWord(input, inOff + 12),
+      output,
+      outOff,
+    )
   }
 }
 
@@ -217,7 +290,7 @@ function pkcs7Pad(data) {
   const padLen = 16 - (data.length % 16)
   const out = new Uint8Array(data.length + padLen)
   out.set(data)
-  for (let i = data.length; i < out.length; i++) out[i] = padLen
+  out.fill(padLen, data.length)
   return out
 }
 

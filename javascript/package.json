@@ -5,9 +5,15 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node test/run-all.js"
+    "test": "node test/run-all.js && node test/kat.js && node test/diff-field.js",
+    "bench": "node bench/bench.js"
   },
-  "keywords": ["sm2", "sm3", "sm4", "gm"],
+  "keywords": [
+    "sm2",
+    "sm3",
+    "sm4",
+    "gm"
+  ],
   "author": "",
   "license": "MIT"
 }

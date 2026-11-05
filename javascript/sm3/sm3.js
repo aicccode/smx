@@ -1,39 +1,121 @@
-import {
-  stringToBytes,
-  bytesToHex,
-  bytesToIntBE,
-  intToBytesBE,
-} from '../common/utils.js'
+import { stringToBytes, bytesToHex, intToBytesBE } from '../common/utils.js'
 
 /** SM3 初始向量 */
-const IV = new Uint32Array([
+const IV = new Int32Array([
   0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa,
   0xe38dee4d, 0xb0fb0e4e,
 ])
 
-/** 32 位循环左移 */
-function rotl(x, n) {
-  return ((x << n) | (x >>> (32 - n))) >>> 0
+/** 轮常量 T_j <<< j，预先计算 */
+const T = new Int32Array(64)
+for (let j = 0; j < 64; j++) {
+  const t = j < 16 ? 0x79cc4519 : 0x7a879d8a
+  const n = j % 32
+  T[j] = n === 0 ? t : (t << n) | (t >>> (32 - n))
 }
 
-/** 置换函数 P0 */
-function P0(x) {
-  return x ^ rotl(x, 9) ^ rotl(x, 17)
-}
+/** 消息扩展缓冲区：可复用，因为压缩函数不会重入 */
+const W = new Int32Array(68)
 
-/** 置换函数 P1 */
-function P1(x) {
-  return x ^ rotl(x, 15) ^ rotl(x, 23)
-}
+/**
+ * 压缩函数：依次处理 data 中从 offset 开始的 blocks 个 64 字节块
+ * @param {Int32Array} V - 哈希状态，原地更新
+ * @param {Uint8Array} data
+ * @param {number} offset
+ * @param {number} blocks
+ */
+function compress(V, data, offset, blocks) {
+  const w = W
+  const t = T
+  let v0 = V[0]
+  let v1 = V[1]
+  let v2 = V[2]
+  let v3 = V[3]
+  let v4 = V[4]
+  let v5 = V[5]
+  let v6 = V[6]
+  let v7 = V[7]
 
-/** 布尔函数 FF (j >= 16) */
-function FF1(x, y, z) {
-  return (x & y) | (x & z) | (y & z)
-}
+  for (let block = 0; block < blocks; block++, offset += 64) {
+    for (let j = 0; j < 16; j++) {
+      const o = offset + 4 * j
+      w[j] =
+        (data[o] << 24) | (data[o + 1] << 16) | (data[o + 2] << 8) | data[o + 3]
+    }
+    for (let j = 16; j < 68; j++) {
+      const a = w[j - 3]
+      const x = w[j - 16] ^ w[j - 9] ^ ((a << 15) | (a >>> 17))
+      const b = w[j - 13]
+      w[j] =
+        x ^
+        ((x << 15) | (x >>> 17)) ^
+        ((x << 23) | (x >>> 9)) ^
+        ((b << 7) | (b >>> 25)) ^
+        w[j - 6]
+    }
 
-/** 布尔函数 GG (j >= 16) */
-function GG1(x, y, z) {
-  return (x & y) | (~x & z)
+    let A = v0
+    let B = v1
+    let C = v2
+    let D = v3
+    let E = v4
+    let F = v5
+    let G = v6
+    let H = v7
+
+    for (let j = 0; j < 16; j++) {
+      const a12 = (A << 12) | (A >>> 20)
+      const s = (a12 + E + t[j]) | 0
+      const ss1 = (s << 7) | (s >>> 25)
+      const wj = w[j]
+      const tt1 = ((A ^ B ^ C) + D + (ss1 ^ a12) + (wj ^ w[j + 4])) | 0
+      const tt2 = ((E ^ F ^ G) + H + ss1 + wj) | 0
+      D = C
+      C = (B << 9) | (B >>> 23)
+      B = A
+      A = tt1
+      H = G
+      G = (F << 19) | (F >>> 13)
+      F = E
+      E = tt2 ^ ((tt2 << 9) | (tt2 >>> 23)) ^ ((tt2 << 17) | (tt2 >>> 15))
+    }
+    for (let j = 16; j < 64; j++) {
+      const a12 = (A << 12) | (A >>> 20)
+      const s = (a12 + E + t[j]) | 0
+      const ss1 = (s << 7) | (s >>> 25)
+      const wj = w[j]
+      const ff = (A & B) | (C & (A | B))
+      const gg = ((F ^ G) & E) ^ G
+      const tt1 = (ff + D + (ss1 ^ a12) + (wj ^ w[j + 4])) | 0
+      const tt2 = (gg + H + ss1 + wj) | 0
+      D = C
+      C = (B << 9) | (B >>> 23)
+      B = A
+      A = tt1
+      H = G
+      G = (F << 19) | (F >>> 13)
+      F = E
+      E = tt2 ^ ((tt2 << 9) | (tt2 >>> 23)) ^ ((tt2 << 17) | (tt2 >>> 15))
+    }
+
+    v0 ^= A
+    v1 ^= B
+    v2 ^= C
+    v3 ^= D
+    v4 ^= E
+    v5 ^= F
+    v6 ^= G
+    v7 ^= H
+  }
+
+  V[0] = v0
+  V[1] = v1
+  V[2] = v2
+  V[3] = v3
+  V[4] = v4
+  V[5] = v5
+  V[6] = v6
+  V[7] = v7
 }
 
 /**
@@ -54,8 +136,10 @@ export class SM3 {
     this._buf = new Uint8Array(64) // 512-bit 块缓冲
     this._pos = 0 // 缓冲区写入位置
     this._len = 0 // 已处理字节总长度
-    this._V = new Uint32Array(IV) // 当前哈希状态
+    this._V = new Int32Array(IV) // 当前哈希状态
     this._finished = false
+    this._hashBytes = null // finish() 的结果
+    this._hashValue = null // 由 _hashBytes 按需生成
   }
 
   /**
@@ -68,19 +152,16 @@ export class SM3 {
       this._buf[this._pos++] = data & 0xff
       this._len++
       if (this._pos === 64) {
-        this._compress(this._buf)
+        compress(this._V, this._buf, 0, 1)
         this._pos = 0
       }
       return this
     }
-    for (let i = 0; i < data.length; i++) {
-      this._buf[this._pos++] = data[i] & 0xff
-      this._len++
-      if (this._pos === 64) {
-        this._compress(this._buf)
-        this._pos = 0
-      }
+    if (data instanceof Uint8Array) {
+      this._absorb(data, 0, data.length)
+      return this
     }
+    this._absorbGeneric(data, 0, data.length)
     return this
   }
 
@@ -101,13 +182,15 @@ export class SM3 {
    * @returns {SM3}
    */
   updateBytes(data, offset, length) {
-    for (let i = 0; i < length; i++) {
-      this._buf[this._pos++] = data[offset + i] & 0xff
-      this._len++
-      if (this._pos === 64) {
-        this._compress(this._buf)
-        this._pos = 0
-      }
+    if (
+      data instanceof Uint8Array &&
+      offset >= 0 &&
+      length >= 0 &&
+      offset + length <= data.length
+    ) {
+      this._absorb(data, offset, length)
+    } else {
+      this._absorbGeneric(data, offset, length)
     }
     return this
   }
@@ -141,9 +224,9 @@ export class SM3 {
   /** @deprecated 使用 digest() / hexDigest() */
   finish() {
     this._hashBytes = this.digest()
-    this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
+    this._hashValue = null
     // 重置状态以支持复用
-    this._V = new Uint32Array(IV)
+    this._V.set(IV)
     this._pos = 0
     this._len = 0
     this._finished = false
@@ -152,15 +235,59 @@ export class SM3 {
 
   /** @deprecated 使用 hexDigest() */
   getHashCode() {
+    if (this._hashBytes === null) return undefined
+    if (this._hashValue === null) {
+      this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
+    }
     return this._hashValue
   }
 
   /** @deprecated 使用 digest() */
   getHashBytes() {
-    return this._hashBytes
+    return this._hashBytes === null ? undefined : this._hashBytes
   }
 
   // ---- 内部方法 ----
+
+  /** 整块直接在输入上压缩，只把不足一块的部分放入缓冲区 */
+  _absorb(data, offset, length) {
+    this._len += length
+    const buf = this._buf
+    let pos = this._pos
+    let remaining = length
+    if (pos > 0) {
+      const take = Math.min(64 - pos, remaining)
+      for (let i = 0; i < take; i++) buf[pos + i] = data[offset + i]
+      pos += take
+      offset += take
+      remaining -= take
+      if (pos === 64) {
+        compress(this._V, buf, 0, 1)
+        pos = 0
+      }
+    }
+    if (remaining >= 64) {
+      const blocks = remaining >>> 6
+      compress(this._V, data, offset, blocks)
+      const consumed = blocks << 6
+      offset += consumed
+      remaining -= consumed
+    }
+    for (let i = 0; i < remaining; i++) buf[pos + i] = data[offset + i]
+    this._pos = pos + remaining
+  }
+
+  /** 普通数组等输入：逐字节截断为 0-255 */
+  _absorbGeneric(data, offset, length) {
+    for (let i = 0; i < length; i++) {
+      this._buf[this._pos++] = data[offset + i] & 0xff
+      this._len++
+      if (this._pos === 64) {
+        compress(this._V, this._buf, 0, 1)
+        this._pos = 0
+      }
+    }
+  }
 
   /** 消息填充 */
   _pad() {
@@ -170,80 +297,17 @@ export class SM3 {
     this._buf[this._pos++] = 0x80
     // 如果剩余空间不够放 8 字节长度，先填满当前块
     if (this._pos > 56) {
-      while (this._pos < 64) this._buf[this._pos++] = 0
-      this._compress(this._buf)
+      this._buf.fill(0, this._pos, 64)
+      compress(this._V, this._buf, 0, 1)
       this._pos = 0
     }
     // 填充零
-    while (this._pos < 56) this._buf[this._pos++] = 0
+    this._buf.fill(0, this._pos, 56)
+    this._pos = 56
     // 追加 64 位大端序消息长度（JS 安全整数范围内用两个 32 位写入）
     intToBytesBE(Math.floor(bitLen / 0x100000000), this._buf, 56)
     intToBytesBE(bitLen >>> 0, this._buf, 60)
-    this._compress(this._buf)
-  }
-
-  /** 压缩函数：处理一个 64 字节块 */
-  _compress(block) {
-    // 消息扩展
-    const w = new Int32Array(68)
-    for (let j = 0; j < 16; j++) {
-      w[j] = bytesToIntBE(block, j * 4)
-    }
-    for (let j = 16; j < 68; j++) {
-      w[j] =
-        P1(w[j - 16] ^ w[j - 9] ^ rotl(w[j - 3], 15)) ^
-        rotl(w[j - 13], 7) ^
-        w[j - 6]
-    }
-
-    const w2 = new Int32Array(64)
-    for (let j = 0; j < 64; j++) {
-      w2[j] = w[j] ^ w[j + 4]
-    }
-
-    // 压缩
-    let A = this._V[0],
-      B = this._V[1],
-      C = this._V[2],
-      D = this._V[3]
-    let E = this._V[4],
-      F = this._V[5],
-      G = this._V[6],
-      H = this._V[7]
-
-    for (let j = 0; j < 64; j++) {
-      const A12 = rotl(A, 12)
-      const Tj = j < 16 ? rotl(0x79cc4519, j) : rotl(0x7a879d8a, j % 32)
-      const SS1 = rotl((A12 + E + Tj) | 0, 7)
-      const SS2 = SS1 ^ A12
-
-      const TT1 =
-        j < 16
-          ? ((A ^ B ^ C) + D + SS2 + w2[j]) | 0
-          : (FF1(A, B, C) + D + SS2 + w2[j]) | 0
-      const TT2 =
-        j < 16
-          ? ((E ^ F ^ G) + H + SS1 + w[j]) | 0
-          : (GG1(E, F, G) + H + SS1 + w[j]) | 0
-
-      D = C
-      C = rotl(B, 9)
-      B = A
-      A = TT1
-      H = G
-      G = rotl(F, 19)
-      F = E
-      E = P0(TT2)
-    }
-
-    this._V[0] ^= A
-    this._V[1] ^= B
-    this._V[2] ^= C
-    this._V[3] ^= D
-    this._V[4] ^= E
-    this._V[5] ^= F
-    this._V[6] ^= G
-    this._V[7] ^= H
+    compress(this._V, this._buf, 0, 1)
   }
 
   // ---- 静态便捷方法 ----

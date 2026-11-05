@@ -1,76 +1,116 @@
 import { SM3, getSM3 } from '../sm3/sm3.js'
 import { BigInteger } from './biginteger.js'
+import { bigToBytes, bytesToBig } from './bytes.js'
+import { generateKeyMaterial } from './keygen.js'
+import { verifyCombination } from './point.js'
+import {
+  isBelowN,
+  plusNBelowP,
+  scalarAdd,
+  scalarMulAdd,
+  scalarSub,
+  signatureS,
+} from './scalar.js'
 import * as util from './utils.js'
 
 const ZERO = BigInteger.ZERO
 const ONE = BigInteger.ONE
+const BITS = 256
 
 const { G, curve, n, w } = util.generateEcparam()
 
+// Z 值中的固定部分：曲线参数 a、b 与基点坐标
+const CURVE_A = toBytes(curve.a.toBigInteger())
+const CURVE_B = toBytes(curve.b.toBigInteger())
+const BASE_X = toBytes(G.getX().toBigInteger())
+const BASE_Y = toBytes(G.getY().toBigInteger())
+
 // ---- 内部工具 ----
 
-/** BigInteger → 固定 32 字节数组（左补零） */
-function bigIntTo32Bytes(n) {
-  if (!n) return null
-  const arr = n.toByteArray()
-  if (arr.length === 33) return arr.slice(1)
-  if (arr.length === 32) return arr
-  const out = new Array(32).fill(0)
-  const off = 32 - arr.length
-  for (let i = 0; i < arr.length; i++) out[off + i] = arr[i]
+/** 非负 BigInteger（小于 2^256）→ 新的 32 字节数组 */
+function toBytes(value) {
+  return bigToBytes(value, new Uint8Array(32))
+}
+
+/** 点的仿射坐标 → 32 字节数组。无穷远点会抛出 TypeError */
+function coordinateBytes(point) {
+  return [
+    toBytes(point.getX().toBigInteger()),
+    toBytes(point.getY().toBigInteger()),
+  ]
+}
+
+/** Equal-length strings compare in time independent of where they differ. */
+function equalStrings(a, b) {
+  if (typeof a !== 'string' || a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+/** data ^= KDF(x2 || y2)，SM3 派生，块计数器从 1 开始 */
+function kdfXor(x2, y2, data) {
+  const sm3 = new SM3()
+  const counter = new Uint8Array(4)
+  let ct = 1
+  for (let offset = 0; offset < data.length; ct++) {
+    counter[0] = ct >>> 24
+    counter[1] = ct >>> 16
+    counter[2] = ct >>> 8
+    counter[3] = ct
+    const block = sm3
+      .update(x2)
+      .update(y2)
+      .update(counter)
+      .finish()
+      .getHashBytes()
+    const end = Math.min(32, data.length - offset)
+    for (let i = 0; i < end; i++) data[offset + i] ^= block[i]
+    offset += end
+  }
+}
+
+/** C3 = SM3(x2 || msg || y2)，小写 hex */
+function c3Hex(x2, msg, y2) {
+  return new SM3().update(x2).update(msg).update(y2).hexDigest().toLowerCase()
+}
+
+/** 消息 → 新的 Uint8Array（元素按字节截断） */
+function messageBytes(msg) {
+  return typeof msg === 'string'
+    ? util.stringToBytes(msg)
+    : Uint8Array.from(Array.prototype.slice.call(msg))
+}
+
+/** Z = SM3(ENTL || userId || a || b || gx || gy || px || py) */
+function computeZ(px, py, userId) {
+  const userIdBytes = util.stringToBytes(userId)
+  const entl = userIdBytes.length * 8
+  return new SM3()
+    .update((entl >> 8) & 0xff)
+    .update(entl & 0xff)
+    .update(userIdBytes)
+    .update(CURVE_A)
+    .update(CURVE_B)
+    .update(BASE_X)
+    .update(BASE_Y)
+    .update(px)
+    .update(py)
+    .digest()
+}
+
+/** 私钥 → 模 n 的 32 字节表示（BigInteger 已由点乘校验长度） */
+function privateScalarBytes(d) {
+  if (d.signum() >= 0) return toBytes(d)
+  const out = new Uint8Array(32)
+  scalarSub(out, new Uint8Array(32), toBytes(d.abs()))
   return out
 }
 
-/** BigInteger → 指定长度无符号字节数组 */
-function asUnsignedByteArray(length, value) {
-  const bytes = value.toByteArray()
-  const start = bytes[0] === 0 ? 1 : 0
-  const count = bytes.length - start
-  if (count > length) throw new Error('Value too large for byte array length')
-  const tmp = new Array(length).fill(0)
-  const off = length - count
-  for (let i = 0; i < count; i++) tmp[off + i] = bytes[start + i]
-  return tmp
-}
-
-/** 32 位整数 → 大端序 4 字节 */
-function intToBigEndian(n, bs, off) {
-  bs[off] = (n >>> 24) & 0xff
-  bs[off + 1] = (n >>> 16) & 0xff
-  bs[off + 2] = (n >>> 8) & 0xff
-  bs[off + 3] = n & 0xff
-}
-
-/** KDF 密钥派生流（SM3-based） */
-function kdfStream(x2, y2) {
-  const z = [].concat(x2, y2)
-  let ct = 1
-  let t = []
-  let offset = 0
-
-  function nextBlock() {
-    const sm3 = new SM3()
-    const hvData = [
-      ...z,
-      (ct >> 24) & 0xff,
-      (ct >> 16) & 0xff,
-      (ct >> 8) & 0xff,
-      ct & 0xff,
-    ]
-    sm3.updateBytes(hvData, 0, hvData.length)
-    t = sm3.finish().getHashBytes()
-    ct++
-    offset = 0
-  }
-
-  nextBlock()
-
-  return {
-    xorByte(b) {
-      if (offset === t.length) nextBlock()
-      return b ^ (t[offset++] & 0xff)
-    },
-  }
+function decodePublicKey(publicKey) {
+  return publicKey.length === 128
+    ? curve.decodePointHex('04' + publicKey)
+    : curve.decodePointHex(publicKey)
 }
 
 /**
@@ -88,37 +128,19 @@ class SM2 {
    * @returns {string} 密文 hex (C1 || C3 || C2)
    */
   sm2Encrypt(msg, publicKey) {
-    msg =
-      typeof msg === 'string'
-        ? Array.from(util.stringToBytes(msg))
-        : Array.prototype.slice.call(msg)
-
-    const keypair = util.generateKeyPairHex()
-    const k = new BigInteger(keypair.privateKey, 16)
-    const c1 = keypair.publicKey
+    const data = messageBytes(msg)
+    const { d: k, x, y } = generateKeyMaterial()
+    const c1 = '04' + util.bytes2hex(x) + util.bytes2hex(y)
 
     const pubPoint = curve.decodePointHex(publicKey)
-    const p = pubPoint.multiply(k)
-    const x2 = asUnsignedByteArray(32, p.getX().toBigInteger())
-    const y2 = asUnsignedByteArray(32, p.getY().toBigInteger())
+    const [x2, y2] = coordinateBytes(pubPoint.multiply(k))
 
     // C3 = SM3(x2 || msg || y2)
-    const sm3c3 = new SM3()
-    sm3c3.updateBytes(
-      [].concat(x2, msg, y2),
-      0,
-      x2.length + msg.length + y2.length,
-    )
-    const c3 = sm3c3.finish().getHashCode().toLowerCase()
-
+    const c3 = c3Hex(x2, data, y2)
     // C2 = msg XOR KDF(x2 || y2)
-    const stream = kdfStream(x2, y2)
-    for (let i = 0; i < msg.length; i++) {
-      msg[i] = stream.xorByte(msg[i])
-    }
-    const c2 = util.arrayToHex(msg)
+    kdfXor(x2, y2, data)
 
-    return c1 + c3 + c2
+    return c1 + c3 + util.bytes2hex(data)
   }
 
   /**
@@ -130,32 +152,21 @@ class SM2 {
   sm2Decrypt(encryptData, privateKey) {
     const privKey = new BigInteger(privateKey, 16)
     const c3 = encryptData.substr(130, 64)
-    const c2 = encryptData.substr(194)
+    const data = util.hexToBytes(encryptData.substr(194))
 
-    const msg = util.hexToArray(c2)
     const c1 = curve.decodePointHex(encryptData.substr(0, 130))
     curve.validatePoint(c1.getX(), c1.getY())
 
-    const p = c1.multiply(privKey)
-    const x2 = asUnsignedByteArray(32, p.getX().toBigInteger())
-    const y2 = asUnsignedByteArray(32, p.getY().toBigInteger())
+    const [x2, y2] = coordinateBytes(c1.multiply(privKey))
 
     // 恢复明文
-    const stream = kdfStream(x2, y2)
-    for (let i = 0; i < msg.length; i++) {
-      msg[i] = stream.xorByte(msg[i])
-    }
+    kdfXor(x2, y2, data)
 
     // 验证 C3
-    const sm3c3 = new SM3()
-    sm3c3.updateBytes(
-      [].concat(x2, msg, y2),
-      0,
-      x2.length + msg.length + y2.length,
-    )
-    const checkC3 = sm3c3.finish().getHashCode().toLowerCase()
-
-    return checkC3 === c3.toLowerCase() ? util.bytesToUTF8String(msg) : ''
+    const checkC3 = c3Hex(x2, data, y2)
+    return equalStrings(checkC3, c3.toLowerCase())
+      ? util.bytesToUTF8String(data)
+      : ''
   }
 
   // ---- 签名 / 验签 ----
@@ -169,38 +180,36 @@ class SM2 {
    */
   sm2Sign(userId, privatekey, msg) {
     const intPrivateKey = new BigInteger(privatekey, 16)
-    const pA = G.multiply(intPrivateKey)
-    const pAHex =
-      util.leftPad(pA.getX().toBigInteger().toString(16), 64) +
-      util.leftPad(pA.getY().toBigInteger().toString(16), 64)
+    const [px, py] = coordinateBytes(G.multiply(intPrivateKey))
+    const d = privateScalarBytes(intPrivateKey)
 
-    const zA = this.userSM3Z(pAHex, userId)
-    const sm3 = getSM3()
-    sm3.updateBytes(zA, 0, zA.length)
-    const sourceData = util.stringToBytes(msg)
-    sm3.updateBytes(sourceData, 0, sourceData.length)
-    sm3.finish()
-    const e = new BigInteger(sm3.getHashCode(), 16)
+    const e = new SM3()
+      .update(computeZ(px, py, userId))
+      .update(util.stringToBytes(msg))
+      .digest()
 
-    let k, kp, r, s
+    const r = new Uint8Array(32)
+    const s = new Uint8Array(32)
+    const sum = new Uint8Array(32)
+    let nonce
     do {
+      let rejected
       do {
-        const keypair = util.generateKeyPairHex()
-        k = new BigInteger(keypair.privateKey, 16)
-        kp = curve.decodePointHex(keypair.publicKey)
-        r = e.add(kp.getX().toBigInteger()).mod(n)
-      } while (
-        r.equals(ZERO) ||
-        r.add(k).equals(n) ||
-        r.toRadix(16).length !== 64 ||
-        kp.getX().toBigInteger().toRadix(16).length !== 64 ||
-        kp.getY().toBigInteger().toRadix(16).length !== 64
-      )
-      let da1 = intPrivateKey.add(ONE).modInverse(n)
-      s = da1.multiply(k.subtract(r.multiply(intPrivateKey)).mod(n)).mod(n)
-    } while (s.equals(ZERO) || s.toRadix(16).length !== 64)
+        nonce = generateKeyMaterial()
+        const rNonZero = scalarAdd(r, e, nonce.x)
+        rejected =
+          rNonZero === 0 ||
+          scalarAdd(sum, r, nonce.dBytes) === 0 ||
+          // The signature format needs 64 hex digits with no leading zero.
+          r[0] < 16 ||
+          nonce.x[0] < 16 ||
+          nonce.y[0] < 16
+      } while (rejected)
+    } while (signatureS(s, d, nonce.dBytes, r) === 0 || s[0] < 16)
 
-    return r.toRadix(16) + 'h' + s.toRadix(16)
+    nonce.dBytes.fill(0)
+    d.fill(0)
+    return util.bytes2hex(r) + 'h' + util.bytes2hex(s)
   }
 
   /**
@@ -212,29 +221,52 @@ class SM2 {
    * @returns {boolean}
    */
   sm2VerifySign(userId, signData, message, publicKey) {
-    const sm3 = getSM3()
     const z = this.userSM3Z(publicKey, userId)
-    const sourceData = util.stringToBytes(message)
-    sm3.updateBytes(z, 0, z.length)
-    sm3.updateBytes(sourceData, 0, sourceData.length)
-    sm3.finish()
+    const e = new SM3().update(z).update(util.stringToBytes(message)).digest()
 
     const [sr, ss] = signData.split('h')
     const r = new BigInteger(sr, 16)
     const s = new BigInteger(ss, 16)
-    const e = new BigInteger(sm3.getHashCode(), 16)
     const t = r.add(s).mod(n)
 
     if (t.equals(ZERO)) return false
 
-    let x1y1 = G.multiply(s)
-    const userKey =
-      publicKey.length === 128
-        ? G.curve.decodePointHex('04' + publicKey)
-        : G.curve.decodePointHex(publicKey)
-    x1y1 = x1y1.add(userKey.multiply(t))
-    const R = e.add(x1y1.getX().toBigInteger()).mod(n)
+    const userKey = decodePublicKey(publicKey)
+    if (s.signum() < 0 || r.signum() < 0 || s.bitLength() > BITS) {
+      return this._verifyGeneric(e, r, s, t, userKey)
+    }
 
+    const [qx, qy] = coordinateBytes(userKey)
+    if (!userKey.isValid()) throw new Error('Invalid point')
+
+    // R = (e + x1) mod n equals r exactly when x1 is (r - e) mod n, or that plus n.
+    let candidate = null
+    let candidatePlusN = null
+    if (r.bitLength() <= BITS) {
+      const rBytes = toBytes(r)
+      if (isBelowN(rBytes)) {
+        candidate = new Uint8Array(32)
+        scalarSub(candidate, rBytes, e)
+        candidatePlusN = plusNBelowP(candidate)
+      }
+    }
+    const outcome = verifyCombination(
+      toBytes(s),
+      toBytes(t),
+      qx,
+      qy,
+      candidate,
+      candidatePlusN,
+    )
+    // s*G + t*P at infinity has no x coordinate, and getX reports that by throwing.
+    if (outcome < 0) curve.getInfinity().getX()
+    return outcome === 1
+  }
+
+  /** The point-class route, for negative or oversized signature components. */
+  _verifyGeneric(e, r, s, t, userKey) {
+    const x1y1 = G.multiply(s).add(userKey.multiply(t))
+    const R = bytesToBig(e).add(x1y1.getX().toBigInteger()).mod(n)
     return r.equals(R)
   }
 
@@ -251,22 +283,18 @@ class SM2 {
     const x2_ = this._calcX(w, Rb.getX().toBigInteger())
     const tb = this._calcT(n, rb, dB, x2_)
 
-    if (!curve.decodePointHex(Ra).isValid()) throw new Error('Ra is not valid')
+    const RaPoint = curve.decodePointHex(Ra)
+    if (!RaPoint.isValid()) throw new Error('Ra is not valid')
 
-    const x1_ = this._calcX(w, curve.decodePointHex(Ra).getX().toBigInteger())
-    const V = this._calcPoint(
-      tb,
-      x1_,
-      curve.decodePointHex(pA),
-      curve.decodePointHex(Ra),
-    )
+    const x1_ = this._calcX(w, RaPoint.getX().toBigInteger())
+    const V = this._calcPoint(tb, x1_, curve.decodePointHex(pA), RaPoint)
 
     if (V.isInfinity()) throw new Error('V is invalid point')
 
     const Za = this.userSM3Z(pA, IDa)
     const Zb = this.userSM3Z(pBh, IDb)
     const Kb = this._KDF(len, V, Za, Zb)
-    const Sb = this._createS(0x02, V, Za, Zb, curve.decodePointHex(Ra), Rb)
+    const Sb = this._createS(0x02, V, Za, Zb, RaPoint, Rb)
 
     return {
       Sb: util.bytes2hex(Sb),
@@ -290,7 +318,7 @@ class SM2 {
       curve.decodePointHex(Ra),
       Rb,
     )
-    return Sa === util.bytes2hex(S2)
+    return equalStrings(Sa, util.bytes2hex(S2))
   }
 
   // ---- 公钥计算 ----
@@ -301,10 +329,8 @@ class SM2 {
    * @returns {string} 公钥 hex (04 开头)
    */
   getPublicKeyFromPrivateKey(privateKey) {
-    const PA = G.multiply(new BigInteger(privateKey, 16))
-    const x = util.leftPad(PA.getX().toBigInteger().toString(16), 64)
-    const y = util.leftPad(PA.getY().toBigInteger().toString(16), 64)
-    return '04' + x + y
+    const [x, y] = coordinateBytes(G.multiply(new BigInteger(privateKey, 16)))
+    return '04' + util.bytes2hex(x) + util.bytes2hex(y)
   }
 
   /**
@@ -324,33 +350,8 @@ class SM2 {
    * 计算用户标识哈希 Z = SM3(ENTL || userId || a || b || gx || gy || px || py)
    */
   userSM3Z(publicKey, userId = '1234567812345678') {
-    const userIdBytes = Array.from(util.stringToBytes(userId))
-    const a = bigIntTo32Bytes(curve.a.toBigInteger())
-    const b = bigIntTo32Bytes(curve.b.toBigInteger())
-    const gx = bigIntTo32Bytes(G.getX().toBigInteger())
-    const gy = bigIntTo32Bytes(G.getY().toBigInteger())
-
-    const point =
-      publicKey.length === 128
-        ? G.curve.decodePointHex('04' + publicKey)
-        : G.curve.decodePointHex(publicKey)
-    const px = bigIntTo32Bytes(point.getX().toBigInteger())
-    const py = bigIntTo32Bytes(point.getY().toBigInteger())
-
-    const entl = userIdBytes.length * 8
-    const sm3Z = getSM3()
-    sm3Z.update((entl >> 8) & 0xff)
-    sm3Z.update(entl & 0xff)
-    sm3Z.updateBytes(userIdBytes, 0, userIdBytes.length)
-    sm3Z.updateBytes(a, 0, a.length)
-    sm3Z.updateBytes(b, 0, b.length)
-    sm3Z.updateBytes(gx, 0, gx.length)
-    sm3Z.updateBytes(gy, 0, gy.length)
-    sm3Z.updateBytes(px, 0, px.length)
-    sm3Z.updateBytes(py, 0, py.length)
-    sm3Z.finish()
-
-    return sm3Z.getHashBytes()
+    const [px, py] = coordinateBytes(decodePublicKey(publicKey))
+    return computeZ(px, py, userId)
   }
 
   _calcX(w, x2) {
@@ -358,54 +359,64 @@ class SM2 {
     return pow2w.add(x2.and(pow2w.subtract(ONE)))
   }
 
-  _calcT(n, rb, db, x2_) {
-    return db.add(x2_.multiply(rb)).mod(n)
+  _calcT(order, rb, db, x2_) {
+    if (
+      order.equals(n) &&
+      rb.signum() >= 0 &&
+      db.signum() >= 0 &&
+      rb.bitLength() <= BITS &&
+      db.bitLength() <= BITS &&
+      x2_.bitLength() <= BITS
+    ) {
+      const out = new Uint8Array(32)
+      scalarMulAdd(out, toBytes(x2_), toBytes(rb), toBytes(db))
+      return bytesToBig(out)
+    }
+    return db.add(x2_.multiply(rb)).mod(order)
   }
 
   _calcPoint(t, x, pA, rA) {
-    return pA.add(rA.multiply(x)).multiply(t)
+    return pA.add(rA._multiplyPublic(x)).multiply(t)
   }
 
   _createS(tag, vu, Za, Zb, Ra, Rb) {
-    const sm3 = getSM3()
-    const bXvu = bigIntTo32Bytes(vu.getX().toBigInteger())
-    sm3.updateBytes(bXvu, 0, bXvu.length)
-    sm3.updateBytes(Za, 0, Za.length)
-    sm3.updateBytes(Zb, 0, Zb.length)
-    sm3.updateBytes(bigIntTo32Bytes(Ra.getX().toBigInteger()), 0, 32)
-    sm3.updateBytes(bigIntTo32Bytes(Ra.getY().toBigInteger()), 0, 32)
-    sm3.updateBytes(bigIntTo32Bytes(Rb.getX().toBigInteger()), 0, 32)
-    sm3.updateBytes(bigIntTo32Bytes(Rb.getY().toBigInteger()), 0, 32)
-    const h1 = sm3.finish().getHashBytes()
-
-    const hash = getSM3()
-    hash.update(tag)
-    hash.updateBytes(bigIntTo32Bytes(vu.getY().toBigInteger()), 0, 32)
-    hash.updateBytes(h1, 0, h1.length)
-    return hash.finish().getHashBytes()
+    const [vx, vy] = coordinateBytes(vu)
+    const [rax, ray] = coordinateBytes(Ra)
+    const [rbx, rby] = coordinateBytes(Rb)
+    const h1 = getSM3()
+      .update(vx)
+      .update(Za)
+      .update(Zb)
+      .update(rax)
+      .update(ray)
+      .update(rbx)
+      .update(rby)
+      .digest()
+    return getSM3().update(tag).update(vy).update(h1).digest()
   }
 
   _KDF(keylen, vu, Za, Zb) {
     const result = new Array(keylen)
-    let ct = 1
     const iterations = Math.ceil(keylen / 32)
+    if (iterations === 0) return result
+    const [vx, vy] = coordinateBytes(vu)
+    const counter = new Uint8Array(4)
     for (let i = 0; i < iterations; i++) {
-      const sm3 = getSM3()
-      sm3.updateBytes(asUnsignedByteArray(32, vu.getX().toBigInteger()), 0, 32)
-      sm3.updateBytes(asUnsignedByteArray(32, vu.getY().toBigInteger()), 0, 32)
-      sm3.updateBytes(Za, 0, Za.length)
-      sm3.updateBytes(Zb, 0, Zb.length)
-      const ctBytes = [0, 0, 0, 0]
-      intToBigEndian(ct, ctBytes, 0)
-      sm3.updateBytes(ctBytes, 0, 4)
-      sm3.finish()
-      const sm3Bytes = sm3.getHashBytes()
+      const ct = i + 1
+      counter[0] = ct >>> 24
+      counter[1] = ct >>> 16
+      counter[2] = ct >>> 8
+      counter[3] = ct
+      const block = getSM3()
+        .update(vx)
+        .update(vy)
+        .update(Za)
+        .update(Zb)
+        .update(counter)
+        .digest()
       const copyLen =
         i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
-      for (let j = 0; j < copyLen; j++) {
-        result[(ct - 1) * 32 + j] = sm3Bytes[j]
-      }
-      ct++
+      for (let j = 0; j < copyLen; j++) result[i * 32 + j] = block[j]
     }
     return result
   }

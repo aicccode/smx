@@ -1,5 +1,7 @@
-import { BigInteger, SecureRandom } from './biginteger.js'
+import { BigInteger } from './biginteger.js'
 import { ECCurveFp } from './ec.js'
+import { generateKeyMaterial } from './keygen.js'
+import { HEX_PAIRS, decodeStrictHex, parseHexPair } from '../common/hex.js'
 import {
   bytesToHex,
   hexToBytes,
@@ -8,10 +10,7 @@ import {
   leftPad,
 } from '../common/utils.js'
 
-const rng = new SecureRandom()
-const { curve, G, n } = generateEcparam()
-const ZERO = BigInteger.ZERO
-const TWO = BigInteger.nbv(2)
+const { curve } = generateEcparam()
 
 /**
  * 获取公共椭圆曲线
@@ -57,43 +56,11 @@ export function generateEcparam() {
  * 生成密钥对：publicKey = privateKey * G
  */
 export function generateKeyPairHex() {
-  const minWidth = n.bitLength() >>> 2
-  let d
-  do {
-    d = new BigInteger(n.bitLength(), rng)
-  } while (
-    d.compareTo(TWO) < 0 ||
-    d.compareTo(n) >= 0 ||
-    getWidth(d) < minWidth
-  )
-
-  const Q = G.multiply(d)
-  const Px = bigIntegerToHex(Q.getX().toBigInteger())
-  const Py = bigIntegerToHex(Q.getY().toBigInteger())
-
+  const { d, x, y } = generateKeyMaterial()
   return {
     privateKey: d.toRadix(16),
-    publicKey: '04' + Px + Py,
+    publicKey: '04' + bytesToHex(x) + bytesToHex(y),
   }
-}
-
-/**
- * BigInteger → 64 字符小写 hex（32 字节，左补零）
- */
-function bigIntegerToHex(n) {
-  if (!n) return null
-  const bytes = n.toByteArray()
-  const start = bytes[0] === 0 ? 1 : 0
-  const count = bytes.length - start
-  const tmp = new Array(32)
-  for (let i = 0; i < 32; i++) {
-    tmp[i] = i < 32 - count ? 0 : bytes[start + i - (32 - count)]
-  }
-  return bytesToHex(tmp)
-}
-
-function getWidth(k) {
-  return k.signum() === 0 ? 0 : k.shiftLeft(1).add(k).xor(k).bitCount()
 }
 
 /**
@@ -104,7 +71,7 @@ export function compressPublicKeyHex(s) {
   const len = (s.length - 2) / 2
   const xHex = s.substring(2, 2 + len)
   const y = new BigInteger(s.substring(2 + len, 2 + 2 * len), 16)
-  const prefix = y.mod(TWO).equals(ZERO) ? '02' : '03'
+  const prefix = y.isEven() ? '02' : '03'
   return prefix + xHex
 }
 
@@ -146,10 +113,12 @@ export {
  */
 export function hexToArray(hexStr) {
   if (hexStr.length % 2 !== 0) hexStr = leftPad(hexStr, hexStr.length + 1)
-  const words = []
-  for (let i = 0; i < hexStr.length; i += 2) {
-    const b = parseInt(hexStr.substring(i, i + 2), 16)
-    words.push(b > 127 ? b - 256 : b)
+  const bytes = decodeStrictHex(hexStr)
+  const words = new Array(hexStr.length >>> 1)
+  for (let i = 0; i < words.length; i++) {
+    let b = bytes === null ? parseHexPair(hexStr, i) : bytes[i]
+    if (b > 127) b -= 256
+    words[i] = b
   }
   return words
 }
@@ -158,10 +127,5 @@ export function hexToArray(hexStr) {
  * 字节数组 → 十六进制串（兼容旧 API）
  */
 export function arrayToHex(arr) {
-  return arr
-    .map((item) => {
-      const h = (item & 0xff).toString(16)
-      return h.length === 1 ? '0' + h : h
-    })
-    .join('')
+  return arr.map((item) => HEX_PAIRS[item & 0xff]).join('')
 }

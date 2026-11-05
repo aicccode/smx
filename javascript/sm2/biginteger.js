@@ -117,6 +117,9 @@ function cbit(x) {
 
 export class BigInteger {
   constructor(a, b, c) {
+    // Fixed shape from the start keeps property access monomorphic for the JIT.
+    this.t = 0
+    this.s = 0
     if (a != null) {
       if (typeof a === 'number') this.fromNumber(a, b, c)
       else if (b == null && typeof a !== 'string') this.fromString(a, 256)
@@ -243,6 +246,13 @@ export class BigInteger {
   toRadix(b) {
     if (b == null) b = 10
     if (this.signum() === 0 || b < 2 || b > 36) return '0'
+    // Positive values in a power-of-2 radix need no division.
+    if (
+      this.s === 0 &&
+      (b === 16 || b === 2 || b === 8 || b === 4 || b === 32)
+    ) {
+      return this.toString(b)
+    }
     const cs = this.chunkSize(b)
     const a = Math.pow(b, cs)
     const d = nbv(a),
@@ -562,9 +572,9 @@ export class BigInteger {
       const c = x.am(i, x[i], r, 2 * i, 0, 1)
       if (
         (r[i + x.t] += x.am(i + 1, 2 * x[i], r, 2 * i + 1, c, x.t - i - 1)) >=
-        x.DV
+        DV
       ) {
-        r[i + x.t] -= x.DV
+        r[i + x.t] -= DV
         r[i + x.t + 1] = 1
       }
     }
