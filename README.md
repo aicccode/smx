@@ -134,6 +134,7 @@ dotnet build    # 编译
 cd python
 python3 -m unittest discover -s tests -t .   # 运行测试（无需安装任何依赖）
 python3 -m pytest                            # 也可以使用 pytest 运行
+SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # 包括 512 MiB/1 GiB 的 SM3 慢测试
 ```
 
 - **构建工具：** setuptools (pyproject.toml)

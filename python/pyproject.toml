@@ -19,6 +19,5 @@ packages = ["smx"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# The default run skips long vectors; `pytest -m ""` runs everything that is enabled.
-addopts = "-m 'not slow'"
-markers = ["slow: long-running vectors (run with -m slow or -m '')"]
+# Long vectors are skipped unless SMX_SLOW_TESTS=1, under pytest and plain unittest alike.
+markers = ["slow: long-running vectors, which also need SMX_SLOW_TESTS=1"]

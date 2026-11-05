@@ -136,6 +136,7 @@ dotnet build    # Compilar
 cd python
 python3 -m unittest discover -s tests -t .   # Ejecutar pruebas (sin instalar dependencias)
 python3 -m pytest                            # También se puede ejecutar con pytest
+SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # Incluye las pruebas lentas de SM3 de 512 MiB/1 GiB
 ```
 
 - **Herramienta de compilación:** setuptools (pyproject.toml)

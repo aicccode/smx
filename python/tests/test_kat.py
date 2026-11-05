@@ -4,8 +4,6 @@ import hashlib
 import unittest
 from unittest import mock
 
-import pytest
-
 from smx import (
     SM3,
     SM4,
@@ -28,6 +26,7 @@ from .kat_vectors import (
     SM3_KAT,
     SM4_CBC_KAT,
 )
+from .slow import slow
 
 PRIVATE = "3945208F7B2144B13F36E38AC6D39F95889393692860B51A42FB81EF4DF7C5B8"
 PUBLIC_POINT = sm2_get_public_key(int(PRIVATE, 16))
@@ -127,7 +126,7 @@ class SM4KnownAnswers(unittest.TestCase):
         self.assertEqual(block.hex(), "681edf34d206965e86b3e94f536e4246")
         self.assertEqual(cipher.decrypt_block(block), self.KEY)
 
-    @pytest.mark.slow
+    @slow("a few minutes")
     def test_gb_t_32907_one_million_iterations(self):
         cipher = self.make()
         block = self.KEY

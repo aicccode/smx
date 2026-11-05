@@ -13,8 +13,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 import smx
 from smx import (
     SM2_N,
@@ -41,6 +39,8 @@ from smx import sm2 as sm2_module
 from smx import sm3 as sm3_module
 from smx.sm2 import user_sm3_z
 from smx.sm4 import pkcs7_pad, pkcs7_unpad
+
+from .slow import slow
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTORS = json.loads(
@@ -254,10 +254,7 @@ class SM3Lengths(unittest.TestCase):
             SM3().update(b"abc").finish().hash_bytes(),
         )
 
-    @pytest.mark.slow
-    @unittest.skipUnless(
-        os.environ.get("SMX_RUN_HUGE") == "1", "set SMX_RUN_HUGE=1 (about 20 minutes)"
-    )
+    @slow("about 30 minutes")
     def test_zeros_512_and_1024_mib(self):
         chunk = bytes(MIB)
         hasher = SM3()
