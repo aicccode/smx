@@ -3,7 +3,8 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O3 -std=c99
 
 SRCS = bigint256.c sm3.c sm4.c sm2.c
-HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc sm4_sbox_circuit.inc
+HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc sm4_sbox_circuit.inc \
+	sm2_point.inc sm2_support.inc sm2_key_exchange.inc
 OBJS = $(SRCS:.c=.o)
 
 all: test_all
@@ -80,7 +81,8 @@ fuzz_all: fuzz/fuzz_all.c $(SRCS) $(HDRS)
 		-o fuzz_all fuzz/fuzz_all.c $(SRCS)
 
 format:
-	clang-format -i *.c smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h tools/*.c fuzz/*.c
+	clang-format -i *.c smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_point.inc sm2_support.inc \
+		sm2_key_exchange.inc tools/*.c fuzz/*.c
 
 clean:
 	rm -f *.o test_all test_kat test_internal test_security bench fuzz_all
