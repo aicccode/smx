@@ -1,0 +1,17 @@
+BouncyCastle Security Provider v1.86 on Java 21.0.9 OpenJDK 64-Bit Server VM
+SM3 64B                               0.477 us/op
+SM3 1KB                               3.821 us/op
+SM3 1MB                            3643.718 us/op
+SM4 key schedule                      0.161 us/op
+SM4 encrypt 16B                       0.510 us/op
+SM4 decrypt 16B                       0.515 us/op
+SM4 encrypt 1KB                      10.478 us/op
+SM4 decrypt 1KB                      10.202 us/op
+SM4 encrypt 1MB                   10551.571 us/op
+SM4 decrypt 1MB                   10216.148 us/op
+SM2 keygen                          304.361 us/op
+SM2 sign                            310.512 us/op
+SM2 verify                          387.764 us/op
+SM2 encrypt 32B                    1254.095 us/op
+SM2 decrypt 32B                     940.038 us/op
+sink 1

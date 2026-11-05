@@ -1,0 +1,26 @@
+python 3.12.3; smx from /home/cc/extend/workspace/private/jworkspace/smx/python/smx
+import smx: 9.09 ms
+sm3 64B                                  101.60 us/op       9842.8 op/s      0.601 MiB/s
+sm3 1KB                                  972.42 us/op       1028.4 op/s      1.004 MiB/s
+sm3 1MB                               936706.63 us/op          1.1 op/s      1.068 MiB/s
+sm4 raw block encrypt                     98.90 us/op      10111.5 op/s      0.154 MiB/s
+sm4 raw block decrypt                     97.83 us/op      10221.7 op/s      0.156 MiB/s
+sm4 key schedule                          96.58 us/op      10354.5 op/s                 
+sm4-cbc encrypt 16B                      102.69 us/op       9737.8 op/s      0.149 MiB/s
+sm4-cbc decrypt 16B                      104.95 us/op       9528.7 op/s      0.145 MiB/s
+sm4-cbc encrypt 1KB                     7720.74 us/op        129.5 op/s      0.126 MiB/s
+sm4-cbc decrypt 1KB                      238.73 us/op       4188.8 op/s      4.091 MiB/s
+sm4-cbc encrypt 1MB                  7960009.06 us/op          0.1 op/s      0.126 MiB/s
+sm4-cbc decrypt 1MB                   102223.53 us/op          9.8 op/s      9.782 MiB/s
+ec G*k                                   222.84 us/op       4487.4 op/s                 
+ec P*k                                   923.80 us/op       1082.5 op/s                 
+sm2 keygen                               235.60 us/op       4244.5 op/s                 
+sm2 sign                                 317.66 us/op       3148.1 op/s                 
+sm2 sign (cold)                          801.14 us/op       1248.2 op/s                 
+sm2 verify                               462.66 us/op       2161.4 op/s                 
+sm2 verify (cold)                       1219.71 us/op        819.9 op/s                 
+sm2 encrypt                             1291.65 us/op        774.2 op/s                 
+sm2 encrypt (cold)                      1399.71 us/op        714.4 op/s                 
+sm2 decrypt                             1161.79 us/op        860.7 op/s                 
+sm2 key exchange (both sides)           4286.64 us/op        233.3 op/s                 
+sm2 key exchange (cold)                 4745.02 us/op        210.7 op/s                 

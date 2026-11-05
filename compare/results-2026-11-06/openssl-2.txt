@@ -1,0 +1,16 @@
+OpenSSL 3.0.13 30 Jan 2024
+SM3 64B                               0.503 us/op
+SM3 1KB                               2.534 us/op
+SM3 1MB                            2230.385 us/op
+SM4 key schedule                      0.401 us/op
+SM4 encrypt 16B                       0.662 us/op
+SM4 decrypt 16B                       0.679 us/op
+SM4 encrypt 1KB                       7.081 us/op
+SM4 decrypt 1KB                       6.364 us/op
+SM4 encrypt 1MB                    6659.874 us/op
+SM4 decrypt 1MB                    5931.725 us/op
+SM2 keygen                          199.348 us/op
+SM2 sign                            201.989 us/op
+SM2 verify                          192.102 us/op
+SM2 encrypt 32B                     377.072 us/op
+SM2 decrypt 32B                     192.099 us/op

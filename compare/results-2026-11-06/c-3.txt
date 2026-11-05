@@ -1,0 +1,17 @@
+SM3 64B                          0.27 us/op       232.8 MB/s
+SM3 1KB                          2.06 us/op       498.1 MB/s
+SM3 1MB                       1934.17 us/op       542.1 MB/s
+SM4 key schedule                 0.15 us/op        6715836 ops/s
+SM4 encrypt 16B                  0.30 us/op        53.3 MB/s
+SM4 decrypt 16B                  0.26 us/op        62.0 MB/s
+SM4 encrypt 1KB                  8.86 us/op       115.6 MB/s
+SM4 decrypt 1KB                  1.51 us/op       679.3 MB/s
+SM4 encrypt 1MB               8949.85 us/op       117.2 MB/s
+SM4 decrypt 1MB               1288.11 us/op       814.0 MB/s
+SM2 keygen                      19.08 us/op          52399 ops/s
+SM2 public key (d*G)            18.55 us/op          53918 ops/s
+SM2 sign                        37.56 us/op          26622 ops/s
+SM2 verify                      67.21 us/op          14879 ops/s
+SM2 encrypt                     78.76 us/op          12697 ops/s
+SM2 decrypt                     66.22 us/op          15101 ops/s
+SM2 key exchange (A+B)         200.43 us/op           4989 ops/s

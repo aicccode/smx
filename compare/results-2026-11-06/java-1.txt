@@ -1,0 +1,22 @@
+java 21.0.9 OpenJDK 64-Bit Server VM
+sm3 64B                           512.1 ns/op    1952609.0 op/s      125.0 MB/s
+sm3 1024B                        3899.5 ns/op     256441.0 op/s      262.6 MB/s
+sm3 1048576B                  3695448.7 ns/op        270.6 op/s      283.7 MB/s
+sm4 key schedule                  709.7 ns/op    1408979.8 op/s 
+sm4 enc 16B                      1230.6 ns/op     812641.0 op/s       13.0 MB/s
+sm4 dec 16B                      1350.4 ns/op     740543.8 op/s       11.8 MB/s
+sm4 enc 1024B                   39464.5 ns/op      25339.2 op/s       25.9 MB/s
+sm4 dec 1024B                   42297.6 ns/op      23642.0 op/s       24.2 MB/s
+sm4 enc 1048576B             39930817.7 ns/op         25.0 op/s       26.3 MB/s
+sm4 dec 1048576B             42655859.6 ns/op         23.4 op/s       24.6 MB/s
+sm2 keygen                      37575.2 ns/op      26613.3 op/s 
+sm2 sign                        77101.8 ns/op      12969.9 op/s 
+sm2 verify                     221217.6 ns/op       4520.4 op/s 
+sm2 encrypt 19B                255258.1 ns/op       3917.6 op/s 
+sm2 decrypt 19B                218465.7 ns/op       4577.4 op/s 
+sm2 encrypt 1MB              17387036.6 ns/op         57.5 op/s       60.3 MB/s
+sm2 decrypt 1MB              17981269.8 ns/op         55.6 op/s       58.3 MB/s
+sm2 key exchange B             399847.9 ns/op       2501.0 op/s 
+sm2 key exchange A             407246.0 ns/op       2455.5 op/s 
+sm2 G*k                         36334.4 ns/op      27522.2 op/s 
+sm2 P*k                        216246.2 ns/op       4624.4 op/s 

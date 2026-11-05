@@ -91,7 +91,7 @@ cargo build     # Compilar
 
 - **Herramienta de compilación:** Cargo
 - **Nombre del paquete:** `gm-rust`
-- **Versión mínima:** Rust 2024 edition
+- **Versión mínima:** Rust 1.85 (edición 2024)
 - **Dependencias:** Ninguna
 
 ### Go
@@ -142,6 +142,53 @@ python3 -m pytest                            # También se puede ejecutar con py
 - **Nombre del paquete:** `gm-python` (se importa como `smx`)
 - **Versión mínima:** Python 3.9+
 - **Dependencias:** Ninguna (pytest opcional, solo para pruebas)
+
+## Notas de seguridad
+
+### Requisitos de entrada
+
+- **La clave y el IV de SM4 deben tener exactamente 16 bytes** (o 32 dígitos hexadecimales). Las versiones anteriores convertían "claves de texto" de otras longitudes mediante hash o truncamiento, con una fortaleza real de unos 64 bits; ahora se rechazan con un error. Los datos cifrados con esas claves no se pueden descifrar con la versión nueva: descífrelos con la versión anterior y vuelva a cifrarlos.
+- **El hexadecimal de firmas y textos cifrados debe estar en minúsculas**, igual que la salida de la biblioteca, para que cada firma tenga una única representación. El hexadecimal de las claves pública y privada sigue sin distinguir mayúsculas.
+- Las entradas inválidas (puntos fuera de la curva, claves o firmas fuera de rango, longitudes incorrectas, relleno erróneo, etc.) producen un error o un fallo según la convención de cada lenguaje. La API pública de cada lenguaje se ha probado con fuzzing sin encontrar caídas ni bloqueos, aunque el fuzzing no demuestra que no existan.
+
+### Limitaciones de SM4-CBC
+
+- **CBC solo ofrece confidencialidad, no integridad.** Un texto cifrado puede modificarse sin que se detecte. Si necesita integridad, añada un MAC (por ejemplo HMAC-SM3) y verifíquelo antes de descifrar.
+- **Un mismo objeto SM4 usa el mismo IV en cada cifrado después de fijar la clave.** Un mismo texto claro produce el mismo texto cifrado. Use un IV aleatorio nuevo para cada mensaje.
+- El descifrado que devuelve una cadena valida el UTF-8, y esa validación sigue dependiendo del contenido. Para datos binarios o requisitos de tiempo más estrictos, use las funciones de descifrado que devuelven bytes.
+
+### Canales laterales
+
+- Las operaciones con la clave privada (generación de claves, firma, descifrado, intercambio de claves) usan ventanas fijas y selección enmascarada en tablas, sin ramas ni direcciones de memoria que dependan de datos secretos. C, Rust y Swift incluyen herramientas que revisan el código compilado (`make check-ct` en C, `rust/tools/check_ct_asm.py`, `swift/Tools/check_constant_time.py`); vuelva a ejecutarlas al cambiar de compilador.
+- SM4 nunca usa tablas indexadas por datos secretos: utiliza AES-NI, GFNI o las instrucciones AES de ARM cuando existen y, si no, una S-box implementada como circuito booleano.
+- Java, C#, JavaScript y Python se ejecutan en entornos gestionados que no garantizan tiempo constante; la biblioteca solo puede evitar en el código fuente las ramas y los accesos a tablas que dependen de secretos.
+- La verificación de firmas solo maneja datos públicos y usa algoritmos de tiempo variable por velocidad.
+
+### Claves antiguas que deben sustituirse
+
+Las claves generadas con versiones anteriores en estos entornos usaban una fuente aleatoria insegura y **deben sustituirse**; las firmas antiguas hechas con ellas tampoco deben considerarse fiables:
+
+- JavaScript en Node.js 18 o anterior: el azar venía por completo de `Math.random`
+- JavaScript en navegadores o Node.js 20 o posterior: mezclaba `Math.random` y RC4; el riesgo es menor, pero se recomienda sustituirlas
+- Rust compilado a wasm: el azar venía de un generador congruencial lineal con la hora como semilla
+
+### Diferencias con otras implementaciones
+
+GB/T 32918.4 exige rechazar al descifrar los textos cifrados cuya salida KDF sea toda ceros. Esta biblioteca lo cumple; OpenSSL 3.0 y BouncyCastle 1.86 no lo comprueban. Con un texto claro de 1 byte ocurre aproximadamente 1 vez de cada 256.
+
+## Rendimiento
+
+Comparación con OpenSSL 3.0.13 y BouncyCastle 1.86 en un núcleo de alto rendimiento de un Intel i5-13500H (extracto; los resultados completos y cómo reproducirlos están en [`compare/`](compare/README.md)):
+
+| Operación | OpenSSL | BouncyCastle | C | Rust | Go | Java |
+|---|---|---|---|---|---|---|
+| Firma SM2 (µs) | 202 | 311 | 37.6 | 27.5 | 31.7 | 77.1 |
+| Verificación SM2 (µs) | 192 | 367 | 67.2 | 64.8 | 49.0 | 221 |
+| SM3 1 MiB (MB/s) | 471 | 288 | 543 | 543 | 440 | 284 |
+| Cifrado SM4 1 MiB (MB/s) | 157 | 101 | 117 | 123 | 109 | 26.4 |
+| Descifrado SM4 1 MiB (MB/s) | 177 | 103 | 815 | 1298 | 519 | 24.6 |
+
+El cifrado SM4 es más lento que en OpenSSL porque esta biblioteca no usa tablas indexadas por datos secretos.
 
 ## Demo interlenguajes
 

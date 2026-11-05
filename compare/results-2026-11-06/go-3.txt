@@ -1,0 +1,23 @@
+goos: linux
+goarch: amd64
+pkg: smx
+cpu: 13th Gen Intel(R) Core(TM) i5-13500H
+BenchmarkSM3/64B        	 1000000	       307.0 ns/op	 208.45 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSM3/1KB        	  144250	      2488 ns/op	 411.50 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSM3/1MB        	     150	   2386905 ns/op	 439.30 MB/s	    6990 B/op	       0 allocs/op
+BenchmarkSM4KeySchedule 	  621510	       510.3 ns/op	     288 B/op	       1 allocs/op
+BenchmarkSM4Encrypt/16B 	 1000000	       305.4 ns/op	  52.38 MB/s	      64 B/op	       1 allocs/op
+BenchmarkSM4Encrypt/1KB 	   37906	      9463 ns/op	 108.21 MB/s	    2304 B/op	       1 allocs/op
+BenchmarkSM4Encrypt/1MB 	      34	   9600555 ns/op	 109.22 MB/s	 2167024 B/op	       1 allocs/op
+BenchmarkSM4Decrypt/16B 	 1942842	       184.5 ns/op	  86.74 MB/s	      32 B/op	       1 allocs/op
+BenchmarkSM4Decrypt/1KB 	  161772	      2146 ns/op	 477.19 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkSM4Decrypt/1MB 	     151	   2020248 ns/op	 519.03 MB/s	 1084599 B/op	       1 allocs/op
+BenchmarkSM2KeyGen      	   25908	     13839 ns/op	     240 B/op	       3 allocs/op
+BenchmarkSM2Sign        	   10000	     31831 ns/op	     176 B/op	       2 allocs/op
+BenchmarkSM2Verify      	    7267	     49294 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSM2Encrypt/32B 	    5482	     65326 ns/op	     320 B/op	       2 allocs/op
+BenchmarkSM2Encrypt/1024B         	    4818	     73681 ns/op	    2336 B/op	       2 allocs/op
+BenchmarkSM2Decrypt/32B           	    6145	     58121 ns/op	      64 B/op	       2 allocs/op
+BenchmarkSM2Decrypt/1024B         	    5376	     67223 ns/op	    1056 B/op	       2 allocs/op
+BenchmarkSM2KeyExchange           	    2197	    160735 ns/op	     688 B/op	      13 allocs/op
+PASS

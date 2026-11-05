@@ -1,0 +1,27 @@
+sm3/64B                               255.9 ns/op      250.1 MB/s
+sm3/1KB                              2022.9 ns/op      506.2 MB/s
+sm3/1MB                           1930347.2 ns/op      543.2 MB/s
+sm4/key_schedule                      109.6 ns/op
+sm4/encrypt_16B                       271.8 ns/op       58.9 MB/s
+sm4/decrypt_16B                       239.1 ns/op       66.9 MB/s
+sm4/encrypt_1KB                      8398.3 ns/op      121.9 MB/s
+sm4/decrypt_1KB                       999.2 ns/op     1024.8 MB/s
+sm4/encrypt_1MB                   8528082.5 ns/op      123.0 MB/s
+sm4/decrypt_1MB                    820307.1 ns/op     1278.3 MB/s
+sm2/keygen                          12946.2 ns/op
+sm2/sign                            27488.4 ns/op
+sm2/verify                          64850.0 ns/op
+sm2/encrypt_32B                     77066.7 ns/op
+sm2/decrypt_32B                     63679.1 ns/op
+sm2/key_exchange_full              200340.1 ns/op
+fp/mul                                 14.0 ns/op
+fp/square                              12.6 ns/op
+fp/add                                  2.5 ns/op
+fp/invert                            1351.8 ns/op
+fn/mod_mul                             40.7 ns/op
+fn/mod_inverse                       1351.9 ns/op
+ec/mul_generator                    16136.8 ns/op
+ec/mul_variable                     62980.2 ns/op
+ec/add                               1710.1 ns/op
+ec/encode_hex                          32.4 ns/op
+ec/decode_hex                          78.0 ns/op
