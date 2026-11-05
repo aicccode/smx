@@ -2,9 +2,9 @@ import unittest
 from unittest import mock
 
 from smx import (
-    ECPoint,
     SM2_N,
     SM3,
+    ECPoint,
     sm2_check_sa,
     sm2_decode_point,
     sm2_decrypt,

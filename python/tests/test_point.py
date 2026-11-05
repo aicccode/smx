@@ -1,7 +1,6 @@
 import unittest
 
-from smx import ECPoint, SM2_N, SM2_P, hex_to_bytes
-
+from smx import SM2_N, SM2_P, ECPoint, hex_to_bytes
 
 G = ECPoint.generator()
 
