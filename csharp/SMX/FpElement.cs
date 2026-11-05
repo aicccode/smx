@@ -5,66 +5,89 @@ namespace SMX;
 /// </summary>
 public struct FpElement : IEquatable<FpElement>
 {
-    public static readonly BigInt256 SM2_P = new(
-        0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF00000000,
-        0xFFFFFFFFFFFFFFFF, 0xFFFFFFFEFFFFFFFF
-    );
+    public static readonly BigInt256 SM2_P = Fp.P;
 
     public BigInt256 Value;
 
     public FpElement(BigInt256 v)
     {
-        if (v.Compare(SM2_P) >= 0)
-            v = v.ModSub(SM2_P, SM2_P);
-        Value = v;
+        var reduced = v.Sub(Fp.P, out ulong borrow);
+        Value = BigInt256.Select(Bits.MaskFromBit(borrow), v, reduced);
     }
 
     public static FpElement FromHex(string s) => new(BigInt256.FromHex(s));
-    public static FpElement Zero => new() { Value = BigInt256.Zero };
+    public static FpElement Zero => default;
     public static FpElement One => new() { Value = BigInt256.One };
 
-    public bool IsZero => Value.IsZero;
-    public bool IsOne => Value.IsOne;
+    public readonly bool IsZero => Value.IsZero;
+    public readonly bool IsOne => Value.IsOne;
 
-    public FpElement Add(FpElement b) => new() { Value = Value.ModAdd(b.Value, SM2_P) };
-    public FpElement Sub(FpElement b) => new() { Value = Value.ModSub(b.Value, SM2_P) };
-    public FpElement Mul(FpElement b) => new() { Value = Value.SM2ModMulP(b.Value) };
-    public FpElement Square() => new() { Value = Value.SM2ModSquareP() };
-
-    public FpElement Negate()
+    public readonly FpElement Add(FpElement b)
     {
-        if (IsZero) return this;
-        return new FpElement { Value = SM2_P.ModSub(Value, SM2_P) };
+        Fp.Add(Value, b.Value, out var r);
+        return new FpElement { Value = r };
     }
 
-    public FpElement Invert()
+    public readonly FpElement Sub(FpElement b)
     {
-        if (IsZero) throw new InvalidOperationException("Cannot invert zero");
-        var two = new BigInt256(2, 0, 0, 0);
-        var pMinus2 = SM2_P.Sub(two, out _);
-        var result = BigInt256.One;
-        var b = Value;
-        int bitLen = pMinus2.BitLength();
-        for (int i = 0; i < bitLen; i++)
+        Fp.Sub(Value, b.Value, out var r);
+        return new FpElement { Value = r };
+    }
+
+    public readonly FpElement Mul(FpElement b)
+    {
+        Fp.Mul(Value, b.Value, out var r);
+        return new FpElement { Value = r };
+    }
+
+    public readonly FpElement Square()
+    {
+        Fp.Square(Value, out var r);
+        return new FpElement { Value = r };
+    }
+
+    public readonly FpElement Negate()
+    {
+        if (IsZero)
         {
-            if (pMinus2.GetBit(i))
-                result = result.SM2ModMulP(b);
-            b = b.SM2ModSquareP();
+            return this;
         }
-        return new FpElement { Value = result };
+        Fp.Negate(Value, out var r);
+        return new FpElement { Value = r };
     }
 
-    public FpElement Div(FpElement b) => Mul(b.Invert());
-    public FpElement Double() => Add(this);
-    public FpElement Triple() => Double().Add(this);
+    public readonly FpElement Invert()
+    {
+        if (IsZero)
+        {
+            throw new InvalidOperationException("Cannot invert zero");
+        }
+        Fp.Invert(Value, out var r);
+        return new FpElement { Value = r };
+    }
 
-    public BigInt256 ToBigInt() => Value;
-    public byte[] ToBEBytes() => Value.ToBEBytes();
-    public string ToHex() => Value.ToHex();
+    public readonly FpElement Div(FpElement b) => Mul(b.Invert());
 
-    public bool Equals(FpElement other) => Value == other.Value;
-    public override bool Equals(object? obj) => obj is FpElement f && Equals(f);
-    public override int GetHashCode() => Value.GetHashCode();
+    public readonly FpElement Double()
+    {
+        Fp.Double(Value, out var r);
+        return new FpElement { Value = r };
+    }
+
+    public readonly FpElement Triple()
+    {
+        Fp.Double(Value, out var r);
+        Fp.Add(r, Value, out r);
+        return new FpElement { Value = r };
+    }
+
+    public readonly BigInt256 ToBigInt() => Value;
+    public readonly byte[] ToBEBytes() => Value.ToBEBytes();
+    public readonly string ToHex() => Value.ToHex();
+
+    public readonly bool Equals(FpElement other) => Value == other.Value;
+    public override readonly bool Equals(object? obj) => obj is FpElement f && Equals(f);
+    public override readonly int GetHashCode() => Value.GetHashCode();
     public static bool operator ==(FpElement a, FpElement b) => a.Equals(b);
     public static bool operator !=(FpElement a, FpElement b) => !a.Equals(b);
 }

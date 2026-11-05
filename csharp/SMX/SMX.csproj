@@ -5,5 +5,12 @@
     <AssemblyName>SMX</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- A crypto library is unusably slow without the JIT optimizer, so Debug builds of dependents stay optimized too. -->
+    <Optimize>true</Optimize>
+    <!-- Needed for [SkipLocalsInit] and the SM3 message schedule; the public API exposes no pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SMX.Tests" />
+  </ItemGroup>
 </Project>

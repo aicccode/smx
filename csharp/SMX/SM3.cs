@@ -1,174 +1,152 @@
-using System.Numerics;
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 
 namespace SMX;
 
+/// <summary>Streaming SM3 hash; the working state lives in <see cref="Sm3Hasher"/> so internal callers need no heap.</summary>
 public class SM3
 {
-    private static readonly uint[] IV =
-    [
-        0x7380166F,
-        0x4914B2B9,
-        0x172442D7,
-        0xDA8A0600,
-        0xA96F30BC,
-        0x163138AA,
-        0xE38DEE4D,
-        0xB0FB0E4E,
-    ];
+    private Sm3Hasher _hasher = Sm3Hasher.Create();
+    private byte[] _hashBytes = [];
+    private BigInt256 _digest;
+    private bool _hasDigest;
 
-    private uint[] _v = new uint[8];
-    private readonly byte[] _buff = new byte[64];
-    private int _buffLen;
-    private ulong _dataBitsLen;
-    private byte[] _hashBytes = Array.Empty<byte>();
-    private string _hashHexStr = "";
+    public void UpdateByte(byte b) => _hasher.UpdateByte(b);
 
-    public SM3()
+    public void Update(byte[] data) => _hasher.Update(data);
+
+    public void Finish()
     {
-        Array.Copy(IV, _v, 8);
+        var digest = new byte[Sm3Hasher.DigestSize];
+        _hasher.Finish(digest);
+        _hashBytes = digest;
+        _digest = BigInt256.FromBigEndian(digest);
+        _hasDigest = true;
+        _hasher = Sm3Hasher.Create();
     }
 
-    private void Reset()
+    public byte[] HashBytes() => _hashBytes;
+
+    public string HashHexUpper() => _hasDigest ? _digest.ToHex() : "";
+}
+
+/// <summary>SM3 hashing state as a plain struct; copying it forks the hash, which the KDFs use to reuse a shared prefix.</summary>
+internal struct Sm3Hasher
+{
+    public const int DigestSize = 32;
+    private const int BlockSize = 64;
+    private const int LengthOffset = BlockSize - sizeof(uint);
+
+    private Sm3State _state;
+    private ulong _totalBytes;
+    private int _bufferedBytes;
+    private BlockBuffer _buffer;
+
+    [InlineArray(BlockSize)]
+    private struct BlockBuffer
     {
-        Array.Copy(IV, _v, 8);
-        _buffLen = 0;
-        _dataBitsLen = 0;
+        private byte _first;
+    }
+
+    public static Sm3Hasher Create()
+    {
+        Unsafe.SkipInit(out Sm3Hasher h);
+        h._state = Sm3State.Initial;
+        h._totalBytes = 0;
+        h._bufferedBytes = 0;
+        return h;
     }
 
     public void UpdateByte(byte b)
     {
-        _buff[_buffLen] = b;
-        _buffLen++;
-        _dataBitsLen += 8;
-        if (_buffLen == 64)
+        Span<byte> buffer = _buffer;
+        buffer[_bufferedBytes++] = b;
+        _totalBytes++;
+        if (_bufferedBytes == BlockSize)
         {
-            ProcessBlock(_buff);
-            _buffLen = 0;
+            Sm3Compress.Blocks(ref _state, buffer);
+            _bufferedBytes = 0;
         }
     }
 
-    public void Update(byte[] data)
+    public void Update(ReadOnlySpan<byte> data)
     {
-        foreach (var b in data)
-            UpdateByte(b);
-    }
+        _totalBytes += (ulong)data.Length;
+        Span<byte> buffer = _buffer;
 
-    public void Finish()
-    {
-        var end = new byte[_buffLen];
-        Array.Copy(_buff, end, _buffLen);
-
-        int blockLenBits = _buffLen * 8;
-        int dataLenBits = (int)(_dataBitsLen & 0xFFFFFFFF);
-
-        int fillZeroLenBits = (512 - (blockLenBits + 65) % 512) - 7;
-        int allLenBits = fillZeroLenBits + blockLenBits + 65 + 7;
-        int allByteLen = allLenBits / 8;
-
-        var buf = new byte[allByteLen];
-        for (int i = 0; i < allByteLen; i++)
+        if (_bufferedBytes != 0)
         {
-            if (i < end.Length)
-                buf[i] = end[i];
-            else if (i == end.Length)
-                buf[i] = 0x80;
-            else if (i > allByteLen - 5)
+            int space = BlockSize - _bufferedBytes;
+            if (data.Length < space)
             {
-                int shift = (allByteLen - i - 1) * 8;
-                buf[i] = (byte)((dataLenBits >> shift) & 0xFF);
+                data.CopyTo(buffer[_bufferedBytes..]);
+                _bufferedBytes += data.Length;
+                return;
             }
+            data[..space].CopyTo(buffer[_bufferedBytes..]);
+            Sm3Compress.Blocks(ref _state, buffer);
+            data = data[space..];
+            _bufferedBytes = 0;
         }
 
-        int blocks = allLenBits / 512;
-        for (int i = 0; i < blocks; i++)
+        int whole = data.Length & ~(BlockSize - 1);
+        if (whole != 0)
         {
-            var block = new byte[64];
-            Array.Copy(buf, i * 64, block, 0, 64);
-            ProcessBlock(block);
+            Sm3Compress.Blocks(ref _state, data[..whole]);
         }
-
-        GenerateHashString();
-        Reset();
+        data[whole..].CopyTo(buffer);
+        _bufferedBytes = data.Length - whole;
     }
 
-    public byte[] HashBytes() => _hashBytes;
-    public string HashHexUpper() => _hashHexStr;
-
-    private void GenerateHashString()
+    /// <summary>
+    /// The digest of the absorbed data followed by a big-endian counter, leaving this state as it is. When counter and
+    /// padding fit the current block, that block is assembled directly, without first copying the whole hasher.
+    /// </summary>
+    [SkipLocalsInit]
+    public readonly void FinishWithCounter(uint counter, Span<byte> digest)
     {
-        var o = new byte[32];
-        int off = 0;
-        foreach (var v in _v)
+        const int PaddedCounterSize = sizeof(uint) + 1 + sizeof(ulong);
+        if (_bufferedBytes > BlockSize - PaddedCounterSize)
         {
-            o[off] = (byte)(v >> 24);
-            o[off + 1] = (byte)(v >> 16);
-            o[off + 2] = (byte)(v >> 8);
-            o[off + 3] = (byte)v;
-            off += 4;
+            var fork = this;
+            Span<byte> counterBytes = stackalloc byte[sizeof(uint)];
+            BinaryPrimitives.WriteUInt32BigEndian(counterBytes, counter);
+            fork.Update(counterBytes);
+            fork.Finish(digest);
+            return;
         }
-        _hashBytes = o;
-        _hashHexStr = HexUtils.BytesToHexUpper(o);
+
+        Span<byte> block = stackalloc byte[BlockSize];
+        ReadOnlySpan<byte> buffered = _buffer;
+        buffered[.._bufferedBytes].CopyTo(block);
+        BinaryPrimitives.WriteUInt32BigEndian(block[_bufferedBytes..], counter);
+        block[_bufferedBytes + sizeof(uint)] = 0x80;
+        block[(_bufferedBytes + sizeof(uint) + 1)..LengthOffset].Clear();
+        BinaryPrimitives.WriteUInt32BigEndian(block[LengthOffset..], (uint)((_totalBytes + sizeof(uint)) << 3));
+
+        var state = _state;
+        Sm3Compress.Blocks(ref state, block);
+        state.WriteBigEndian(digest);
     }
 
-    private void ProcessBlock(byte[] block)
+    /// <summary>
+    /// Pads and writes the digest. Only the low 32 bits of the message bit length are encoded, as the library has always
+    /// done, so results differ from standard SM3 for messages of 2^32 bits (512 MiB) or more.
+    /// </summary>
+    public void Finish(Span<byte> digest)
     {
-        var w = new uint[68];
-        for (int j = 0; j < 16; j++)
+        Span<byte> buffer = _buffer;
+        uint bitLength = (uint)(_totalBytes << 3);
+
+        buffer[_bufferedBytes] = 0x80;
+        buffer[(_bufferedBytes + 1)..].Clear();
+        if (_bufferedBytes >= BlockSize - sizeof(ulong))
         {
-            int o = j * 4;
-            w[j] = (uint)block[o] << 24 | (uint)block[o + 1] << 16 |
-                   (uint)block[o + 2] << 8 | (uint)block[o + 3];
+            Sm3Compress.Blocks(ref _state, buffer);
+            buffer.Clear();
         }
-        for (int j = 16; j < 68; j++)
-        {
-            uint r15 = BitOperations.RotateLeft(w[j - 3], 15);
-            uint r7 = BitOperations.RotateLeft(w[j - 13], 7);
-            w[j] = P1(w[j - 16] ^ w[j - 9] ^ r15) ^ r7 ^ w[j - 6];
-        }
-        var w2 = new uint[64];
-        for (int j = 0; j < 64; j++)
-            w2[j] = w[j] ^ w[j + 4];
-
-        uint a = _v[0], b = _v[1], c = _v[2], d = _v[3];
-        uint e = _v[4], f = _v[5], g = _v[6], h = _v[7];
-
-        for (int j = 0; j < 64; j++)
-        {
-            uint a12 = BitOperations.RotateLeft(a, 12);
-            uint tj = j < 16
-                ? BitOperations.RotateLeft(0x79CC4519u, j)
-                : BitOperations.RotateLeft(0x7A879D8Au, j % 32);
-            uint ss = a12 + e + tj;
-            uint ss1 = BitOperations.RotateLeft(ss, 7);
-            uint ss2 = ss1 ^ a12;
-
-            uint tt1, tt2;
-            if (j < 16)
-            {
-                tt1 = (a ^ b ^ c) + d + ss2 + w2[j];
-                tt2 = (e ^ f ^ g) + h + ss1 + w[j];
-            }
-            else
-            {
-                tt1 = FF1(a, b, c) + d + ss2 + w2[j];
-                tt2 = GG1(e, f, g) + h + ss1 + w[j];
-            }
-            d = c;
-            c = BitOperations.RotateLeft(b, 9);
-            b = a;
-            a = tt1;
-            h = g;
-            g = BitOperations.RotateLeft(f, 19);
-            f = e;
-            e = P0(tt2);
-        }
-
-        _v[0] ^= a; _v[1] ^= b; _v[2] ^= c; _v[3] ^= d;
-        _v[4] ^= e; _v[5] ^= f; _v[6] ^= g; _v[7] ^= h;
+        BinaryPrimitives.WriteUInt32BigEndian(buffer[LengthOffset..], bitLength);
+        Sm3Compress.Blocks(ref _state, buffer);
+        _state.WriteBigEndian(digest);
     }
-
-    private static uint FF1(uint x, uint y, uint z) => (x & y) | (x & z) | (y & z);
-    private static uint GG1(uint x, uint y, uint z) => (x & y) | (~x & z);
-    private static uint P0(uint x) => x ^ BitOperations.RotateLeft(x, 9) ^ BitOperations.RotateLeft(x, 17);
-    private static uint P1(uint x) => x ^ BitOperations.RotateLeft(x, 15) ^ BitOperations.RotateLeft(x, 23);
 }

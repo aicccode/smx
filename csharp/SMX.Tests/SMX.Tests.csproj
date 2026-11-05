@@ -13,6 +13,9 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Vectors/baseline_kat.txt" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../SMX/SMX.csproj" />
   </ItemGroup>
 </Project>
