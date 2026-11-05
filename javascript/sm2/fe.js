@@ -298,3 +298,29 @@ fpFromBytes(
 )
 
 export { FP_ONE, P_BYTES, N_BYTES }
+
+/** Every module-level buffer in this file that can hold values derived from a secret. */
+const SECRET_SCRATCH = [
+  scratch,
+  scratch2,
+  discard,
+  x1,
+  x2,
+  x3,
+  x6,
+  x12,
+  x24,
+  x30,
+  x32,
+  ...fnTable,
+]
+
+/** Best-effort erasure. The garbage collector may keep copies out of reach. */
+export function wipeFieldScratch() {
+  for (const a of SECRET_SCRATCH) a.fill(0)
+}
+
+/** For tests only. */
+export function fieldScratchForTest() {
+  return SECRET_SCRATCH
+}

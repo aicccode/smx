@@ -1,4 +1,9 @@
-import { decodeHex, encodeHex, toByteArray } from '../common/hex.js'
+import {
+  decodeHex,
+  decodeLowerHex,
+  encodeHex,
+  toByteArray,
+} from '../common/hex.js'
 import { SM3, getSM3 } from '../sm3/sm3.js'
 import { BigInteger } from './biginteger.js'
 import { bigToBytes, bytesToBig } from './bytes.js'
@@ -27,6 +32,7 @@ const ONE = BigInteger.ONE
 const BITS = 256
 const SCALAR_BYTES = 32
 const SCALAR_HEX = 2 * SCALAR_BYTES
+const SIGNATURE_SEPARATOR = 104 // 'h'
 const MAX_USER_ID_BYTES = 8191
 const MAX_KEY_EXCHANGE_BYTES = 1 << 20
 const MAX_KDF_BYTES = 0xffffffff * 32
@@ -106,12 +112,17 @@ function kdfXor(x2, y2, data) {
     block.fill(0)
     offset += end
   }
+  sm3._wipe()
+  counter.fill(0)
   return any === 0
 }
 
 /** C3 = SM3(x2 || msg || y2) */
 function computeC3(x2, msg, y2) {
-  return new SM3().update(x2).update(msg).update(y2).digest()
+  const sm3 = new SM3().update(x2).update(msg).update(y2)
+  const c3 = sm3.digest()
+  sm3._wipe()
+  return c3
 }
 
 /** 消息 → 新的 Uint8Array。字符串按 UTF-8，数组元素必须是字节 */
@@ -122,6 +133,10 @@ function messageBytes(msg) {
 }
 
 function userIdBytes(userId) {
+  // A string has at least as many UTF-8 bytes as it has UTF-16 code units.
+  if (typeof userId === 'string' && userId.length > MAX_USER_ID_BYTES) {
+    throw new RangeError('User ID is too long')
+  }
   const bytes = util.stringToBytes(userId)
   if (bytes.length > MAX_USER_ID_BYTES)
     throw new RangeError('User ID is too long')
@@ -209,7 +224,7 @@ function sharedPoint(t, peerKey, peerEphemeral) {
 
 /** S = SM3(tag || y || SM3(x || Za || Zb || x1 || y1 || x2 || y2)) */
 function confirmationHash(tag, x, y, Za, Zb, ra, rb) {
-  const h1 = getSM3()
+  const inner = getSM3()
     .update(x)
     .update(Za)
     .update(Zb)
@@ -217,8 +232,13 @@ function confirmationHash(tag, x, y, Za, Zb, ra, rb) {
     .update(ra[1])
     .update(rb[0])
     .update(rb[1])
-    .digest()
-  return getSM3().update(tag).update(y).update(h1).digest()
+  const h1 = inner.digest()
+  inner._wipe()
+  const outer = getSM3().update(tag).update(y).update(h1)
+  const result = outer.digest()
+  outer._wipe()
+  h1.fill(0)
+  return result
 }
 
 /** KDF(x || y || Za || Zb) as keylen bytes */
@@ -232,15 +252,17 @@ function exchangeKdf(keylen, x, y, Za, Zb) {
     counter[1] = ct >>> 16
     counter[2] = ct >>> 8
     counter[3] = ct
-    const block = getSM3()
+    const sm3 = getSM3()
       .update(x)
       .update(y)
       .update(Za)
       .update(Zb)
       .update(counter)
-      .digest()
+    const block = sm3.digest()
+    sm3._wipe()
     const copyLen = i === iterations - 1 && keylen % 32 !== 0 ? keylen % 32 : 32
     for (let j = 0; j < copyLen; j++) result[i * 32 + j] = block[j]
+    block.fill(0)
   }
   return result
 }
@@ -291,14 +313,30 @@ class SM2 {
   }
 
   /**
-   * SM2 解密
-   * @param {string} encryptData - 密文 hex (C1 || C3 || C2)
+   * SM2 解密，返回字符串。
+   * 非法 UTF-8 序列会被替换为 U+FFFD，所以二进制明文会被破坏：请用 sm2DecryptBytes。
+   * UTF-8 解码只在 C3 验证通过之后进行
+   * @param {string} encryptData - 密文，小写 hex (C1 || C3 || C2)
    * @param {string} privateKey - 私钥 hex
-   * @returns {string} 明文。非法 UTF-8 序列替换为 U+FFFD
+   * @returns {string} 明文
    * @throws {Error} 私钥不合法，或密文被拒绝（格式、C1、C3 错误都抛出同一个错误）
    */
   sm2Decrypt(encryptData, privateKey) {
-    const bytes = decodeHex(encryptData)
+    const data = this.sm2DecryptBytes(encryptData, privateKey)
+    const text = util.bytesToUTF8String(data)
+    data.fill(0)
+    return text
+  }
+
+  /**
+   * SM2 解密，返回字节，没有 UTF-8 步骤，适合二进制明文
+   * @param {string} encryptData - 密文，小写 hex (C1 || C3 || C2)
+   * @param {string} privateKey - 私钥 hex
+   * @returns {Uint8Array} 明文
+   * @throws {Error} 私钥不合法，或密文被拒绝（格式、C1、C3 错误都抛出同一个错误）
+   */
+  sm2DecryptBytes(encryptData, privateKey) {
+    const bytes = decodeLowerHex(encryptData)
     if (bytes === null || bytes.length < (C1_HEX + C3_HEX) / 2 + 1) {
       throw new Error(DECRYPT_ERROR)
     }
@@ -329,9 +367,7 @@ class SM2 {
       data.fill(0)
       throw new Error(DECRYPT_ERROR)
     }
-    const text = util.bytesToUTF8String(data)
-    data.fill(0)
-    return text
+    return data
   }
 
   // ---- 签名 / 验签 ----
@@ -378,7 +414,7 @@ class SM2 {
   /**
    * SM2 验签
    * @param {string} userId - 用户标识
-   * @param {string} signData - 签名 "r_hex h s_hex"，r、s 各恰好 64 位且在 [1, n-1]
+   * @param {string} signData - 签名 "r_hex h s_hex"，r、s 各恰好 64 位小写十六进制且在 [1, n-1]
    * @param {string} message - 消息
    * @param {string} publicKey - 公钥 hex
    * @returns {boolean} 任何不合法的输入都返回 false，不会抛出
@@ -392,14 +428,17 @@ class SM2 {
   }
 
   _verify(userId, signData, message, publicKey) {
-    if (typeof signData !== 'string') return false
-    const parts = signData.split('h')
-    if (parts.length !== 2) return false
-    if (parts[0].length !== SCALAR_HEX || parts[1].length !== SCALAR_HEX) {
+    // Length first: an oversized attacker string is never split or copied.
+    if (
+      typeof signData !== 'string' ||
+      signData.length !== 2 * SCALAR_HEX + 1 ||
+      signData.charCodeAt(SCALAR_HEX) !== SIGNATURE_SEPARATOR
+    ) {
       return false
     }
-    const r = decodeHex(parts[0])
-    const s = decodeHex(parts[1])
+    // Lowercase only, as sm2Sign emits: one signature has exactly one string form.
+    const r = decodeLowerHex(signData.substring(0, SCALAR_HEX))
+    const s = decodeLowerHex(signData.substring(SCALAR_HEX + 1))
     if (
       r === null ||
       s === null ||
@@ -494,10 +533,11 @@ class SM2 {
       if (typeof Sa !== 'string' || Sa.length !== SCALAR_HEX) return false
       if (typeof V !== 'string' || V.length !== 2 * SCALAR_HEX) return false
       const vPoint = decodePublicKey('04' + V)
+      if (typeof Za !== 'string' || Za.length !== SCALAR_HEX) return false
+      if (typeof Zb !== 'string' || Zb.length !== SCALAR_HEX) return false
       const za = decodeHex(Za)
       const zb = decodeHex(Zb)
       if (za === null || zb === null) return false
-      if (za.length !== SCALAR_BYTES || zb.length !== SCALAR_BYTES) return false
       const raPoint = decodePublicKey(Ra)
       if (Rb === null || typeof Rb !== 'object') return false
       Rb._requireUsable()

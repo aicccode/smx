@@ -40,6 +40,37 @@ export function decodeHex(hex) {
   return out
 }
 
+/**
+ * Decodes the canonical form of data this library emits: lowercase only, so that one
+ * signature or ciphertext has exactly one accepted string. A dedup or replay cache
+ * keyed on the string cannot be bypassed by changing case.
+ * @param {string} hex
+ * @returns {Uint8Array|null} null unless the whole string is valid
+ */
+export function decodeLowerHex(hex) {
+  if (typeof hex !== 'string' || (hex.length & 1) !== 0) return null
+  const n = hex.length >>> 1
+  const out = new Uint8Array(n)
+  let bad = 0
+  for (let i = 0; i < n; i++) {
+    const high = lowerDigitValue(hex.charCodeAt(2 * i))
+    const low = lowerDigitValue(hex.charCodeAt(2 * i + 1))
+    bad |= high | low
+    out[i] = (high << 4) | low
+  }
+  return bad < 0 ? null : out
+}
+
+function lowerDigitValue(c) {
+  const digit = c - 48
+  const letter = c - 97
+  const notDigit = (digit | (9 - digit)) >> 31
+  const notLetter = (letter | (5 - letter)) >> 31
+  return (
+    (digit & ~notDigit) | ((letter + 10) & ~notLetter) | (notDigit & notLetter)
+  )
+}
+
 const decoder = new TextDecoder('utf-8')
 const FROM_CHAR_CODE_LIMIT = 4096
 

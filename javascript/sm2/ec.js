@@ -164,6 +164,15 @@ export class ECPointFp {
    * coordinates in [0, q) that satisfies y² = x³ + ax + b.
    */
   isValid() {
+    try {
+      return this._isValidPoint()
+    } catch {
+      // A hand-built point with malformed fields is simply not valid.
+      return false
+    }
+  }
+
+  _isValidPoint() {
     if (this.isInfinity()) return true
     if (this.x === null || this.y === null) return false
     const q = this.curve.q
@@ -253,7 +262,11 @@ export class ECPointFp {
 
   isInfinity() {
     if (this.x === null && this.y === null) return true
-    return this.z.equals(ZERO) && !this.y.toBigInteger().equals(ZERO)
+    try {
+      return this.z.equals(ZERO) && !this.y.toBigInteger().equals(ZERO)
+    } catch {
+      return false
+    }
   }
 
   negate() {
@@ -544,8 +557,12 @@ export class ECCurveFp {
    * @throws {Error} 编码不合法
    */
   decodePointHex(s) {
-    const bytes = decodeHex(s)
     const size = (this.q.bitLength() + 7) >> 3
+    // Length first: nothing is allocated for an oversized attacker string.
+    if (typeof s !== 'string' || s.length > 2 + 4 * size) {
+      throw new Error(INVALID_POINT)
+    }
+    const bytes = decodeHex(s)
     if (bytes === null || bytes.length === 0) throw new Error(INVALID_POINT)
     const tag = bytes[0]
     const compressed = tag === 2 || tag === 3

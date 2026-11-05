@@ -260,8 +260,6 @@ function sm4Cases() {
     new SM4().setKey(hk.toUpperCase(), iv.toUpperCase(), true).encrypt('x'),
   )
   const s = new SM4().setKey(hk, iv, true)
-  const c = s.encrypt('hello world, hello world, hello world')
-  rec('sm4/dec/upper', () => s.decrypt(c.toUpperCase()))
   rec('sm4/dec/nineBlocks', () =>
     s.decrypt(s.encrypt('nine blocks of text. '.repeat(7))),
   )
@@ -514,7 +512,6 @@ function sm2Cases() {
   const v = (nm, sig, msg = m0, id = ID, key = pub) =>
     rec(`sm2/verify/${nm}`, () => sm2.sm2VerifySign(id, sig, msg, key))
   v('ok', sig0)
-  v('upper', sig0.toUpperCase().replace('H', 'h'))
   v('compressedKey', sig0, m0, ID, comp)
   v('wrongMsg', sig0, m0 + 'x')
   v('wrongId', sig0, m0, 'other')
@@ -548,13 +545,6 @@ function sm2Cases() {
   })
   const c0 = ciphers[0]
   rec('sm2/dec/ok', () => sm2.sm2Decrypt(c0, D))
-  rec('sm2/dec/upper', () => sm2.sm2Decrypt(c0.toUpperCase(), D))
-  rec('sm2/dec/upperC3', () =>
-    sm2.sm2Decrypt(
-      c0.slice(0, 130) + c0.slice(130, 194).toUpperCase() + c0.slice(194),
-      D,
-    ),
-  )
 
   // Key exchange. V is left out: the original stripped leading zeros from it, and
   // Sb and Kb are hashes over its fixed-width coordinates.

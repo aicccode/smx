@@ -373,6 +373,12 @@ async function runWorker({ cases, seed, shard, shards, only, shared }) {
     () => [cipherArg(), keyArg()],
   )
   method(
+    S + 'sm2DecryptBytes',
+    () => sm2,
+    'sm2DecryptBytes',
+    () => [cipherArg(), keyArg()],
+  )
+  method(
     S + 'sm2Sign',
     () => sm2,
     'sm2Sign',
@@ -581,6 +587,9 @@ async function runWorker({ cases, seed, shard, shards, only, shared }) {
   )
   method('SM4.encrypt', makeSm4, 'encrypt', () => [msgArg()])
   method('SM4.decrypt', makeSm4, 'decrypt', () => [
+    chance(30) ? SM4_CIPHER : chance(60) ? mutateHex(SM4_CIPHER) : junk(),
+  ])
+  method('SM4.decryptBytes', makeSm4, 'decryptBytes', () => [
     chance(30) ? SM4_CIPHER : chance(60) ? mutateHex(SM4_CIPHER) : junk(),
   ])
   method('SM4._expandKey', makeSm4, '_expandKey', () => [junk()])
@@ -821,7 +830,7 @@ async function runWorker({ cases, seed, shard, shards, only, shared }) {
   const ENGINE_ERROR =
     /Cannot read|is not a function|is not iterable|Cannot convert|Maximum call stack/
   const STRICT =
-    /^(SM2\.(sm2|get|check|userSM3Z)|utils\.|SM3\.(update|digest|hexDigest|finish|hash)|SM4\.(setKey|encrypt|decrypt)|curve\.decodePointHex)/
+    /^(SM2\.(sm2|get|check|userSM3Z)|utils\.|SM3\.(update|digest|hexDigest|finish|hash)|SM4\.(setKey|encrypt|decrypt|decryptBytes)|curve\.decodePointHex)/
   const failures = []
   let calls = 0
   const onlyRe = only ? new RegExp(only) : null

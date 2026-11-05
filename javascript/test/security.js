@@ -4,13 +4,22 @@
  *
  * The slow 512 MiB and 1 GiB SM3 cases run unless SMX_SKIP_SLOW=1.
  */
+import './support/rng-shim.js'
+import { withRandom } from './support/rng-shim.js'
+import { spawnSync } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
 import { readFileSync } from 'node:fs'
+import { inspect } from 'node:util'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getSM2 } from '../sm2/sm2.js'
 import { SM3 } from '../sm3/sm3.js'
 import { SM4 } from '../sm4/sm4.js'
 import { sboxPlanes, sboxWord } from '../sm4/sbox-circuit.js'
+import { createRandomFill } from '../common/rng.js'
+import { fieldScratchForTest } from '../sm2/fe.js'
+import { pointScratchForTest } from '../sm2/point.js'
+import { scalarScratchForTest } from '../sm2/scalar.js'
 import { BigInteger, SecureRandom } from '../sm2/biginteger.js'
 import { ECCurveFp, ECPointFp } from '../sm2/ec.js'
 import * as util from '../sm2/utils.js'
@@ -63,20 +72,6 @@ function powerMod(a, e, m) {
   return r
 }
 
-// ---- deterministic scalar source, restored after use ----
-const realCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
-function withRandom(getRandomValues, fn) {
-  Object.defineProperty(globalThis, 'crypto', {
-    configurable: true,
-    value: { getRandomValues },
-  })
-  try {
-    return fn()
-  } finally {
-    if (realCrypto) Object.defineProperty(globalThis, 'crypto', realCrypto)
-    else delete globalThis.crypto
-  }
-}
 function fromHex(h) {
   return common.hexToBytes(h)
 }
@@ -396,20 +391,47 @@ ok(
     withRandom(failing, () => new SecureRandom().nextBytes(new Array(4))),
   )
 
-  // Without any source there is an error, not a fallback.
-  if (realCrypto) {
-    Object.defineProperty(globalThis, 'crypto', {
-      configurable: true,
-      value: undefined,
-    })
-    let threw = false
-    try {
-      util.generateKeyPairHex()
-    } catch (e) {
-      threw = e.message === 'No secure random source is available'
-    }
-    Object.defineProperty(globalThis, 'crypto', realCrypto)
-    ok('no random source is an error', threw)
+  // Without any source there is an error, not a fallback, and the choice is made once.
+  const pollutedOnly = createRandomFill(Object.create(Object.prototype), null)
+  throws(
+    'no random source is an error',
+    () => pollutedOnly(new Uint8Array(1)),
+    'No secure random source is available',
+  )
+  const prior = Object.getOwnPropertyDescriptor(Object.prototype, 'crypto')
+  Object.prototype.crypto = { getRandomValues: (a) => a.fill(0x42) }
+  try {
+    const polluted = createRandomFill(Object.create(Object.prototype), null)
+    throws(
+      'Object.prototype.crypto is not a source',
+      () => polluted(new Uint8Array(1)),
+      'No secure random source is available',
+    )
+  } finally {
+    delete Object.prototype.crypto
+    if (prior) Object.defineProperty(Object.prototype, 'crypto', prior)
+  }
+  const inherited = createRandomFill(
+    Object.create({ crypto: { getRandomValues: (a) => a.fill(7) } }),
+    null,
+  )
+  ok(
+    'a platform prototype still provides the source',
+    inherited(new Uint8Array(1))[0] === 7,
+  )
+  const viaNode = createRandomFill({}, { randomFillSync: (a) => a.fill(9) })
+  ok('node:crypto is the second choice', viaNode(new Uint8Array(1))[0] === 9)
+  for (const mode of ['before', 'after', 'method']) {
+    const child = spawnSync(
+      process.execPath,
+      [resolve(here, 'support/rng-pollution.js'), mode],
+      { encoding: 'utf8' },
+    )
+    ok(
+      `polluted prototype ${mode} load`,
+      child.stdout.trim() === 'clean',
+      child.stdout + child.stderr,
+    )
   }
 
   const high = 'ff'.repeat(32)
@@ -1039,6 +1061,378 @@ ok(
       common.bytesToHex(h().update(one).digest()) === vectors.sm3.zeros_512_mib,
     )
   }
+}
+
+// ---- round 2: canonical hex, bytes APIs, oracle, scratch, stateful objects, leaks ----
+{
+  const sig = V.r + 'h' + V.s
+  const verify = (x) => sm2.sm2VerifySign(V.user_id, x, V.message, V.public_key)
+  ok('verify: lowercase accepted', verify(sig))
+  ok(
+    'verify: uppercase rejected',
+    verify(sig.toUpperCase().replace('H', 'h')) === false,
+  )
+  ok('verify: mixed case rejected', verify(sig.replace('a', 'A')) === false)
+  ok(
+    'verify: uppercase separator rejected',
+    verify(sig.replace('h', 'H')) === false,
+  )
+  const big = 'h'.repeat(1 << 27)
+  const startedAt = performance.now()
+  ok('verify: 128 MiB signature is false', verify(big) === false)
+  ok(
+    'verify: oversized signature costs nothing',
+    performance.now() - startedAt < 1000,
+  )
+  ok(
+    'verifyPublicKey: oversized',
+    util.verifyPublicKey('0'.repeat(1 << 27)) === false,
+  )
+  throws(
+    'userSM3Z: oversized id',
+    () => sm2.userSM3Z(V.public_key, 'x'.repeat(1 << 27)),
+    'User ID is too long',
+  )
+
+  const upperCipher = V.ciphertext.toUpperCase()
+  throws(
+    'decrypt: uppercase',
+    () => sm2.sm2Decrypt(upperCipher, V.private_key),
+    'SM2 decryption failed',
+  )
+  throws(
+    'decryptBytes: uppercase',
+    () => sm2.sm2DecryptBytes(upperCipher, V.private_key),
+    'SM2 decryption failed',
+  )
+  throws(
+    'decrypt: uppercase C3 only',
+    () =>
+      sm2.sm2Decrypt(
+        V.ciphertext.slice(0, 130) +
+          V.ciphertext.slice(130, 194).toUpperCase() +
+          V.ciphertext.slice(194),
+        V.private_key,
+      ),
+    'SM2 decryption failed',
+  )
+  ok(
+    'key hex stays case-insensitive',
+    sm2.getPublicKeyFromPrivateKey(V.private_key.toUpperCase()) ===
+      V.public_key,
+  )
+  ok(
+    'public key hex stays case-insensitive',
+    util.verifyPublicKey(V.public_key.toUpperCase()),
+  )
+  throws(
+    'sm4 decrypt: uppercase',
+    () => sm4().decrypt(S.valid_padded_ciphertext.toUpperCase()),
+    SM4_ERROR,
+  )
+  throws(
+    'sm4 decryptBytes: uppercase',
+    () => sm4().decryptBytes(S.valid_padded_ciphertext.toUpperCase()),
+    SM4_ERROR,
+  )
+  ok(
+    'sm4 key hex stays case-insensitive',
+    new SM4().setKey(S.key.toUpperCase(), S.iv, true).encrypt('hello world') ===
+      S.valid_padded_ciphertext,
+  )
+
+  // Binary plaintext survives the bytes API, and is what the string API would corrupt.
+  const binary = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0xc0, 0x41])
+  const k = util.generateKeyPairHex()
+  const c2 = sm2.sm2Encrypt(binary, k.publicKey)
+  ok(
+    'sm2DecryptBytes round trip',
+    common.bytesToHex(sm2.sm2DecryptBytes(c2, k.privateKey)) ===
+      common.bytesToHex(binary),
+  )
+  ok(
+    'sm2DecryptBytes vector',
+    common.bytesToString(sm2.sm2DecryptBytes(V.ciphertext, V.private_key)) ===
+      V.plaintext,
+  )
+  ok(
+    'sm2Decrypt documents the loss',
+    sm2.sm2Decrypt(c2, k.privateKey).includes('\ufffd'),
+  )
+  for (const c of V.invalid_ciphertexts) {
+    throws(
+      `bytes ciphertext ${c.name}`,
+      () => sm2.sm2DecryptBytes(c.value, V.private_key),
+      'SM2 decryption failed',
+    )
+  }
+  const s4 = sm4()
+  // CBC over two blocks with binary content and PKCS#7, using the block primitive.
+  const padded = new Uint8Array(32).fill(0xfe)
+  padded.fill(16, 16)
+  const iv = common.hexToBytes(S.iv)
+  const encrypted = new Uint8Array(32)
+  const block = new Uint8Array(16)
+  for (let off = 0; off < 32; off += 16) {
+    for (let i = 0; i < 16; i++) {
+      block[i] = padded[off + i] ^ (off === 0 ? iv[i] : encrypted[off - 16 + i])
+    }
+    s4._encryptBlock(block, encrypted, off)
+  }
+  const hexCipher = common.bytesToHex(encrypted)
+  ok(
+    'sm4 decryptBytes binary',
+    common.bytesToHex(s4.decryptBytes(hexCipher)) === 'fe'.repeat(16),
+  )
+  ok(
+    'sm4 decrypt corrupts the same data',
+    s4.decrypt(hexCipher).includes('\ufffd'),
+  )
+  ok(
+    'sm4 decryptBytes text',
+    common.bytesToString(s4.decryptBytes(S.valid_padded_ciphertext)) ===
+      S.valid_padded_plaintext,
+  )
+  for (const c of S.invalid_paddings) {
+    throws(
+      `sm4 bytes padding ${c.name}`,
+      () => s4.decryptBytes(c.value),
+      SM4_ERROR,
+    )
+  }
+  for (const n of S.invalid_ciphertext_lengths_bytes) {
+    throws(
+      `sm4 bytes length ${n}`,
+      () => s4.decryptBytes('00'.repeat(n)),
+      SM4_ERROR,
+    )
+  }
+
+  // The padding-oracle fix: the bad-padding path runs the same UTF-8 step.
+  const realDecode = TextDecoder.prototype.decode
+  let decoded = []
+  TextDecoder.prototype.decode = function (input, options) {
+    decoded.push(input.length)
+    return realDecode.call(this, input, options)
+  }
+  try {
+    const good = s4.encrypt('x'.repeat(2000))
+    s4.decrypt(good)
+    const goodLengths = decoded
+    decoded = []
+    throws(
+      'oracle: bad padding fails',
+      () => s4.decrypt(good.slice(0, -2) + (good.endsWith('00') ? '01' : '00')),
+      SM4_ERROR,
+    )
+    ok(
+      `oracle: bad padding decodes as much as good padding (${goodLengths} vs ${decoded})`,
+      decoded.length === 1 &&
+        goodLengths.length === 1 &&
+        Math.abs(decoded[0] - goodLengths[0]) <= 16,
+    )
+    decoded = []
+    throws(
+      'oracle: padding out of range',
+      () => s4.decrypt(S.invalid_paddings[1].value),
+      SM4_ERROR,
+    )
+    ok('oracle: out-of-range padding decodes too', decoded.length === 1)
+    decoded = []
+    throws(
+      'oracle: wrong length never decodes',
+      () => s4.decrypt('00'.repeat(15)),
+      SM4_ERROR,
+    )
+    ok('oracle: wrong length has no plaintext to decode', decoded.length === 0)
+    decoded = []
+    throws(
+      'bytes path has no UTF-8 step',
+      () => s4.decryptBytes(S.invalid_paddings[0].value),
+      SM4_ERROR,
+    )
+    s4.decryptBytes(good)
+    ok('bytes path never decodes', decoded.length === 0)
+  } finally {
+    TextDecoder.prototype.decode = realDecode
+  }
+
+  // Module-level buffers hold nothing derived from a secret after each operation.
+  const allZero = (a) => a.every((x) => x === 0)
+  const scratchClean = () =>
+    [
+      ...fieldScratchForTest(),
+      ...scalarScratchForTest(),
+      ...pointScratchForTest(),
+    ].every(allZero)
+  const ra = util.generateKeyPairHex()
+  const rb = util.generateKeyPairHex()
+  const exch = sm2.getSb(
+    16,
+    k.publicKey,
+    ra.publicKey,
+    'a',
+    'b',
+    V.private_key,
+    V.public_key,
+    rb.privateKey,
+    rb.publicKey,
+  )
+  ok('scratch clean after getSb', scratchClean())
+  sm2.sm2Sign('a', k.privateKey, 'm')
+  ok('scratch clean after sign', scratchClean())
+  util.generateKeyPairHex()
+  ok('scratch clean after keygen', scratchClean())
+  sm2.sm2Encrypt('m', k.publicKey)
+  ok('scratch clean after encrypt', scratchClean())
+  sm2.sm2Decrypt(sm2.sm2Encrypt('m', k.publicKey), k.privateKey)
+  ok('scratch clean after decrypt', scratchClean())
+  sm2.getSa(
+    16,
+    V.public_key,
+    rb.publicKey,
+    k.publicKey,
+    ra.publicKey,
+    'a',
+    'b',
+    k.privateKey,
+    ra.privateKey,
+    exch.Sb,
+  )
+  ok('scratch clean after getSa', scratchClean())
+  sm2.getPublicKeyFromPrivateKey(k.privateKey)
+  ok('scratch clean after public key', scratchClean())
+
+  // Stateful SM3: a read never returns a stale digest or an empty-message digest.
+  const hash = () => new SM3()
+  const abc = hash().update([97, 98, 99]).hexDigest()
+  const empty = hash().hexDigest()
+  const f = hash().update([97, 98, 99]).finish()
+  ok('finish result', f.getHashCode() === abc)
+  ok(
+    'digest after finish is that result',
+    common.bytesToHex(f.digest()).toUpperCase() === abc,
+  )
+  ok('hexDigest after finish is that result', f.hexDigest() === abc)
+  ok('finish twice keeps the result', f.finish().getHashCode() === abc)
+  f.update([97])
+  ok('no stale code once new input arrives', f.getHashCode() === undefined)
+  ok('no stale bytes once new input arrives', f.getHashBytes() === undefined)
+  f.update([98, 99])
+  ok(
+    'reuse after finish hashes only the new input',
+    f.finish().getHashCode() === abc,
+  )
+  ok(
+    'finish on a new instance is the empty digest',
+    hash().finish().getHashCode() === empty,
+  )
+  ok(
+    'hash code before any finish',
+    hash().update([1]).getHashCode() === undefined,
+  )
+  const held = hash().update([1, 2, 3]).finish()
+  const copy = held.digest()
+  copy[0] ^= 1
+  ok('digest returns a copy', held.digest()[0] !== copy[0])
+  const dg = hash().update([1])
+  const once = common.bytesToHex(dg.digest())
+  ok('digest twice is stable', common.bytesToHex(dg.digest()) === once)
+  throws('update after digest', () => dg.update([2]))
+  ok(
+    'finish after digest gives that digest',
+    dg.finish().getHashCode() === once.toUpperCase(),
+  )
+
+  // Formatters and serializers show no key or message state.
+  const keyed = sm4()
+  const roundKeyHex = (keyed._rk[0] >>> 0).toString()
+  for (const [name, text] of [
+    ['inspect', inspect(keyed, { depth: 5, showHidden: false })],
+    ['JSON', JSON.stringify(keyed)],
+    ['JSON nested', JSON.stringify({ keyed })],
+    ['template', `${keyed}`],
+    ['keys', Object.keys(keyed).join()],
+  ]) {
+    ok(
+      `sm4 ${name} hides key state`,
+      !text.includes(roundKeyHex) && !text.includes('_rk'),
+      text,
+    )
+  }
+  const secretHash = hash().update(new Uint8Array(10).fill(0x7b))
+  for (const [name, text] of [
+    ['inspect', inspect(secretHash, { depth: 5 })],
+    ['JSON', JSON.stringify(secretHash)],
+  ]) {
+    ok(
+      `sm3 ${name} hides buffered input`,
+      !text.includes('123') && !text.includes('_buf'),
+      text,
+    )
+  }
+
+  // Documented booleans never throw on malformed objects.
+  const malformed = [
+    new ECPointFp(curve, 5, 6, 7),
+    new ECPointFp(curve, {}, {}),
+    new ECPointFp(curve, null, curve.fromBigInteger(BigInteger.ONE)),
+  ]
+  for (const point of malformed) {
+    ok('isValid on a malformed point', point.isValid() === false)
+    ok(
+      'isInfinity on a malformed point',
+      typeof point.isInfinity() === 'boolean',
+    )
+  }
+  const exchange = sm2.getSb(
+    16,
+    k.publicKey,
+    ra.publicKey,
+    'a',
+    'b',
+    V.private_key,
+    V.public_key,
+    rb.privateKey,
+    rb.publicKey,
+  )
+  for (const rbValue of [
+    Object.create(null),
+    { _requireUsable: 5 },
+    new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('x')
+        },
+      },
+    ),
+    5,
+    'x',
+  ]) {
+    ok(
+      'checkSa on a malformed Rb',
+      sm2.checkSa(
+        exchange.V,
+        exchange.Za,
+        exchange.Zb,
+        ra.publicKey,
+        rbValue,
+        'a'.repeat(64),
+      ) === false,
+    )
+  }
+  ok(
+    'checkSa on oversized Za',
+    sm2.checkSa(
+      exchange.V,
+      'a'.repeat(1 << 27),
+      exchange.Zb,
+      ra.publicKey,
+      exchange.Rb,
+      'a'.repeat(64),
+    ) === false,
+  )
 }
 
 // ---- utilities ----

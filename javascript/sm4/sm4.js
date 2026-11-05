@@ -1,4 +1,8 @@
-import { decodeHex, requireWellFormedString } from '../common/hex.js'
+import {
+  decodeHex,
+  decodeLowerHex,
+  requireWellFormedString,
+} from '../common/hex.js'
 import { bytesToString, bytesToHex, stringToBytes } from '../common/utils.js'
 import { sboxPlanes, sboxWord } from './sbox-circuit.js'
 
@@ -17,6 +21,7 @@ const CK = new Int32Array([
   0x484f565d, 0x646b7279,
 ])
 
+const INSPECT = Symbol.for('nodejs.util.inspect.custom')
 const BLOCK_BYTES = 16
 const KEY_BYTES = 16
 const LANES = 8
@@ -166,9 +171,20 @@ function decryptEightBlocks(rk, input, inOff, out, outOff) {
  */
 export class SM4 {
   constructor() {
-    this._rk = new Int32Array(32) // 轮密钥
-    this._iv = new Uint8Array(BLOCK_BYTES) // 初始向量
-    this._keyed = false
+    // Not enumerable: round keys must not appear in logs or serialized objects.
+    Object.defineProperties(this, {
+      _rk: { value: new Int32Array(32) }, // 轮密钥
+      _iv: { value: new Uint8Array(BLOCK_BYTES) }, // 初始向量
+      _keyed: { value: false, writable: true },
+    })
+  }
+
+  toJSON() {
+    return '[SM4]'
+  }
+
+  [INSPECT]() {
+    return '[SM4]'
   }
 
   /**
@@ -231,15 +247,55 @@ export class SM4 {
   }
 
   /**
-   * CBC 解密。任何长度、格式或填充错误都抛出同一个错误。
-   * CBC 不提供完整性，未经认证的密文解密成功并不代表其真实，见类注释
-   * @param {string} cipherHex - 密文 hex
-   * @returns {string} 明文字符串。非法 UTF-8 序列替换为 U+FFFD
+   * CBC 解密，返回字符串。任何长度、格式或填充错误都抛出同一个错误。
+   * CBC 不提供完整性，未经认证的密文解密成功并不代表其真实，见类注释。
+   *
+   * 非法 UTF-8 序列会被替换为 U+FFFD，所以二进制明文会被破坏：请用 decryptBytes。
+   * 无论填充是否正确，都会先对几乎相同长度的数据做同样的 UTF-8 解码，再决定是否报
+   * 错，因此错误返回得快慢不会泄露填充是否正确。解码耗时仍随数据内容变化，
+   * JavaScript 也不提供常数时间保证。
+   * @param {string} cipherHex - 密文，小写 hex
+   * @returns {string} 明文字符串
    * @throws {Error} 解密失败
    */
   decrypt(cipherHex) {
+    const output = this._decryptBlocks(cipherHex)
+    const bad = pkcs7BadMask(output)
+    const pad = output[output.length - 1]
+    const removed = (pad & ~bad) | (BLOCK_BYTES & bad)
+    const text = bytesToString(output.subarray(0, output.length - removed))
+    output.fill(0)
+    if (bad !== 0) throw new Error(DECRYPT_ERROR)
+    return text
+  }
+
+  /**
+   * CBC 解密，返回字节，没有 UTF-8 步骤，适合二进制明文。错误行为与 decrypt 相同。
+   * CBC 不提供完整性，见类注释
+   * @param {string} cipherHex - 密文，小写 hex
+   * @returns {Uint8Array} 明文
+   * @throws {Error} 解密失败
+   */
+  decryptBytes(cipherHex) {
+    const output = this._decryptBlocks(cipherHex)
+    const bad = pkcs7BadMask(output)
+    const pad = output[output.length - 1]
+    const removed = (pad & ~bad) | (BLOCK_BYTES & bad)
+    const plain = output.slice(0, output.length - removed)
+    output.fill(0)
+    if (bad !== 0) {
+      plain.fill(0)
+      throw new Error(DECRYPT_ERROR)
+    }
+    return plain
+  }
+
+  // ---- 内部方法 ----
+
+  /** CBC decryption of whole blocks, padding still in place. */
+  _decryptBlocks(cipherHex) {
     this._requireKey()
-    const input = decodeHex(cipherHex)
+    const input = decodeLowerHex(cipherHex)
     if (
       input === null ||
       input.length === 0 ||
@@ -272,18 +328,8 @@ export class SM4 {
     for (let i = BLOCK_BYTES; i < input.length; i++) {
       output[i] ^= input[i - BLOCK_BYTES]
     }
-
-    const length = pkcs7UnpaddedLength(output)
-    if (length < 0) {
-      output.fill(0)
-      throw new Error(DECRYPT_ERROR)
-    }
-    const text = bytesToString(output.subarray(0, length))
-    output.fill(0)
-    return text
+    return output
   }
-
-  // ---- 内部方法 ----
 
   _requireKey() {
     if (!this._keyed) throw new Error('SM4 key has not been set')
@@ -355,21 +401,21 @@ function pkcs7Pad(data) {
 }
 
 /**
- * Plaintext length after removing the padding, or -1 if it is invalid. Always reads
- * the last 16 bytes and combines the result with masks, so it does not reveal how
- * much of the padding was correct. data.length is a nonzero multiple of 16.
+ * -1 if the padding is invalid, otherwise 0. Always reads the last 16 bytes and
+ * combines the result with masks, so it does not reveal how much of the padding was
+ * correct. data.length is a nonzero multiple of 16.
  */
-function pkcs7UnpaddedLength(data) {
+function pkcs7BadMask(data) {
   const n = data.length
   const pad = data[n - 1]
-  // bad < 0 when pad is outside [1, 16]
+  // negative when pad is outside [1, 16]
   let bad = (pad - 1) | (BLOCK_BYTES - pad)
   for (let i = 1; i <= BLOCK_BYTES; i++) {
     const inPadding = (i - pad - 1) >> 31 // -1 when i <= pad
     const diff = data[n - i] ^ pad
     bad |= inPadding & -diff
   }
-  return bad < 0 ? -1 : n - pad
+  return bad >> 31
 }
 
 /** @deprecated 使用 new SM4() */

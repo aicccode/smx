@@ -4,6 +4,8 @@ import { stringToBytes, bytesToHex, intToBytesBE } from '../common/utils.js'
 /** 超过这个长度 _len 不再是精确整数，所以限制更严，仍低于标准上限 2^61 - 1 */
 const MAX_TRACKED_BYTES = Number.MAX_SAFE_INTEGER
 
+const INSPECT = Symbol.for('nodejs.util.inspect.custom')
+
 /** SM3 初始向量 */
 const IV = new Int32Array([
   0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa,
@@ -122,6 +124,8 @@ function compress(V, data, offset, blocks) {
   V[5] = v5
   V[6] = v6
   V[7] = v7
+  // The expansion is derived from the message, which may be secret.
+  w.fill(0)
 }
 
 /**
@@ -156,6 +160,7 @@ export class SM3 {
    */
   update(data) {
     this._requireOpen()
+    this._clearFinishResult()
     if (typeof data === 'number') {
       if (!Number.isInteger(data) || data < -128 || data > 255) {
         throw new TypeError('Expected a byte value')
@@ -188,6 +193,7 @@ export class SM3 {
    */
   updateBytes(data, offset, length) {
     this._requireOpen()
+    this._clearFinishResult()
     const bytes = toByteArray(data)
     if (
       !Number.isSafeInteger(offset) ||
@@ -207,6 +213,9 @@ export class SM3 {
    * @returns {Uint8Array}
    */
   digest() {
+    // After finish() with no new input, this is the digest that finish() computed,
+    // not the digest of an empty message.
+    if (this._hashBytes !== null) return Uint8Array.from(this._hashBytes)
     if (!this._finished) {
       this._pad()
       this._finished = true
@@ -230,6 +239,8 @@ export class SM3 {
 
   /** @deprecated 使用 digest() / hexDigest() */
   finish() {
+    // Calling finish() again with no new input keeps the same result.
+    if (this._hashBytes !== null) return this
     this._hashBytes = this.digest()
     // Computed now: getHashBytes hands out this array, and the caller may change it.
     this._hashValue = bytesToHex(this._hashBytes).toUpperCase()
@@ -283,6 +294,31 @@ export class SM3 {
     }
     for (let i = 0; i < remaining; i++) buf[pos + i] = data[offset + i]
     this._pos = pos + remaining
+  }
+
+  /** New input starts a new message, so the previous result must not be readable. */
+  _clearFinishResult() {
+    this._hashBytes = null
+    this._hashValue = null
+  }
+
+  /** Best-effort erasure when this instance held secret input. Ends its use. */
+  _wipe() {
+    this._buf.fill(0)
+    this._V.fill(0)
+    if (this._hashBytes !== null) this._hashBytes.fill(0)
+    this._hashBytes = null
+    this._hashValue = null
+    this._finished = true
+  }
+
+  /** Keeps buffered input and hash state out of JSON and console output. */
+  toJSON() {
+    return '[SM3]'
+  }
+
+  [INSPECT]() {
+    return '[SM3]'
   }
 
   _requireOpen() {

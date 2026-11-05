@@ -29,6 +29,7 @@ import {
   fpSqr,
   fpSqrtCandidate,
   fpToBytes,
+  wipeFieldScratch,
 } from './fe.js'
 
 const GX = '32c4ae2c1f1981195f9904466a39c9948fe30bbff2660be1715a4589334c74c7'
@@ -181,6 +182,25 @@ function wipeSecretScratch() {
   affineZ.fill(0)
   affineZ2.fill(0)
   affineTmp.fill(0)
+  wipeFieldScratch()
+}
+
+/** For tests only. */
+export function pointScratchForTest() {
+  return [
+    ...FORMULA_SCRATCH,
+    ...SCRATCH_POINTS.flatMap((q) => [q.x, q.y, q.z]),
+    selAcc,
+    selX,
+    selY,
+    varTable,
+    scalarBytes,
+    fixedDigits,
+    varDigits,
+    affineZ,
+    affineZ2,
+    affineTmp,
+  ]
 }
 
 // ---- conversion ----

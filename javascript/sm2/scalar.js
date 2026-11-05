@@ -15,6 +15,7 @@ import {
   fnInv,
   fnMul,
   fnToBytes,
+  wipeFieldScratch,
 } from './fe.js'
 
 const a = feNew()
@@ -22,12 +23,27 @@ const b = feNew()
 const c = feNew()
 const d = feNew()
 
+/** Erases intermediates, which include the private key during signing. */
+function finish(out) {
+  const acc = fnToBytes(out, c)
+  for (const buffer of SCRATCH) buffer.fill(0)
+  wipeFieldScratch()
+  return acc
+}
+
+const SCRATCH = [a, b, c, d]
+
+/** For tests only. */
+export function scalarScratchForTest() {
+  return SCRATCH
+}
+
 /** out = (x + y) mod n. Returns 0 exactly when the result is zero. */
 export function scalarAdd(out, x, y) {
   fnFromBytes(a, x)
   fnFromBytes(b, y)
   feAdd(c, a, b)
-  return fnToBytes(out, c)
+  return finish(out)
 }
 
 /** out = (x - y) mod n. */
@@ -35,7 +51,7 @@ export function scalarSub(out, x, y) {
   fnFromBytes(a, x)
   fnFromBytes(b, y)
   feSub(c, a, b)
-  return fnToBytes(out, c)
+  return finish(out)
 }
 
 /** out = (x * y + z) mod n. */
@@ -45,7 +61,7 @@ export function scalarMulAdd(out, x, y, z) {
   fnMul(c, a, b)
   fnFromBytes(d, z)
   feAdd(c, c, d)
-  return fnToBytes(out, c)
+  return finish(out)
 }
 
 /** out = (1 + x)^-1 * (k - r * x) mod n, the SM2 signature s. */
@@ -58,7 +74,7 @@ export function signatureS(out, x, k, r) {
   feAdd(a, a, FN_ONE) // 1 + x
   fnInv(d, a)
   fnMul(c, c, d)
-  return fnToBytes(out, c)
+  return finish(out)
 }
 
 /** Lexicographic comparison of equal-length big-endian public values. */

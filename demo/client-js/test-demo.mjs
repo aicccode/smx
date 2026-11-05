@@ -2,8 +2,10 @@
  * SM2 密钥交换Demo客户端 - JavaScript版
  * 作为A侧与Java服务端(B侧)进行密钥交换
  *
- * 这是演示代码。它使用明文 HTTP，网络上的攻击者可以读取和篡改所有消息；真实系统必须
- * 使用 TLS 和可信的公钥。它也不打印私钥和协商密钥：日志不是存放秘密的地方。
+ * 这是演示代码。它使用明文 HTTP，网络上的攻击者可以读取和篡改所有消息。没有设置
+ * SM2_DEMO_SERVER_PUBKEY 时，服务端公钥来自同一个未经认证的响应，任何冒充者都能通过
+ * 密钥确认并读取通信内容。真实系统必须使用 TLS 和预先可信的公钥。
+ * 它也不打印私钥和协商密钥：日志不是存放秘密的地方。
  */
 
 import { getSM2 } from '../../javascript/sm2/sm2.js'
@@ -14,19 +16,34 @@ const SERVER_URL = 'http://localhost:8080'
 const IDa = 'client@demo.aicc'
 const KEY_LENGTH_BYTES = 16
 const ZERO_IV = '00000000000000000000000000000000'
-const REQUEST_TIMEOUT_MS = 10000
+/** One deadline for the whole exchange, so that a drip-feeding server cannot stall it. */
+const OVERALL_DEADLINE_MS = 30000
 const MAX_RESPONSE_BYTES = 64 * 1024
+
+const CONTROL_CHARACTERS =
+  /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+
+/** Server text is untrusted: raw escape sequences must not reach the terminal. */
+function printable(value) {
+  return String(value).replace(CONTROL_CHARACTERS, '?')
+}
+
+function printJson(label, value) {
+  const lines = JSON.stringify(value, null, 2).split('\n')
+  console.log(label, lines.map(printable).join('\n'))
+}
 
 /**
  * POST JSON and parse the reply. Replies are untrusted: their size is bounded, a
  * bad status or malformed JSON is an error, and only an object is accepted.
  */
-async function postJson(path, body) {
+async function postJson(path, body, deadline) {
   const res = await fetch(`${SERVER_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    redirect: 'error',
+    signal: deadline,
   })
   const text = await readBounded(res)
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`)
@@ -36,13 +53,14 @@ async function postJson(path, body) {
   } catch {
     throw new Error(`${path}: the reply is not valid JSON`)
   }
-  if (parsed === null || typeof parsed !== 'object') {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${path}: the reply is not a JSON object`)
   }
   return parsed
 }
 
 async function readBounded(res) {
+  if (res.body === null) return ''
   const chunks = []
   let total = 0
   for await (const chunk of res.body) {
@@ -60,11 +78,32 @@ async function readBounded(res) {
 }
 
 /**
+ * The optional pinned server key. A malformed pin is an error, never "no pin".
+ * @returns {string|null}
+ */
+function pinnedServerKey() {
+  const pinned = process.env.SM2_DEMO_SERVER_PUBKEY
+  if (pinned === undefined || pinned === '') {
+    console.error(
+      'WARNING: the server is UNAUTHENTICATED. An impostor can complete this key ' +
+        'exchange and read the traffic. Set SM2_DEMO_SERVER_PUBKEY to pin its key.',
+    )
+    return null
+  }
+  if (!util.verifyPublicKey(pinned)) {
+    throw new Error('SM2_DEMO_SERVER_PUBKEY is not a valid public key')
+  }
+  return pinned
+}
+
+/**
  * 主测试流程
  */
 async function main() {
   console.log('=== SM2 Key Exchange Demo (JavaScript Client) ===\n')
 
+  const pinned = pinnedServerKey()
+  const deadline = AbortSignal.timeout(OVERALL_DEADLINE_MS)
   const sm2 = getSM2()
 
   // 生成A侧(客户端)证书密钥对和随机密钥对
@@ -81,9 +120,19 @@ async function main() {
     Ra: randomKeyPair.publicKey,
     keyLen: KEY_LENGTH_BYTES,
   }
-  console.log('Request:', JSON.stringify(initRequest, null, 2))
-  const initResponse = await postJson('/api/keyswap/init', initRequest)
-  console.log('Response:', JSON.stringify(initResponse, null, 2))
+  printJson('Request:', initRequest)
+  const initResponse = await postJson(
+    '/api/keyswap/init',
+    initRequest,
+    deadline,
+  )
+  printJson('Response:', initResponse)
+
+  if (pinned !== null && !util.comparePublicKeyHex(pinned, initResponse.pB)) {
+    throw new Error(
+      'The server public key does not match SM2_DEMO_SERVER_PUBKEY',
+    )
+  }
 
   // Step 2: 校验服务端的所有值和 Sb，然后计算 Sa 和 Ka
   console.log('\n--- Step 2: Calculate Sa and Ka ---')
@@ -107,14 +156,18 @@ async function main() {
     sessionId: initResponse.sessionId,
     Sa,
   }
-  console.log('Request:', JSON.stringify(confirmRequest, null, 2))
-  const confirmResponse = await postJson('/api/keyswap/confirm', confirmRequest)
-  console.log('Response:', JSON.stringify(confirmResponse, null, 2))
+  printJson('Request:', confirmRequest)
+  const confirmResponse = await postJson(
+    '/api/keyswap/confirm',
+    confirmRequest,
+    deadline,
+  )
+  printJson('Response:', confirmResponse)
 
   if (confirmResponse.success !== true) {
     throw new Error('Key exchange confirmation failed')
   }
-  console.log('\nKey exchange completed successfully!')
+  console.log('\nKey exchange confirmed.')
 
   // Step 4: 双向加密通信测试
   console.log('\n--- Step 4: Bidirectional Crypto Test ---')
@@ -136,9 +189,13 @@ async function main() {
     clientCiphertext,
     clientPlaintext,
   }
-  console.log('\nRequest:', JSON.stringify(cryptoRequest, null, 2))
-  const cryptoResponse = await postJson('/api/crypto/test', cryptoRequest)
-  console.log('Response:', JSON.stringify(cryptoResponse, null, 2))
+  printJson('\nRequest:', cryptoRequest)
+  const cryptoResponse = await postJson(
+    '/api/crypto/test',
+    cryptoRequest,
+    deadline,
+  )
+  printJson('Response:', cryptoResponse)
 
   // 验证服务端是否正确解密了客户端的消息
   const serverDecryptOk = cryptoResponse.clientDecryptMatch === true
@@ -154,8 +211,8 @@ async function main() {
     '[Client decrypted server message]:',
     clientDecryptOk ? 'PASS' : 'FAIL',
   )
-  console.log('  Server plaintext:', cryptoResponse.serverPlaintext)
-  console.log('  Client decrypted:', serverDecrypted)
+  console.log('  Server plaintext:', printable(cryptoResponse.serverPlaintext))
+  console.log('  Client decrypted:', printable(serverDecrypted))
 
   if (!serverDecryptOk || !clientDecryptOk) {
     throw new Error('Bidirectional Crypto test FAILED!')
@@ -165,6 +222,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error('Demo failed:', e.message)
+  console.error('Demo failed:', printable(e === null ? e : e.message))
   process.exit(1)
 })
