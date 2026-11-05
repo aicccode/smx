@@ -1,8 +1,8 @@
 #include "smx.h"
+#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <curl/curl.h>
 
 #define SERVER_URL "http://localhost:8080"
 #define IDA "c-client@demo.aicc"
@@ -21,7 +21,8 @@ static void check(const char *name, int cond) {
 
 /* ========== Simple JSON helpers (flat objects only) ========== */
 
-/* Extract a string value for a given key from JSON. Returns malloc'd string or NULL. */
+/* Extract a string value for a given key from JSON. Returns malloc'd string or
+ * NULL. */
 static char *json_get_string(const char *json, const char *key) {
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
@@ -110,7 +111,8 @@ static char *post_json(const char *url, const char *json_body) {
     return buf.data;
 }
 
-/* ========== JSON escape helper (for plaintext that may contain special chars) ========== */
+/* ========== JSON escape helper (for plaintext that may contain special chars)
+ * ========== */
 
 static char *json_escape(const char *s) {
     size_t len = 0;
@@ -159,8 +161,8 @@ int main(void) {
 
     char *init_resp = post_json(SERVER_URL "/api/keyswap/init", init_body);
     if (!init_resp) {
-        fprintf(stderr,
-                "Failed to connect to server. Make sure Java server is running on port 8080\n");
+        fprintf(stderr, "Failed to connect to server. Make sure Java server is "
+                        "running on port 8080\n");
         curl_global_cleanup();
         return 1;
     }
@@ -246,7 +248,8 @@ int main(void) {
         256 + strlen(sessionId) + strlen(clientCiphertext) + strlen(escaped_plain);
     char *crypto_body = (char *)malloc(crypto_body_len);
     snprintf(crypto_body, crypto_body_len,
-             "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\",\"clientPlaintext\":\"%s\"}",
+             "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\","
+             "\"clientPlaintext\":\"%s\"}",
              sessionId, clientCiphertext, escaped_plain);
     free(escaped_plain);
 
