@@ -47,6 +47,18 @@ public class SM3 {
       throw new IllegalArgumentException("Message too long for SM3");
     }
     messageBytes += length;
+    clearPublished();
+  }
+
+  /** New input makes the last result stale, so it can no longer be read. */
+  private void clearPublished() {
+    digestWords = null;
+    hexResult = null;
+    hashBytes = null;
+  }
+
+  private static IllegalStateException noDigest() {
+    return new IllegalStateException("No completed SM3 hash");
   }
 
   /** Absorbs one byte. */
@@ -99,9 +111,16 @@ public class SM3 {
     return this;
   }
 
-  /** The upper-case hex digest of the last {@link #finish()}, or null before the first one. */
+  /**
+   * The upper-case hex digest from {@link #finish()}.
+   *
+   * @throws IllegalStateException when no hash has finished, or input has been added since
+   */
   public String getHashCode() {
-    if (hexResult == null && digestWords != null) {
+    if (digestWords == null) {
+      throw noDigest();
+    }
+    if (hexResult == null) {
       byte[] bytes = new byte[32];
       for (int i = 0; i < 8; i++) {
         ConvertUtil.intToBigEndian(digestWords[i], bytes, i * 4);
@@ -111,12 +130,22 @@ public class SM3 {
     return hexResult;
   }
 
-  /** The digest of the last {@link #finish()}, or null before the first one. */
+  /**
+   * The digest from {@link #finish()}.
+   *
+   * @throws IllegalStateException when no hash has finished, or input has been added since
+   */
   public byte[] getHashBytes() {
+    if (hashBytes == null) {
+      throw noDigest();
+    }
     return this.hashBytes;
   }
 
-  /** Completes the hash, publishes the result and resets to the initial state. */
+  /**
+   * Completes the hash, publishes the result and resets to the initial state. The instance is then
+   * a new hash: another finish with no input in between gives the digest of the empty message.
+   */
   public SM3 finish() {
     pad();
     byte[] bytes = new byte[32];
@@ -130,8 +159,9 @@ public class SM3 {
 
   /**
    * Completes the hash, writes the 32-byte digest to {@code out} and resets to the initial state.
-   * Allocation-free alternative to {@link #finish()}; results of earlier finishes stay published. A
-   * range that cannot hold the digest raises {@link IllegalArgumentException} and keeps the state.
+   * Allocation-free alternative to {@link #finish()}, which publishes nothing and clears any
+   * earlier result. A range that cannot hold the digest raises {@link IllegalArgumentException} and
+   * keeps the state.
    */
   public void finishInto(byte[] out, int outOffset) {
     if (out == null || outOffset < 0 || outOffset > out.length - 32) {
@@ -139,6 +169,7 @@ public class SM3 {
     }
     pad();
     writeState(out, outOffset);
+    clearPublished();
     reset();
   }
 
@@ -154,6 +185,7 @@ public class SM3 {
     System.arraycopy(other.blockBuffer, 0, blockBuffer, 0, 64);
     bufferOffset = other.bufferOffset;
     messageBytes = other.messageBytes;
+    clearPublished();
   }
 
   private void pad() {

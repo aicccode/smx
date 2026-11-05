@@ -57,6 +57,12 @@ public class SM4 {
 
   private volatile KeyState keyState;
 
+  /**
+   * Receives each decode's result. A volatile write cannot be optimized away, so the JIT must keep
+   * the decoding work on the failure path, where the decoded text itself goes unused.
+   */
+  private static volatile int decodedLengthSink;
+
   private KeyState requireKey() {
     KeyState state = keyState;
     if (state == null) {
@@ -82,21 +88,48 @@ public class SM4 {
   }
 
   /**
-   * Decrypts hex and removes the padding; returns the text decoded as UTF-8, where bytes that are
-   * not valid UTF-8 become U+FFFD. Every malformed input and every padding failure raises the same
-   * exception with the same message. This does not authenticate; see the class comment.
+   * Decrypts lower-case hex and removes the padding; returns the text decoded as UTF-8, where bytes
+   * that are not valid UTF-8 become U+FFFD. Every malformed input and every padding failure raises
+   * the same exception with the same message. This does not authenticate; see the class comment.
+   *
+   * <p>The whole decrypted buffer is decoded whether or not the padding is valid, so that decoding
+   * time does not reveal the padding check. Decoding time still varies with the plaintext's
+   * content; {@link #decryptToBytes} has no decoding step.
    *
    * @throws IllegalArgumentException when no key is set or the input is rejected
    */
   public String decrypt(String text) throws IOException {
     KeyState state = requireKey();
-    byte[] input;
+    return processBlocks(state, decodeCiphertext(text), state.iv.clone(), false);
+  }
+
+  /**
+   * Decrypts lower-case hex and removes the padding, returning the plaintext bytes with no text
+   * decoding: for binary data, and for callers avoiding UTF-8 timing. Failures are as for {@link
+   * #decrypt}, and this does not authenticate either.
+   *
+   * @throws IllegalArgumentException when no key is set or the input is rejected
+   */
+  public byte[] decryptToBytes(String text) {
+    KeyState state = requireKey();
+    byte[] input = decodeCiphertext(text);
     try {
-      input = ConvertUtil.hexToByte(text);
+      int kept = decryptAndCheck(state, input, state.iv.clone());
+      if (kept < 0) {
+        throw decryptionFailure();
+      }
+      return Arrays.copyOf(input, kept);
+    } finally {
+      Arrays.fill(input, (byte) 0);
+    }
+  }
+
+  private static byte[] decodeCiphertext(String text) {
+    try {
+      return ConvertUtil.canonicalHexToByte(text);
     } catch (IllegalArgumentException e) {
       throw decryptionFailure();
     }
-    return processBlocks(state, input, state.iv.clone(), false);
   }
 
   /**
@@ -185,19 +218,28 @@ public class SM4 {
       encryptCbc(padded, cbcVector, state.encryptKeys);
       return ConvertUtil.getHexString(padded, false);
     }
-    if (input.length == 0 || input.length % BLOCK_BYTES != 0) {
-      throw decryptionFailure();
-    }
     try {
-      decryptCbc(input, cbcVector, state.decryptKeys);
-      int kept = validatedPlainLength(input);
+      int kept = decryptAndCheck(state, input, cbcVector);
+      // Same bytes through the same decoder on both outcomes, before the outcome is acted on. The
+      // padding bytes decode to one char each, so the text is a prefix of the decoded buffer.
+      String decoded = new String(input, 0, input.length, StandardCharsets.UTF_8);
+      decodedLengthSink = decoded.length();
       if (kept < 0) {
         throw decryptionFailure();
       }
-      return new String(input, 0, kept, StandardCharsets.UTF_8);
+      return decoded.substring(0, decoded.length() - (input.length - kept));
     } finally {
       Arrays.fill(input, (byte) 0);
     }
+  }
+
+  /** Decrypts in place and returns the plaintext length, or -1 for bad length or padding. */
+  private static int decryptAndCheck(KeyState state, byte[] input, byte[] cbcVector) {
+    if (input.length == 0 || input.length % BLOCK_BYTES != 0) {
+      throw decryptionFailure();
+    }
+    decryptCbc(input, cbcVector, state.decryptKeys);
+    return validatedPlainLength(input);
   }
 
   /**

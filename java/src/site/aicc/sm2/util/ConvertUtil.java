@@ -117,6 +117,28 @@ public class ConvertUtil {
     return b;
   }
 
+  /**
+   * Decodes hex in the one form this library emits for ciphertexts and signatures: even length and
+   * digits 0-9, a-f only. A second spelling of the same value would let a replay or dedup cache
+   * keyed on the string be bypassed.
+   *
+   * @throws IllegalArgumentException for anything else
+   */
+  public static byte[] canonicalHexToByte(String hex) {
+    if (hex == null) {
+      throw new IllegalArgumentException("Input is not a hex string");
+    }
+    int upper = 0;
+    for (int i = 0, n = hex.length(); i < n; i++) {
+      int letter = hex.charAt(i) - 'A';
+      upper |= ~(letter | (5 - letter)) >> 31;
+    }
+    if (upper != 0) {
+      throw new IllegalArgumentException("Input is not a hex string");
+    }
+    return hexToByte(hex);
+  }
+
   /** Returns the digit's value, or -1, using no branch or table indexed by the character. */
   private static int hexDigit(int c) {
     int decimal = c - '0';

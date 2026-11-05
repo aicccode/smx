@@ -10,7 +10,9 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Shared HTTP handling for the demo: bounded request bodies, a strict JSON reader and error replies
@@ -37,6 +39,9 @@ final class DemoHttp {
 
   /** Reads the whole body up to the limit; {@code available()} cannot tell where a body ends. */
   static String readBody(HttpExchange exchange) throws IOException, RequestException {
+    if (declaresOversizedBody(exchange)) {
+      throw new RequestException(413, "Request body too large");
+    }
     ByteArrayOutputStream body = new ByteArrayOutputStream();
     byte[] chunk = new byte[READ_CHUNK_BYTES];
     try (InputStream is = exchange.getRequestBody()) {
@@ -57,6 +62,19 @@ final class DemoHttp {
           .toString();
     } catch (CharacterCodingException e) {
       throw new RequestException(400, "Malformed request");
+    }
+  }
+
+  /** Refuses a too-large declared body before waiting for any of it to arrive. */
+  private static boolean declaresOversizedBody(HttpExchange exchange) {
+    String declared = exchange.getRequestHeaders().getFirst("Content-Length");
+    if (declared == null) {
+      return false;
+    }
+    try {
+      return Long.parseLong(declared.trim()) > MAX_BODY_BYTES;
+    } catch (NumberFormatException e) {
+      return true;
     }
   }
 
@@ -110,18 +128,35 @@ final class DemoHttp {
     return out.toString();
   }
 
-  /** Parses one JSON object of scalar members; numbers keep their text, null reads as absent. */
-  static Map<String, String> parseObject(String json) throws RequestException {
+  /** Parses one JSON object of scalar members. */
+  static Body parseObject(String json) throws RequestException {
     return new JsonReader(json).readObject();
   }
 
-  /** Returns a required member. */
-  static String require(Map<String, String> body, String key) throws RequestException {
-    String value = body.get(key);
-    if (value == null) {
-      throw new RequestException(400, "Malformed request");
+  /** A parsed request: members keep their JSON type, so a number is not accepted as a string. */
+  static final class Body {
+    private final Map<String, String> strings = new HashMap<>();
+    private final Map<String, String> numbers = new HashMap<>();
+    private final Set<String> keys = new HashSet<>();
+
+    /** Returns a required string member. */
+    String string(String key) throws RequestException {
+      return required(strings, key);
     }
-    return value;
+
+    /** Returns the literal text of a required number member. */
+    String number(String key) throws RequestException {
+      return required(numbers, key);
+    }
+
+    private static String required(Map<String, String> members, String key)
+        throws RequestException {
+      String value = members.get(key);
+      if (value == null) {
+        throw new RequestException(400, "Malformed request");
+      }
+      return value;
+    }
   }
 
   private static final class JsonReader {
@@ -132,8 +167,8 @@ final class DemoHttp {
       this.text = text;
     }
 
-    Map<String, String> readObject() throws RequestException {
-      Map<String, String> out = new HashMap<>();
+    Body readObject() throws RequestException {
+      Body out = new Body();
       skipSpace();
       expect('{');
       skipSpace();
@@ -146,11 +181,10 @@ final class DemoHttp {
           skipSpace();
           expect(':');
           skipSpace();
-          String value = readScalar();
-          if (out.containsKey(key)) {
+          if (!out.keys.add(key)) {
             throw malformed();
           }
-          out.put(key, value);
+          readScalar(out, key);
           skipSpace();
           char next = peek();
           pos++;
@@ -169,22 +203,24 @@ final class DemoHttp {
       return out;
     }
 
-    private String readScalar() throws RequestException {
+    private void readScalar(Body out, String key) throws RequestException {
       char c = peek();
       if (c == '"') {
-        return readString();
+        out.strings.put(key, readString());
+        return;
       }
       if (c == '-' || (c >= '0' && c <= '9')) {
         int start = pos;
         while (pos < text.length() && "+-.eE0123456789".indexOf(text.charAt(pos)) >= 0) {
           pos++;
         }
-        return text.substring(start, pos);
+        out.numbers.put(key, text.substring(start, pos));
+        return;
       }
       for (String literal : new String[] {"true", "false", "null"}) {
         if (text.startsWith(literal, pos)) {
           pos += literal.length();
-          return literal.equals("null") ? null : literal;
+          return;
         }
       }
       throw malformed();

@@ -2,6 +2,7 @@ package site.aicc.sm2;
 
 import java.math.BigInteger;
 import java.util.Arrays;
+import site.aicc.sm2.ec.AbstractECElement;
 import site.aicc.sm2.ec.AbstractECPoint;
 import site.aicc.sm2.ec.Sm2Engine;
 import site.aicc.sm2.util.ConvertUtil;
@@ -28,6 +29,7 @@ public class SM2KeySwap {
       validateInputs(init, byteLen, pA, pB, dB, rb, idA, idB);
       requirePoint(init, rB, "Key exchange failed: B's random public key is not on the curve.");
       requirePoint(init, rA, "Key exchange failed: A's random public key is not on the curve.");
+      requireOwnKeys(init, dB, pB, rb, rB);
       BigInteger x2 = calcX(init.getW(), rB.getXCoord().toBigInteger());
       BigInteger x1 = calcX(init.getW(), rA.getXCoord().toBigInteger());
       AbstractECPoint v = calcPoint(init, dB, rb, x2, x1, pA, rA);
@@ -45,8 +47,8 @@ public class SM2KeySwap {
       result.setZa(zA);
       result.setZb(zB);
       result.setSuccess(true);
-    } catch (IllegalArgumentException e) {
-      result.setMessage(e.getMessage());
+    } catch (RuntimeException e) {
+      result.setMessage(failureMessage(e));
       result.setSuccess(false);
     }
     return result;
@@ -70,6 +72,7 @@ public class SM2KeySwap {
       validateInputs(init, byteLen, pA, pB, dA, ra, idA, idB);
       requirePoint(init, rA, "Key exchange failed: A's random public key is not on the curve.");
       requirePoint(init, rB, "Key exchange failed: B's random public key is not on the curve.");
+      requireOwnKeys(init, dA, pA, ra, rA);
       if (sB == null || sB.length != HASH_BYTES) {
         throw new IllegalArgumentException(
             "Key exchange failed: B's verification value does not match.");
@@ -93,9 +96,9 @@ public class SM2KeySwap {
       result.setKa(ConvertUtil.byteToHex(kA));
       Arrays.fill(kA, (byte) 0);
       result.setSuccess(true);
-    } catch (IllegalArgumentException e) {
+    } catch (RuntimeException e) {
       result.setSuccess(false);
-      result.setMessage(e.getMessage());
+      result.setMessage(failureMessage(e));
     } finally {
       Sm2Engine.wipe(u);
     }
@@ -122,9 +125,14 @@ public class SM2KeySwap {
     try {
       byte[] s2 = createS((byte) 0x03, v, zA, zB, rA, rB);
       return ConvertUtil.byteArrayEqual(sA, s2);
-    } catch (IllegalArgumentException e) {
+    } catch (RuntimeException e) {
       return false;
     }
+  }
+
+  /** Only this library's own validation messages reach the caller. */
+  private static String failureMessage(RuntimeException e) {
+    return e instanceof IllegalArgumentException ? e.getMessage() : "Key exchange failed.";
   }
 
   private static void validateInputs(
@@ -152,6 +160,18 @@ public class SM2KeySwap {
     requirePoint(init, pB, "Key exchange failed: B's public key is not on the curve.");
   }
 
+  /** The caller's own public values must belong to its private values. */
+  private static void requireOwnKeys(
+      SM2Initializer init, BigInteger d, AbstractECPoint pub, BigInteger r, AbstractECPoint rnd) {
+    boolean match =
+        ConvertUtil.byteArrayEqual(init.getPublicKey(d).getEncoded(), pub.getEncoded())
+            & ConvertUtil.byteArrayEqual(init.getPublicKey(r).getEncoded(), rnd.getEncoded());
+    if (!match) {
+      throw new IllegalArgumentException(
+          "Key exchange failed: own public keys do not match the private keys.");
+    }
+  }
+
   private static void requirePoint(SM2Initializer init, AbstractECPoint point, String message) {
     if (!init.isUsablePoint(point)) {
       throw new IllegalArgumentException(message);
@@ -166,25 +186,27 @@ public class SM2KeySwap {
     return key;
   }
 
-  private static void updateCoordinate(SM3 sm3, BigInteger coordinate) {
-    byte[] bytes = ConvertUtil.bigIntegerTo32Bytes(coordinate);
+  private static void updateCoordinate(SM3 sm3, AbstractECElement coordinate) {
+    byte[] bytes = coordinate.getEncoded();
     sm3.update(bytes, 0, bytes.length);
+    Arrays.fill(bytes, (byte) 0);
   }
 
+  /** Coordinates go through limbs here, so that the secret V never gets a BigInteger form. */
   private static byte[] createS(
       byte tag, AbstractECPoint vu, byte[] zA, byte[] zB, AbstractECPoint rA, AbstractECPoint rB) {
     SM3 inner = new SM3();
-    updateCoordinate(inner, vu.getXCoord().toBigInteger());
+    updateCoordinate(inner, vu.getXCoord());
     inner.update(zA, 0, zA.length);
     inner.update(zB, 0, zB.length);
-    updateCoordinate(inner, rA.getXCoord().toBigInteger());
-    updateCoordinate(inner, rA.getYCoord().toBigInteger());
-    updateCoordinate(inner, rB.getXCoord().toBigInteger());
-    updateCoordinate(inner, rB.getYCoord().toBigInteger());
+    updateCoordinate(inner, rA.getXCoord());
+    updateCoordinate(inner, rA.getYCoord());
+    updateCoordinate(inner, rB.getXCoord());
+    updateCoordinate(inner, rB.getYCoord());
     byte[] h1 = inner.finish().getHashBytes();
     SM3 hash = new SM3();
     hash.update(tag);
-    updateCoordinate(hash, vu.getYCoord().toBigInteger());
+    updateCoordinate(hash, vu.getYCoord());
     hash.update(h1, 0, h1.length);
     return hash.finish().getHashBytes();
   }

@@ -4,7 +4,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
 import java.math.BigInteger;
-import java.util.Map;
 import java.util.UUID;
 import site.aicc.sm2.SM2;
 import site.aicc.sm2.SM2KeySwapParams;
@@ -18,17 +17,39 @@ import site.aicc.sm2.util.ConvertUtil;
 public class KeySwapHandler implements HttpHandler {
 
   /** The SM4 key the crypto test uses; any other length could not be used afterwards. */
-  private static final int SESSION_KEY_BYTES = 16;
+  private static final String SESSION_KEY_BYTES = "16";
+
+  private static final int PRIVATE_KEY_HEX_LENGTH = 64;
 
   // 服务端B的固定密钥对（实际使用应该从配置加载）
   private final ECKeyPair serverKeyPair;
   private final String serverId = "server@demo.aicc";
 
   public KeySwapHandler() {
-    this.serverKeyPair = SM2.genSM2KeyPair();
-    System.out.println("Server keypair generated");
+    this.serverKeyPair = loadOrGenerateKeyPair();
     AbstractECPoint q = ((ECPublicKey) serverKeyPair.getPublic()).getQ();
+    // Clients pin this value through SM2_DEMO_SERVER_PUBKEY.
     System.out.println("Server public key: " + ConvertUtil.byteToHex(q.getEncoded()));
+  }
+
+  /**
+   * Uses the key in SM2_DEMO_SERVER_PRIVATE_KEY (64 hex digits), so that clients can pin a public
+   * key across restarts, or else a new key per process. A real service would load it from a secret
+   * store.
+   */
+  private static ECKeyPair loadOrGenerateKeyPair() {
+    String hex = System.getenv("SM2_DEMO_SERVER_PRIVATE_KEY");
+    if (hex == null || hex.isEmpty()) {
+      System.out.println("Server keypair generated");
+      return SM2.genSM2KeyPair();
+    }
+    if (hex.length() != PRIVATE_KEY_HEX_LENGTH) {
+      throw new IllegalArgumentException("Invalid private key");
+    }
+    BigInteger d = new BigInteger(1, ConvertUtil.hexToByte(hex));
+    AbstractECPoint q = SM2.getPublicKey(d);
+    System.out.println("Server keypair loaded");
+    return new ECKeyPair(new ECPublicKey(q), new ECPrivateKey(d));
   }
 
   @Override
@@ -52,7 +73,7 @@ public class KeySwapHandler implements HttpHandler {
     }
 
     try {
-      Map<String, String> body = DemoHttp.parseObject(DemoHttp.readBody(exchange));
+      DemoHttp.Body body = DemoHttp.parseObject(DemoHttp.readBody(exchange));
       String response;
 
       if (path.endsWith("/init")) {
@@ -80,27 +101,20 @@ public class KeySwapHandler implements HttpHandler {
     }
   }
 
-  private static int parseKeyLength(String value) throws DemoHttp.RequestException {
-    try {
-      if (Integer.parseInt(value) == SESSION_KEY_BYTES) {
-        return SESSION_KEY_BYTES;
-      }
-    } catch (NumberFormatException e) {
-      // Reported below.
-    }
-    throw new DemoHttp.RequestException(400, "Invalid key length");
-  }
-
   /** 处理密钥交换初始化请求 */
-  private String handleInit(Map<String, String> body) throws Exception {
-    String idA = DemoHttp.require(body, "IDa");
-    int keyLen = parseKeyLength(DemoHttp.require(body, "keyLen"));
+  private String handleInit(DemoHttp.Body body) throws Exception {
+    String idA = body.string("IDa");
+    // The exact JSON number, so spellings such as 016 or non-ASCII digits are refused.
+    if (!SESSION_KEY_BYTES.equals(body.number("keyLen"))) {
+      throw new DemoHttp.RequestException(400, "Invalid key length");
+    }
+    int keyLen = Integer.parseInt(SESSION_KEY_BYTES);
 
     System.out.println("Key exchange init received");
 
     // 解析A的公钥和随机公钥
-    AbstractECPoint pA = decodePeerPoint(DemoHttp.require(body, "pA"));
-    AbstractECPoint rA = decodePeerPoint(DemoHttp.require(body, "Ra"));
+    AbstractECPoint pA = decodePeerPoint(body.string("pA"));
+    AbstractECPoint rA = decodePeerPoint(body.string("Ra"));
 
     // 获取B的密钥
     AbstractECPoint pB = ((ECPublicKey) serverKeyPair.getPublic()).getQ();
@@ -120,20 +134,17 @@ public class KeySwapHandler implements HttpHandler {
 
     // 创建会话
     String sessionId = UUID.randomUUID().toString();
-    SessionStore.Session session = new SessionStore.Session();
-    session.sessionId = sessionId;
-    session.idA = idA;
-    session.idB = serverId;
-    session.pA = pA;
-    session.rA = rA;
-    session.pB = pB;
-    session.rB = rB;
-    session.kB = result.getKb();
-    session.v = result.getV();
-    session.zA = result.getZa();
-    session.zB = result.getZb();
-    session.confirmed = false;
-    SessionStore.put(sessionId, session);
+    SessionStore.Session session =
+        new SessionStore.Session(
+            result.getKb(),
+            result.getV().getEncoded(),
+            rA.getEncoded(),
+            rB.getEncoded(),
+            result.getZa(),
+            result.getZb());
+    if (!SessionStore.addPending(sessionId, session)) {
+      throw new DemoHttp.RequestException(503, "Server busy");
+    }
 
     // 构建响应
     return String.format(
@@ -146,9 +157,9 @@ public class KeySwapHandler implements HttpHandler {
   }
 
   /** 处理密钥交换确认请求 */
-  private String handleConfirm(Map<String, String> body) throws Exception {
-    String sessionId = DemoHttp.require(body, "sessionId");
-    String sA = DemoHttp.require(body, "Sa");
+  private String handleConfirm(DemoHttp.Body body) throws Exception {
+    String sessionId = body.string("sessionId");
+    String sA = body.string("Sa");
 
     SessionStore.Session session = SessionStore.get(sessionId);
     if (session == null) {
@@ -162,7 +173,14 @@ public class KeySwapHandler implements HttpHandler {
     } catch (IllegalArgumentException e) {
       throw new DemoHttp.RequestException(400, "Sa verification failed");
     }
-    boolean valid = SM2.checkSa(session.v, session.zA, session.zB, session.rA, session.rB, saBytes);
+    boolean valid =
+        SM2.checkSa(
+            SM2.decodePoint(ConvertUtil.byteToHex(session.v)),
+            session.zA,
+            session.zB,
+            SM2.decodePoint(ConvertUtil.byteToHex(session.rA)),
+            SM2.decodePoint(ConvertUtil.byteToHex(session.rB)),
+            saBytes);
 
     System.out.println("Key exchange confirm received, valid: " + valid);
 
@@ -170,7 +188,9 @@ public class KeySwapHandler implements HttpHandler {
       throw new DemoHttp.RequestException(500, "Sa verification failed");
     }
 
-    session.confirmed = true;
+    if (!SessionStore.confirm(sessionId)) {
+      throw new DemoHttp.RequestException(503, "Server busy");
+    }
     return "{\"success\":true}";
   }
 }

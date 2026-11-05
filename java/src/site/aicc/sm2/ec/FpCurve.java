@@ -43,7 +43,20 @@ public class FpCurve extends AbstractECCurve {
     this.b = fromBigInteger(b);
     this.order = order;
     this.cofactor = cofactor;
+    if (isSingular(q, a, b)) {
+      throw new IllegalArgumentException("Curve is singular");
+    }
     this.sm2 = Sm2Engine.isSm2Curve(q, a, b);
+  }
+
+  /**
+   * A zero discriminant 4a^3 + 27b^2 makes this no elliptic curve: logarithms map to the field or
+   * its additive group, where they are easy.
+   */
+  private static boolean isSingular(BigInteger q, BigInteger a, BigInteger b) {
+    BigInteger cube = a.multiply(a).multiply(a).shiftLeft(2);
+    BigInteger square = b.multiply(b).multiply(BigInteger.valueOf(27));
+    return cube.add(square).mod(q).signum() == 0;
   }
 
   /** The field inversion only terminates for an odd prime modulus, so nothing else is accepted. */

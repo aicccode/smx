@@ -666,7 +666,8 @@ public final class PublicApiFuzz {
         Throwable cause = e.getCause();
         boolean allowed =
             cause instanceof IllegalArgumentException
-                || (cause instanceof IllegalStateException && hostile[0]);
+                || (cause instanceof IllegalStateException
+                    && (hostile[0] || "No completed SM3 hash".equals(cause.getMessage())));
         if (!allowed) {
           report.findings.putIfAbsent(
               name + " -> " + cause.getClass().getName(),

@@ -12,6 +12,10 @@ import site.aicc.sm2.util.ConvertUtil;
 /** SM2 elliptic curve public key cryptographic algorithm. */
 public class SM2 {
   private static final int PRIVATE_KEY_HEX_LENGTH = 64;
+  private static final int PUBLIC_KEY_HEX_LENGTH = 130;
+
+  /** An ID of 8191 bytes has at most this many chars; longer strings cannot be valid. */
+  private static final int MAX_USER_ID_CHARS = 8191;
 
   private static final String[] PARAMS =
       new String[] {
@@ -60,9 +64,9 @@ public class SM2 {
   /**
    * Encrypts the UTF-8 encoding of content; returns the hex of C1 || C3 || C2.
    *
-   * @return null for empty content
-   * @throws IllegalArgumentException for an invalid key, or content that is null or not valid
-   *     Unicode
+   * @throws IllegalArgumentException for an invalid key, or content that is null, empty or not
+   *     valid Unicode. An empty plaintext has no valid ciphertext form, since decrypt rejects an
+   *     empty C2.
    * @throws IllegalStateException when the operating system's random source fails
    */
   public static String sm2Encrypt(String content, String publicKey)
@@ -76,8 +80,8 @@ public class SM2 {
   }
 
   /**
-   * Decrypts the hex of C1 || C3 || C2 with a private key of exactly 64 hex digits. The result is
-   * decoded as UTF-8, where bytes that are not valid UTF-8 become U+FFFD.
+   * Decrypts the lower-case hex of C1 || C3 || C2 with a private key of exactly 64 hex digits. The
+   * result is decoded as UTF-8, where bytes that are not valid UTF-8 become U+FFFD.
    *
    * @throws IllegalArgumentException for an invalid key or any rejected ciphertext
    */
@@ -87,7 +91,7 @@ public class SM2 {
     try {
       byte[] cipher;
       try {
-        cipher = ConvertUtil.hexToByte(content);
+        cipher = ConvertUtil.canonicalHexToByte(content);
       } catch (IllegalArgumentException e) {
         throw new IllegalArgumentException("Decryption failed");
       }
@@ -123,9 +127,20 @@ public class SM2 {
     }
   }
 
-  /** Verifies a signature; every invalid input of any kind gives false. */
+  /**
+   * Verifies a signature of lower-case hex; every invalid input of any kind gives false. Lengths
+   * are checked first, so an oversized argument costs no allocation.
+   */
   public static boolean sm2VerifySign(
       String userId, String signature, String content, String publicKey) {
+    if (userId == null || publicKey == null || signature == null || content == null) {
+      return false;
+    }
+    if (userId.length() > MAX_USER_ID_CHARS
+        || publicKey.length() != PUBLIC_KEY_HEX_LENGTH
+        || signature.length() != SM2Cipher.SIGNATURE_HEX_LENGTH) {
+      return false;
+    }
     try {
       return SM2Cipher.sm2SignVerify(
           ConvertUtil.byteToHex(ConvertUtil.utf8Bytes(userId)),
@@ -133,7 +148,7 @@ public class SM2 {
           ConvertUtil.utf8Bytes(content),
           signature,
           INIT);
-    } catch (IllegalArgumentException e) {
+    } catch (RuntimeException e) {
       return false;
     }
   }

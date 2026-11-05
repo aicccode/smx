@@ -23,7 +23,7 @@ public class SM2Cipher {
   private static final int C1_BYTES = 65;
   private static final int C3_BYTES = 32;
   private static final int SCALAR_BYTES = 32;
-  private static final int SIGNATURE_HEX_LENGTH = 129;
+  static final int SIGNATURE_HEX_LENGTH = 129;
   private static final int SIGNATURE_SEPARATOR_INDEX = 64;
 
   /** Largest plaintext whose ciphertext still fits a hex String. */
@@ -38,19 +38,16 @@ public class SM2Cipher {
   /**
    * Encrypts data for an encoded public key.
    *
-   * @return the hex of C1 || C3 || C2, or null for empty data
-   * @throws IllegalArgumentException for an invalid public key or oversized data
+   * @return the hex of C1 || C3 || C2
+   * @throws IllegalArgumentException for an invalid public key, or null, empty or oversized data
    * @throws IllegalStateException when the random source fails
    */
   protected static String encrypt(byte[] publicKey, byte[] data, SM2Initializer init)
       throws IOException {
     requireInit(init);
     AbstractECPoint userPublicKey = init.decodePoint(publicKey);
-    if (data == null || data.length == 0) {
-      return null;
-    }
-    if (data.length > MAX_PLAINTEXT_BYTES) {
-      throw new IllegalArgumentException("Input too long for SM2");
+    if (data == null || data.length == 0 || data.length > MAX_PLAINTEXT_BYTES) {
+      throw new IllegalArgumentException("Plaintext must be 1 byte or more, and not oversized");
     }
     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       SM2Cipher cipher = new SM2Cipher();
@@ -193,8 +190,8 @@ public class SM2Cipher {
   }
 
   /**
-   * Verifies a signature of exactly 64 hex digits, 'h', 64 hex digits, with r and s in [1, n - 1]
-   * and r + s not congruent to 0, against an encoded public key of exactly 65 bytes.
+   * Verifies a signature of exactly 64 lower-case hex digits, 'h', 64 such digits, with r and s in
+   * [1, n - 1] and r + s not congruent to 0, against an encoded public key of exactly 65 bytes.
    *
    * @return false for every invalid input
    */
@@ -212,10 +209,10 @@ public class SM2Cipher {
       }
       BigInteger r =
           new BigInteger(
-              1, ConvertUtil.hexToByte(signData.substring(0, SIGNATURE_SEPARATOR_INDEX)));
+              1, ConvertUtil.canonicalHexToByte(signData.substring(0, SIGNATURE_SEPARATOR_INDEX)));
       BigInteger s =
           new BigInteger(
-              1, ConvertUtil.hexToByte(signData.substring(SIGNATURE_SEPARATOR_INDEX + 1)));
+              1, ConvertUtil.canonicalHexToByte(signData.substring(SIGNATURE_SEPARATOR_INDEX + 1)));
       byte[] digest = digest(init, ConvertUtil.hexToByte(userId), userKey, sourceData);
       if (init.isStandardDomain()) {
         return Sm2Engine.verify(userKey, r, s, digest);
@@ -233,7 +230,7 @@ public class SM2Cipher {
         return false;
       }
       return r.equals(new BigInteger(1, digest).add(sum.getXCoord().toBigInteger()).mod(n));
-    } catch (IllegalArgumentException e) {
+    } catch (RuntimeException e) {
       return false;
     }
   }

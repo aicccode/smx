@@ -200,6 +200,22 @@ public class HardeningTest {
     assertFalse(SM2.checkSa(b.getV(), b.getZa(), b.getZb(), rA, rB, new byte[32]));
   }
 
+  /** Own public values that do not belong to the private values are refused on both sides. */
+  @Test
+  public void keyExchangeRejectsMismatchedOwnKeys() {
+    AbstractECPoint pA = pub(D_A);
+    AbstractECPoint rA = pub(R_A);
+    AbstractECPoint pB = pub(D_B);
+    AbstractECPoint rB = pub(R_B);
+    AbstractECPoint other = pub(BigInteger.valueOf(12345));
+    assertFalse(SM2.getSb(16, pA, rA, other, D_B, rB, R_B, "a", "b").isSuccess());
+    assertFalse(SM2.getSb(16, pA, rA, pB, D_B, other, R_B, "a", "b").isSuccess());
+    byte[] sb = ConvertUtil.hexToByte(sideB(16).getSb());
+    assertFalse(SM2.getSa(16, pB, rB, other, D_A, rA, R_A, "a", "b", sb).isSuccess());
+    assertFalse(SM2.getSa(16, pB, rB, pA, D_A, other, R_A, "a", "b", sb).isSuccess());
+    assertTrue(SM2.getSa(16, pB, rB, pA, D_A, rA, R_A, "a", "b", sb).isSuccess());
+  }
+
   /** Coordinates with leading zero bytes must hash fixed-width on both sides. */
   @Test
   public void sharedPointsWithShortCoordinatesAgree() {
@@ -331,6 +347,17 @@ public class HardeningTest {
         rejected(() -> new SM2Initializer(copy, new DoubleAndAddMultiplier()));
       }
     }
+    // A singular curve, whose logarithms are easy: the cusp y^2 = x^3 with n = p.
+    String[] cusp = {good[0], "0", "0", good[0], "4", "8"};
+    rejected(() -> new SM2Initializer(cusp, new DoubleAndAddMultiplier()));
+    DoubleAndAddMultiplier curveMultiplier = new DoubleAndAddMultiplier();
+    rejected(() -> new FpCurve(curveMultiplier, P, BigInteger.ZERO, BigInteger.ZERO));
+    // a = -3, b = 2 has discriminant -108 + 108 = 0: a node.
+    rejected(() -> new FpCurve(curveMultiplier, P, A, BigInteger.valueOf(2)));
+    // Anomalous: n = p.
+    String[] anomalous = good.clone();
+    anomalous[3] = good[0];
+    rejected(() -> new SM2Initializer(anomalous, new DoubleAndAddMultiplier()));
     // G of the wrong order: the group order is not n.
     String[] wrongOrder = good.clone();
     wrongOrder[3] = N.nextProbablePrime().toString(16);
@@ -438,6 +465,78 @@ public class HardeningTest {
     rejected(() -> SM2.sm2Decrypt(cipher, key));
   }
 
+  // ---------------------------------------------------------------- SM4 decoding
+
+  /** The bad-padding path runs the decoder over the whole buffer, exactly as the good path does. */
+  @Test
+  public void sm4DecodesTheWholeBufferOnEveryPaddingOutcome() throws Exception {
+    Field sink = SM4.class.getDeclaredField("decodedLengthSink");
+    sink.setAccessible(true);
+    SM4 sm4 =
+        new SM4()
+            .setKey("0123456789abcdeffedcba9876543210", "000102030405060708090a0b0c0d0e0f", true);
+    char[] text = new char[47];
+    Arrays.fill(text, 'm');
+    String good = sm4.encrypt(new String(text));
+    // Without its last block the ciphertext ends in plaintext bytes 'm': invalid padding.
+    String bad = sm4.encrypt(new String(text) + "m").substring(0, 96);
+    assertEquals(new String(text), sm4.decrypt(good));
+    assertEquals(48, sink.getInt(null));
+    sink.setInt(null, 0);
+    rejected(() -> sm4.decrypt(bad));
+    assertEquals(48, sink.getInt(null));
+  }
+
+  /** The decoded prefix must equal decoding the plaintext alone, for any plaintext bytes. */
+  @Test
+  public void sm4PrefixDecodingMatchesDirectDecoding() {
+    Random r = new Random(23);
+    int[] interesting = {
+      0x00, 0x41, 0x7F, 0x80, 0xBF, 0xC0, 0xC2, 0xDF, 0xE0, 0xE4, 0xED, 0xEF, 0xF0, 0xF4, 0xF5, 0xFF
+    };
+    byte[] plain = new byte[47];
+    for (int a : interesting) {
+      for (int b : interesting) {
+        for (int c : interesting) {
+          for (int d : interesting) {
+            plain[plain.length - 4] = (byte) a;
+            plain[plain.length - 3] = (byte) b;
+            plain[plain.length - 2] = (byte) c;
+            plain[plain.length - 1] = (byte) d;
+            checkPrefixDecoding(plain, 1);
+          }
+        }
+      }
+    }
+    for (int i = 0; i < 20000; i++) {
+      int pad = 1 + r.nextInt(16);
+      byte[] random = new byte[16 + 16 - pad];
+      r.nextBytes(random);
+      checkPrefixDecoding(random, pad);
+    }
+  }
+
+  private static void checkPrefixDecoding(byte[] plain, int pad) {
+    byte[] padded = Arrays.copyOf(plain, plain.length + pad);
+    Arrays.fill(padded, plain.length, padded.length, (byte) pad);
+    String whole = new String(padded, StandardCharsets.UTF_8);
+    assertEquals(
+        new String(plain, StandardCharsets.UTF_8), whole.substring(0, whole.length() - pad));
+  }
+
+  @Test
+  public void sm4DecryptToBytesKeepsBinaryPlaintext() throws Exception {
+    SM4 sm4 =
+        new SM4()
+            .setKey("0123456789abcdeffedcba9876543210", "000102030405060708090a0b0c0d0e0f", true);
+    String ct = sm4.encrypt("héllo");
+    assertTrue(Arrays.equals("héllo".getBytes(StandardCharsets.UTF_8), sm4.decryptToBytes(ct)));
+    rejected(() -> sm4.decryptToBytes(ct.toUpperCase()));
+    rejected(() -> sm4.decryptToBytes(ct.substring(0, 16)));
+    rejected(() -> sm4.decryptToBytes(null));
+    rejected(() -> new SM4().decryptToBytes(ct));
+  }
+
   // ---------------------------------------------------------------- non-injective text
 
   @Test
@@ -543,7 +642,7 @@ public class HardeningTest {
       String signature = SM2.sm2Sign(id, message, pair.getHexPriKey());
       assertTrue(SM2.sm2VerifySign(id, signature, message, pair.getHexPubKey()));
       if (message.isEmpty()) {
-        assertNull(SM2.sm2Encrypt(message, pair.getHexPubKey()));
+        rejected(() -> SM2.sm2Encrypt(message, pair.getHexPubKey()));
       } else {
         assertEquals(
             message,

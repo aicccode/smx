@@ -4,6 +4,7 @@ import java.math.BigInteger;
 import site.aicc.sm2.ec.AbstractECCurve;
 import site.aicc.sm2.ec.AbstractECMultiplier;
 import site.aicc.sm2.ec.AbstractECPoint;
+import site.aicc.sm2.ec.DoubleAndAddMultiplier;
 import site.aicc.sm2.ec.FpCurve;
 import site.aicc.sm2.ec.Sm2Engine;
 import site.aicc.sm2.keygen.ECKeyPair;
@@ -18,6 +19,7 @@ public class SM2Initializer {
   private static final int FIELD_BITS = 256;
   private static final int PRIME_CERTAINTY = 64;
   private static final int MAX_USER_ID_BYTES = 8191;
+  private static final int MAX_WEAK_EMBEDDING_DEGREE = 100;
 
   private final BigInteger p;
   private final BigInteger a;
@@ -81,12 +83,37 @@ public class SM2Initializer {
       System.arraycopy(ConvertUtil.bigIntegerTo32Bytes(domain[i]), 0, domainBytes, i * 32, 32);
     }
     this.standardDomain = Sm2Engine.isStandardDomain(this.curve, this.g, this.n);
-    if (!this.standardDomain
-        && (!this.n.isProbablePrime(PRIME_CERTAINTY)
-            || !hasCofactorOne()
-            || !this.g.multiply(this.n).isInfinity())) {
+    if (!this.standardDomain && !isSoundCustomDomain()) {
       throw new IllegalArgumentException("Invalid SM2 domain parameters");
     }
+  }
+
+  /**
+   * The checks of SEC 1 for a custom domain, beyond those {@link FpCurve} makes of the field and
+   * the discriminant. n = p is an anomalous curve (logarithms fall to Smart's attack), and n
+   * dividing p^k - 1 for small k moves them to a small field (MOV). The order check runs on a
+   * built-in multiplier, so that a caller's multiplier cannot vouch for itself.
+   */
+  private boolean isSoundCustomDomain() {
+    if (this.n.equals(this.p)
+        || !this.n.isProbablePrime(PRIME_CERTAINTY)
+        || !hasCofactorOne()
+        || hasSmallEmbeddingDegree()) {
+      return false;
+    }
+    return new DoubleAndAddMultiplier().multiply(this.g, this.n).isInfinity();
+  }
+
+  private boolean hasSmallEmbeddingDegree() {
+    BigInteger power = BigInteger.ONE;
+    BigInteger field = this.p.mod(this.n);
+    for (int k = 1; k <= MAX_WEAK_EMBEDDING_DEGREE; k++) {
+      power = power.multiply(field).mod(this.n);
+      if (power.equals(BigInteger.ONE)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

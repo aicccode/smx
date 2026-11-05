@@ -3,7 +3,6 @@ package site.aicc.demo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
-import java.util.Map;
 import site.aicc.sm4.SM4;
 
 /** 加密解密API处理 - 双向加解密验证 */
@@ -50,10 +49,10 @@ public class CryptoHandler implements HttpHandler {
    * <p>Echoing the decrypted text, and answering differently when decryption fails, are what this
    * self-test exists to do, and in real traffic they would be a padding oracle.
    */
-  private String handleTest(Map<String, String> body) throws Exception {
-    String sessionId = DemoHttp.require(body, "sessionId");
-    String clientCiphertext = DemoHttp.require(body, "clientCiphertext");
-    String clientPlaintext = DemoHttp.require(body, "clientPlaintext");
+  private String handleTest(DemoHttp.Body body) throws Exception {
+    String sessionId = body.string("sessionId");
+    String clientCiphertext = body.string("clientCiphertext");
+    String clientPlaintext = body.string("clientPlaintext");
 
     System.out.println("Crypto test request received");
 
@@ -62,7 +61,7 @@ public class CryptoHandler implements HttpHandler {
       throw new DemoHttp.RequestException(500, "Session not found");
     }
 
-    if (!session.confirmed) {
+    if (!session.isConfirmed()) {
       throw new DemoHttp.RequestException(500, "Key exchange not confirmed");
     }
 

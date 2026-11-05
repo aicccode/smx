@@ -4,7 +4,6 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -108,22 +107,35 @@ public class KnownAnswerTest {
   }
 
   @Test
-  public void sm3FinishResetsAndKeepsEarlierResults() {
+  public void sm3NeverReturnsAStaleOrMissingDigest() {
     SM3 sm3 = new SM3();
-    assertNull(sm3.getHashCode());
-    assertNull(sm3.getHashBytes());
+    org.junit.Assert.assertThrows(IllegalStateException.class, sm3::getHashCode);
+    org.junit.Assert.assertThrows(IllegalStateException.class, sm3::getHashBytes);
     byte[] first = sm3.update("abc").finish().getHashBytes();
     String firstHex = sm3.getHashCode();
-    // An in-progress update does not disturb the published result.
+    assertTrue("reading twice gives one result", first == sm3.getHashBytes());
+    // New input makes the published result stale, so it can no longer be read.
     sm3.update("abc");
-    assertEquals(firstHex, sm3.getHashCode());
+    org.junit.Assert.assertThrows(IllegalStateException.class, sm3::getHashCode);
+    org.junit.Assert.assertThrows(IllegalStateException.class, sm3::getHashBytes);
     byte[] second = sm3.finish().getHashBytes();
+    assertEquals(firstHex, sm3.getHashCode());
     assertArrayEquals(first, second);
     assertTrue("each finish publishes a fresh array", first != second);
     first[0] ^= 1;
+    assertEquals(firstHex, sm3.getHashCode());
+    // Finish restarts: a second finish is the hash of the empty message, as documented.
     assertEquals(
         "1AB21D8355CFA17F8E61194831E81A8F22BEC8C728FEFB747ED035EB5082AA2B",
         sm3.finish().getHashCode());
+    SM3 into = new SM3().update("abc");
+    into.finish();
+    into.finishInto(new byte[32], 0);
+    org.junit.Assert.assertThrows(IllegalStateException.class, into::getHashCode);
+    SM3 copied = new SM3().update("abc");
+    copied.finish();
+    copied.copyFrom(new SM3());
+    org.junit.Assert.assertThrows(IllegalStateException.class, copied::getHashBytes);
   }
 
   private static void assertRejected(org.junit.function.ThrowingRunnable call) {
@@ -195,7 +207,7 @@ public class KnownAnswerTest {
       SM4 sm4 = new SM4().setKey(key, iv, hex);
       assertEquals(v[5], sm4.encrypt(message));
       assertEquals(message, sm4.decrypt(v[5]));
-      assertEquals(message, sm4.decrypt(v[5].toUpperCase()));
+      assertRejected(() -> sm4.decrypt(v[5].toUpperCase()));
     }
   }
 
@@ -230,6 +242,7 @@ public class KnownAnswerTest {
           ct.substring(2),
           "+" + ct.substring(1),
           null,
+          ct.toUpperCase(),
           ct.substring(0, 32)
         }) {
       IllegalArgumentException e =
@@ -287,9 +300,9 @@ public class KnownAnswerTest {
       "0409F9DF311E5421A150DD7D161E4BC5C672179FAD1833FC076BB08FF356F35020"
           + "CCEA490CE26775A52DC6EA718CC1AA600AED05FBF35E084A6632F6072DA9AD13";
   private static final String GBT_SIG =
-      "F5A03B0648D2C4630EEAC513E1BB81A15944DA3827D5B74143AC7EACEEE720B3"
+      "f5a03b0648d2c4630eeac513e1bb81a15944da3827d5b74143ac7eaceee720b3"
           + "h"
-          + "B1B6AA29DF212FD8763182BC0D421CA1BB9038FD1F7F42D4840B69C485BBC1AA";
+          + "b1b6aa29df212fd8763182bc0d421ca1bb9038fd1f7f42d4840b69c485bbc1aa";
 
   @Test
   public void sm2StandardSignatureVector() throws Exception {
@@ -382,7 +395,7 @@ public class KnownAnswerTest {
   @Test
   public void sm2EncryptDecryptRoundTripAndFormat() throws Exception {
     String d = GBT_D.toLowerCase();
-    assertNull(SM2.sm2Encrypt("", GBT_PUB));
+    assertRejected(() -> SM2.sm2Encrypt("", GBT_PUB));
     for (int len : new int[] {1, 31, 32, 33, 64, 65, 500}) {
       char[] chars = new char[len];
       Arrays.fill(chars, 'q');
@@ -444,7 +457,11 @@ public class KnownAnswerTest {
           r.toString(16) + "h0",
           GBT_SIG + "h",
           "+" + GBT_SIG.substring(1),
-          GBT_SIG.replace('h', 'H')
+          GBT_SIG.replace('h', 'H'),
+          GBT_SIG.toUpperCase(),
+          GBT_SIG.toUpperCase().replace('H', 'h'),
+          GBT_SIG.substring(0, 64).toUpperCase() + GBT_SIG.substring(64),
+          GBT_SIG + GBT_SIG
         }) {
       assertFalse(String.valueOf(bad), SM2.sm2VerifySign(id, bad, message, GBT_PUB));
     }
@@ -477,6 +494,10 @@ public class KnownAnswerTest {
     }
     assertRejected(() -> SM2.sm2Sign(id, message, "00" + nMinus1.toString(16)));
     assertRejected(() -> SM2.sm2Encrypt(null, GBT_PUB));
+    // Ciphertext hex has one spelling too; key hex stays case-insensitive.
+    String lowerCt = SM2.sm2Encrypt("x", GBT_PUB);
+    assertRejected(() -> SM2.sm2Decrypt(lowerCt.toUpperCase(), GBT_D));
+    assertEquals("x", SM2.sm2Decrypt(lowerCt, GBT_D.toUpperCase()));
     assertRejected(() -> SM2.sm2Encrypt("x", null));
     assertRejected(() -> SM2.sm2Encrypt("\uD800", GBT_PUB));
     // A key with the top bit set is read unsigned and signs under its true public key.
