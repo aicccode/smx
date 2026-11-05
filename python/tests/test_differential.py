@@ -22,6 +22,7 @@ from smx import (
 from smx import sm2 as sm2_module
 from smx import sm3 as sm3_module
 from smx import sm4 as sm4_module
+from smx._sm4_core import sub_bytes
 
 from . import ec_reference as ref
 
@@ -89,16 +90,6 @@ class FieldAndPointFormulas(unittest.TestCase):
         self.assertEqual(ref.from_jacobian(*same), ref.add(point, point))
         self.assertEqual(_ec.add_affine(jacobian, *ref.negate(point))[2], 0)
         self.assertEqual(_ec.add_affine(_ec.INFINITY, *point), (*point, 1))
-
-    def test_formulas_accept_unreduced_coordinates(self):
-        for value in EDGE_VALUES:
-            x, y = ref.G
-            shifted = (x + P, y + P, value % P or 1)
-            plain = (x, y, value % P or 1)
-            self.assertEqual(
-                ref.from_jacobian(*_ec.double(shifted)),
-                ref.from_jacobian(*_ec.double(plain)),
-            )
 
     def test_inversions(self):
         for modulus in (P, N):
@@ -322,25 +313,25 @@ class ScalarMultiplication(unittest.TestCase):
             expected = ref.multiply(ref.G, (t + t) % N)
             self.assertEqual(ref.from_jacobian(*_ec.mul_shamir(t, t, *ref.G)), expected)
 
-    def test_off_curve_results_match_baseline(self):
-        # Pinned from the baseline: these points fall outside the group of order n.
-        cases = (
-            (ECPoint(1, 1).multiply(5), OFF_CURVE_5),
-            (ECPoint(1, 1).multiply(2**256 + 3), OFF_CURVE_BIG),
-            (ECPoint(5, 7).twice(), OFF_CURVE_TWICE),
-            (ECPoint(5, 7).add(ECPoint(1, 1)), OFF_CURVE_ADD),
-            (ECPoint(ref.GX + P, ref.GY).multiply(3), THREE_G),
-            (ECPoint(ref.GX + P, ref.GY).multiply(N + 2), TWO_G),
-        )
-        for point, expected in cases:
-            self.assertEqual(point.to_hex_encoded(), expected)
-        self.assertTrue(ECPoint(3, 0).multiply(4).infinity)
-        self.assertTrue(ECPoint(3, 0).twice().infinity)
+    def test_off_curve_and_unreduced_points_are_refused(self):
+        for build in (
+            lambda: ECPoint(1, 1).multiply(5),
+            lambda: ECPoint(5, 7).twice(),
+            lambda: ECPoint(5, 7).add(ECPoint.generator()),
+            lambda: ECPoint.generator().add(ECPoint(5, 7)),
+            lambda: ECPoint.generator().subtract(ECPoint(5, 7)),
+            lambda: ECPoint(3, 0).twice(),
+            lambda: ECPoint(ref.GX + P, ref.GY),
+            lambda: ECPoint(-1, ref.GY),
+            lambda: ECPoint(1, 2, True),
+        ):
+            with self.assertRaises(ValueError):
+                build()
 
 
 class SignaturesAcrossCacheTiers(unittest.TestCase):
     def test_verify_cold_warm_and_hot(self):
-        sm2_module._clear_caches()
+        sm2_module.clear_key_caches()
         d = rand_scalar() % (N - 2) + 1
         public = sm2_get_public_key(d).to_hex_encoded()
         private = f"{d:064x}"
@@ -355,7 +346,7 @@ class SignaturesAcrossCacheTiers(unittest.TestCase):
             self.assertFalse(sm2_verify("id", forged, message, public))
 
     def test_public_key_cache_is_keyed_by_private_key(self):
-        sm2_module._clear_caches()
+        sm2_module.clear_key_caches()
         keys = [rand_scalar() % (N - 2) + 1 for _ in range(3)]
         for _ in range(2):
             for d in keys:
@@ -365,7 +356,7 @@ class SignaturesAcrossCacheTiers(unittest.TestCase):
         self.assertFalse(any(d in sm2_module._public_key_cache for d in keys))
 
     def test_public_key_cache_stays_bounded(self):
-        sm2_module._clear_caches()
+        sm2_module.clear_key_caches()
         for d in range(1, 2 * sm2_module._PUBLIC_KEY_CACHE_SIZE):
             sm2_module._public_key_of(d)
             self.assertLessEqual(
@@ -373,7 +364,7 @@ class SignaturesAcrossCacheTiers(unittest.TestCase):
             )
 
     def test_z_cache_returns_the_same_value_as_a_direct_computation(self):
-        sm2_module._clear_caches()
+        sm2_module.clear_key_caches()
         point = ECPoint(*rand_point())
         long_id = b"x" * (sm2_module._Z_CACHE_MAX_ID_LENGTH + 1)
         for identity in (b"", b"a", b"id" * 40, long_id):
@@ -479,13 +470,12 @@ class SM4Differential(unittest.TestCase):
                     cipher.encrypt_block(block), ref.sm4_block(block, keys)
                 )
 
-    def test_both_table_widths_match_the_reference(self):
+    def test_cbc_around_batch_sizes_matches_the_reference(self):
         key = b"0123456789abcdef"
         iv = b"fedcba9876543210"
         cipher = self.make(key, iv)
-        # Around the switch to the 16-bit tables, and small sizes below it.
-        limit = sm4_module._WIDE_TABLE_THRESHOLD
-        for size in (0, 1, 15, 16, 17, 2000, limit - 17, limit - 1, limit, limit + 16):
+        batch = sm4_module._BATCH_BLOCKS * 16
+        for size in (0, 1, 15, 16, 17, 2000, batch - 17, batch - 1, batch, batch + 16):
             text = "a" * size
             data = sm4_module.pkcs7_pad(text.encode())
             ciphertext = cipher.encrypt(text)
@@ -494,33 +484,48 @@ class SM4Differential(unittest.TestCase):
             )
             self.assertEqual(cipher.decrypt(ciphertext), text)
 
-    def test_table_functions_agree_with_and_without_chaining(self):
-        cipher = self.make(b"0123456789abcdef", b"fedcba9876543210")
-        blocks = [tuple(RNG.getrandbits(32) for _ in range(4)) for _ in range(50)] + [
-            (0, 0, 0, 0),
-            (0xFFFFFFFF,) * 4,
-        ]
-        for chain in (None, (1, 2, 3, 4), (0, 0, 0, 0)):
+    def test_parallel_blocks_match_single_blocks(self):
+        cipher = self.make(b"0123456789abcdef", bytes(16))
+        keys = cipher._keys[1]
+        for lanes in (1, 2, 3, 31, 32, 33, 64, 513):
+            data = bytes(RNG.getrandbits(8) for _ in range(16 * lanes))
+            if lanes == 3:
+                data = bytes(16) + b"\xff" * 16 + data[32:]
+            expected = b"".join(
+                cipher.decrypt_block(data[i : i + 16]) for i in range(0, len(data), 16)
+            )
+            self.assertEqual(sm4_module._decrypt_blocks(data, keys), expected, lanes)
             self.assertEqual(
-                sm4_module._crypt_words(blocks, cipher._encrypt_keys, chain),
-                sm4_module._crypt_words_wide(blocks, cipher._encrypt_keys, chain),
+                sm4_module._crypt_lanes(data, lanes, keys), expected, lanes
             )
 
-    def test_non_text_safe_plaintext_error_is_preserved(self):
+    def test_circuit_matches_the_standard_sbox_on_all_inputs(self):
+        for value in range(256):
+            self.assertEqual(sub_bytes(value, 1), ref.SBOX[value], value)
+        # Every byte position of a word, and several words in one integer.
+        for _ in range(500):
+            data = bytes(RNG.getrandbits(8) for _ in range(12))
+            expected = bytes(ref.SBOX[b] for b in data)
+            ones = int.from_bytes(b"\x01" * 12, "big")
+            result = sub_bytes(int.from_bytes(data, "big"), ones)
+            self.assertEqual(result.to_bytes(12, "big"), expected)
+
+    def test_invalid_utf8_gives_the_padding_error(self):
         cipher = self.make(b"0123456789abcdef", bytes(16))
         block = b"\xff" * 15 + b"\x01"
         ciphertext = cipher.encrypt_block(block).hex()
-        with self.assertRaises(UnicodeDecodeError):
+        with self.assertRaises(ValueError) as caught:
             cipher.decrypt(ciphertext)
+        self.assertEqual(str(caught.exception), "decryption failed")
+        self.assertIsNone(caught.exception.__context__)
 
 
 class Laziness(unittest.TestCase):
     def test_import_builds_no_curve_tables(self):
         code = (
-            "import smx, smx._ec as e, smx.sm4 as s\n"
+            "import smx, smx._ec as e\n"
             "assert e._generator_rows is None\n"
             "assert not e._generator_lookups and not e._generator_split_lookups\n"
-            "assert s._wide_tables is None\n"
         )
         root = Path(__file__).resolve().parents[1]
         subprocess.run([sys.executable, "-c", code], check=True, cwd=root)

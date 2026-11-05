@@ -1,44 +1,36 @@
 """SM4 block cipher (GB/T 32907-2016) with CBC mode and PKCS#7 padding.
 
-Speed comes from T-tables, which merge the S-box and the linear transform into
-key- and data-indexed lookups, as the baseline's S-box already was. Cache-timing
-caveat: every table index depends on secret data. Pure Python has no hardware or
-bitsliced alternative, and the interpreter gives no timing guarantee anyway, so
-do not rely on this module where an attacker can observe cache timing on the
-same machine. The 16-bit tables used for bulk data make this exposure larger.
+Security notes for callers:
+
+- **CBC gives confidentiality only, with no integrity.** An attacker can change a
+  ciphertext undetected, and any error a receiver reveals about a forged message can
+  become a decryption oracle. Authenticate the ciphertext separately (encrypt then
+  MAC, or a signature) and check that before calling :meth:`SM4.decrypt`.
+- **The IV is fixed by** :meth:`SM4.set_key` **and every** :meth:`SM4.encrypt` **call
+  reuses it**, so equal plaintexts give equal ciphertexts and a shared prefix shows.
+  Call ``set_key`` with a fresh random IV for each message, and send the IV along.
+- :meth:`SM4.encrypt_block` and :meth:`SM4.decrypt_block` are raw ECB building blocks.
+
+The S-box is a Boolean circuit (see :mod:`smx._sm4_core`), so no table is indexed by
+key or data. That removes the cache-timing channel of table lookups, at a large cost
+for serial work: key schedule and CBC encryption. CBC decryption runs many blocks
+through each gate at once and stays fast. CPython integers still take value-dependent
+time at a very fine scale, so this is not a constant-time guarantee.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from functools import lru_cache
 from struct import Struct
 
-from .hexutil import bytes_to_hex, hex_to_bytes
-from .sm3 import SM3
+from ._sm4_core import sub_bytes
+from .hexutil import as_bytes, bytes_to_hex, hex_to_bytes
 
 _MASK32 = 0xFFFFFFFF
 _BLOCK_SIZE = 16
-# Payload size from which building the 16-bit tables pays for itself.
-_WIDE_TABLE_THRESHOLD = 64 * 1024
-
-_SBOX = bytes.fromhex(
-    "d690e9fecce13db716b614c228fb2c05"
-    "2b679a762abe04c3aa44132649860699"
-    "9c4250f491ef987a33540b43edcfac62"
-    "e4b31ca9c908e89580df94fa758f3fa6"
-    "4707a7fcf37317ba83593c19e6854fa8"
-    "686b81b27164da8bf8eb0f4b70569d35"
-    "1e240e5e6358d1a225227c3b01217887"
-    "d40046579fd327524c3602e7a0c4c89e"
-    "eabf8ad240c738b5a3f7f2cef96115a1"
-    "e0ae5da49b341a55ad933230f58cb1e3"
-    "1df6e22e8266ca60c02923ab0d534e6f"
-    "d5db3745defd8e2f03ff6a726d6c5b51"
-    "8d1baf92bbddbc7f11d95c411f105ad8"
-    "0ac13188a5cd7bbd2d74d012b8e5b4b0"
-    "8969974a0c96777e65b9f109c56ec684"
-    "18f07dec3adc4d2079ee5f3ed7cb3948"
-)
+_KEY_SIZE = 16
+_BATCH_BLOCKS = 2048  # measured: larger batches gain little beyond this
+_BYTE_ONES = 0x01010101
 
 _FK = (0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC)
 
@@ -55,239 +47,297 @@ _CK = (
 
 _unpack_block = Struct(">4I").unpack
 _pack_block = Struct(">4I").pack
-_iter_blocks = Struct(">4I").iter_unpack
 
-_RoundKeys = tuple[tuple[int, int, int, int], ...]
-
-
-def _rotl(x: int, n: int) -> int:
-    return ((x << n) | (x >> (32 - n))) & _MASK32
-
-
-def _byte_tables(linear) -> tuple[tuple[int, ...], ...]:
-    """Tables mapping each input byte position through the S-box and ``linear``."""
-    low = tuple(linear(s) for s in _SBOX)
-    return (
-        tuple(_rotl(v, 24) for v in low),
-        tuple(_rotl(v, 16) for v in low),
-        tuple(_rotl(v, 8) for v in low),
-        low,
-    )
-
-
-_T0, _T1, _T2, _T3 = _byte_tables(
-    lambda b: b ^ _rotl(b, 2) ^ _rotl(b, 10) ^ _rotl(b, 18) ^ _rotl(b, 24)
-)
-_KEY_T0, _KEY_T1, _KEY_T2, _KEY_T3 = _byte_tables(
-    lambda b: b ^ _rotl(b, 13) ^ _rotl(b, 23)
-)
-
-_wide_tables: tuple[tuple[int, ...], tuple[int, ...]] | None = None
-
-
-def _get_wide_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Build the 16-bit tables (about 5 MB, about 10 ms) at the first bulk operation."""
-    global _wide_tables
-    tables = _wide_tables
-    if tables is None:
-        high = tuple(a ^ b for a in _T0 for b in _T1)
-        low = tuple(a ^ b for a in _T2 for b in _T3)
-        tables = _wide_tables = (high, low)
-    return tables
+_DECRYPT_ERROR = "decryption failed"
 
 
 def _expand_key(key: bytes) -> tuple[int, ...]:
-    t0, t1, t2, t3 = _KEY_T0, _KEY_T1, _KEY_T2, _KEY_T3
     a, b, c, d = _unpack_block(key)
-    a ^= 0xA3B1BAC6
-    b ^= 0x56AA3350
-    c ^= 0x677D9197
-    d ^= 0xB27022DC
+    a ^= _FK[0]
+    b ^= _FK[1]
+    c ^= _FK[2]
+    d ^= _FK[3]
     keys: list[int] = []
     for ck0, ck1, ck2, ck3 in zip(*[iter(_CK)] * 4):
-        x = b ^ c ^ d ^ ck0
-        a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = c ^ d ^ a ^ ck1
-        b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = d ^ a ^ b ^ ck2
-        c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = a ^ b ^ c ^ ck3
-        d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        y = sub_bytes(b ^ c ^ d ^ ck0, _BYTE_ONES)
+        a ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
+        y = sub_bytes(c ^ d ^ a ^ ck1, _BYTE_ONES)
+        b ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
+        y = sub_bytes(d ^ a ^ b ^ ck2, _BYTE_ONES)
+        c ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
+        y = sub_bytes(a ^ b ^ c ^ ck3, _BYTE_ONES)
+        d ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
         keys += (a, b, c, d)
     return tuple(keys)
 
 
-def _group_round_keys(keys: Sequence[int]) -> _RoundKeys:
+def _group_round_keys(keys) -> tuple[tuple[int, int, int, int], ...]:
     return tuple(zip(*[iter(keys)] * 4))
 
 
-def _crypt_block(block: bytes, round_keys: _RoundKeys) -> bytes:
-    if len(block) != _BLOCK_SIZE:
-        raise ValueError("block must be 16 bytes")
-    t0, t1, t2, t3 = _T0, _T1, _T2, _T3
-    a, b, c, d = _unpack_block(block)
+def _crypt_one(a, b, c, d, round_keys) -> tuple[int, int, int, int]:
+    """Run one block given as four words and return the output words."""
+    ones = _BYTE_ONES
     for k0, k1, k2, k3 in round_keys:
-        x = b ^ c ^ d ^ k0
-        a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = c ^ d ^ a ^ k1
-        b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = d ^ a ^ b ^ k2
-        c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        x = a ^ b ^ c ^ k3
-        d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-    return _pack_block(d, c, b, a)
+        y = sub_bytes(b ^ c ^ d ^ k0, ones)
+        a ^= (
+            y
+            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
+            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
+            ^ (y << 18 & 0xFFFC0000 | y >> 14)
+            ^ (y << 24 & 0xFF000000 | y >> 8)
+        )
+        y = sub_bytes(c ^ d ^ a ^ k1, ones)
+        b ^= (
+            y
+            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
+            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
+            ^ (y << 18 & 0xFFFC0000 | y >> 14)
+            ^ (y << 24 & 0xFF000000 | y >> 8)
+        )
+        y = sub_bytes(d ^ a ^ b ^ k2, ones)
+        c ^= (
+            y
+            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
+            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
+            ^ (y << 18 & 0xFFFC0000 | y >> 14)
+            ^ (y << 24 & 0xFF000000 | y >> 8)
+        )
+        y = sub_bytes(a ^ b ^ c ^ k3, ones)
+        d ^= (
+            y
+            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
+            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
+            ^ (y << 18 & 0xFFFC0000 | y >> 14)
+            ^ (y << 24 & 0xFF000000 | y >> 8)
+        )
+    return d, c, b, a
 
 
-def _crypt_words(
-    blocks: Iterable[tuple[int, int, int, int]],
-    round_keys: _RoundKeys,
-    chain: tuple[int, int, int, int] | None,
-) -> list[int]:
-    """Run blocks through the byte tables; with ``chain`` (an IV) apply CBC encryption."""
-    t0, t1, t2, t3 = _T0, _T1, _T2, _T3
-    output: list[int] = []
-    p0, p1, p2, p3 = chain or (0, 0, 0, 0)
-    for a, b, c, d in blocks:
-        a ^= p0
-        b ^= p1
-        c ^= p2
-        d ^= p3
-        for k0, k1, k2, k3 in round_keys:
-            x = b ^ c ^ d ^ k0
-            a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-            x = c ^ d ^ a ^ k1
-            b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-            x = d ^ a ^ b ^ k2
-            c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-            x = a ^ b ^ c ^ k3
-            d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
-        output += (d, c, b, a)
-        if chain:
-            p0, p1, p2, p3 = d, c, b, a
-    return output
-
-
-def _crypt_words_wide(
-    blocks: Iterable[tuple[int, int, int, int]],
-    round_keys: _RoundKeys,
-    chain: tuple[int, int, int, int] | None,
-) -> list[int]:
-    """Same as :func:`_crypt_words` with the 16-bit tables, for bulk data."""
-    high, low = _get_wide_tables()
-    output: list[int] = []
-    p0, p1, p2, p3 = chain or (0, 0, 0, 0)
-    for a, b, c, d in blocks:
-        a ^= p0
-        b ^= p1
-        c ^= p2
-        d ^= p3
-        for k0, k1, k2, k3 in round_keys:
-            x = b ^ c ^ d ^ k0
-            a ^= high[x >> 16] ^ low[x & 0xFFFF]
-            x = c ^ d ^ a ^ k1
-            b ^= high[x >> 16] ^ low[x & 0xFFFF]
-            x = d ^ a ^ b ^ k2
-            c ^= high[x >> 16] ^ low[x & 0xFFFF]
-            x = a ^ b ^ c ^ k3
-            d ^= high[x >> 16] ^ low[x & 0xFFFF]
-        output += (d, c, b, a)
-        if chain:
-            p0, p1, p2, p3 = d, c, b, a
-    return output
-
-
-def _crypt_bytes(
-    data: bytes, round_keys: _RoundKeys, chain: tuple[int, int, int, int] | None
-) -> bytes:
-    crypt = _crypt_words if len(data) < _WIDE_TABLE_THRESHOLD else _crypt_words_wide
-    words = crypt(_iter_blocks(data), round_keys, chain)
-    return Struct(f">{len(words)}I").pack(*words)
-
-
-def _prepare_key(material: bytes) -> bytes:
-    """Use 16-byte input directly; otherwise use the SM3 hex digest's first 16 chars.
-
-    The hex digest is uppercase and taken as ASCII, matching every other
-    language in this repository.
-    """
-    if len(material) == _BLOCK_SIZE:
-        return bytes(material)
+@lru_cache(maxsize=8)
+def _lane_masks(lanes: int) -> tuple[int, ...]:
+    """Masks for ``lanes`` 32-bit words held in one integer (public, by batch size)."""
+    repeat = ((1 << (32 * lanes)) - 1) // _MASK32
     return (
-        SM3().update(material).finish().hash_hex_upper()[:_BLOCK_SIZE].encode("ascii")
+        repeat,
+        _BYTE_ONES * repeat,
+        *(
+            part * repeat
+            for rotation in (2, 10, 18, 24)
+            for part in (_MASK32 << rotation & _MASK32, (1 << rotation) - 1)
+        ),
     )
+
+
+def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
+    """Run ``lanes`` independent blocks in parallel through every round.
+
+    Column i of the blocks becomes one integer, so one gate of the S-box circuit
+    works on every block. Rotations stay inside each 32-bit lane through masks.
+    """
+    repeat, ones, h2, l2, h10, l10, h18, l18, h24, l24 = _lane_masks(lanes)
+    columns = []
+    word_size = 4 * lanes
+    for word in range(4):
+        column = bytearray(word_size)
+        for byte in range(4):
+            column[byte::4] = data[4 * word + byte :: _BLOCK_SIZE]
+        columns.append(int.from_bytes(column, "big"))
+    a, b, c, d = columns
+    for k0, k1, k2, k3 in round_keys:
+        y = sub_bytes(b ^ c ^ d ^ k0 * repeat, ones)
+        a ^= (
+            y
+            ^ (y << 2 & h2 | y >> 30 & l2)
+            ^ (y << 10 & h10 | y >> 22 & l10)
+            ^ (y << 18 & h18 | y >> 14 & l18)
+            ^ (y << 24 & h24 | y >> 8 & l24)
+        )
+        y = sub_bytes(c ^ d ^ a ^ k1 * repeat, ones)
+        b ^= (
+            y
+            ^ (y << 2 & h2 | y >> 30 & l2)
+            ^ (y << 10 & h10 | y >> 22 & l10)
+            ^ (y << 18 & h18 | y >> 14 & l18)
+            ^ (y << 24 & h24 | y >> 8 & l24)
+        )
+        y = sub_bytes(d ^ a ^ b ^ k2 * repeat, ones)
+        c ^= (
+            y
+            ^ (y << 2 & h2 | y >> 30 & l2)
+            ^ (y << 10 & h10 | y >> 22 & l10)
+            ^ (y << 18 & h18 | y >> 14 & l18)
+            ^ (y << 24 & h24 | y >> 8 & l24)
+        )
+        y = sub_bytes(a ^ b ^ c ^ k3 * repeat, ones)
+        d ^= (
+            y
+            ^ (y << 2 & h2 | y >> 30 & l2)
+            ^ (y << 10 & h10 | y >> 22 & l10)
+            ^ (y << 18 & h18 | y >> 14 & l18)
+            ^ (y << 24 & h24 | y >> 8 & l24)
+        )
+    output = bytearray(lanes * _BLOCK_SIZE)
+    for word, column_value in enumerate((d, c, b, a)):
+        column = column_value.to_bytes(word_size, "big")
+        for byte in range(4):
+            output[4 * word + byte :: _BLOCK_SIZE] = column[byte::4]
+    return bytes(output)
+
+
+def _decrypt_blocks(data: bytes, round_keys) -> bytes:
+    """Decrypt whole blocks without chaining, in parallel batches."""
+    total = len(data) // _BLOCK_SIZE
+    if total == 1:
+        return _pack_block(*_crypt_one(*_unpack_block(data), round_keys))
+    parts = []
+    for start in range(0, total, _BATCH_BLOCKS):
+        lanes = min(_BATCH_BLOCKS, total - start)
+        chunk = data[start * _BLOCK_SIZE : (start + lanes) * _BLOCK_SIZE]
+        parts.append(_crypt_lanes(chunk, lanes, round_keys))
+    return b"".join(parts)
+
+
+def _require_16_bytes(value, name: str) -> bytes:
+    """Return ``value`` as bytes if it is a buffer of exactly 16 bytes."""
+    try:
+        data = as_bytes(value)
+    except TypeError:
+        data = b""
+    if len(data) != _KEY_SIZE:
+        raise ValueError(f"{name} must be exactly 16 bytes")
+    return data
 
 
 def pkcs7_pad(data: bytes) -> bytes:
     """Pad data to a multiple of the block size."""
+    data = as_bytes(data)
     pad_length = _BLOCK_SIZE - len(data) % _BLOCK_SIZE
     return data + bytes([pad_length]) * pad_length
 
 
 def pkcs7_unpad(data: bytes) -> bytes:
-    """Remove and validate PKCS#7 padding; empty input stays empty."""
-    if not data:
-        return b""
+    """Remove and validate PKCS#7 padding.
+
+    Every failure raises the same ValueError. The check always reads all of the last
+    block and has no branch on its content; only the final accept or reject branches.
+    """
+    data = as_bytes(data)
+    size = len(data)
+    if size == 0 or size % _BLOCK_SIZE != 0:
+        raise ValueError(_DECRYPT_ERROR)
     pad_length = data[-1]
-    if pad_length == 0 or pad_length > _BLOCK_SIZE or pad_length > len(data):
-        raise ValueError("invalid padding")
-    if data[-pad_length:] != bytes([pad_length]) * pad_length:
-        raise ValueError("invalid padding")
+    # Each term is 1 when its condition fails: pad_length is 0 or above the block size.
+    bad = ((pad_length - 1) >> 8) & 1
+    bad |= ((_BLOCK_SIZE - pad_length) >> 8) & 1
+    for offset in range(1, _BLOCK_SIZE + 1):
+        inside_padding = ((offset - pad_length - 1) >> 8) & 1
+        differs = (((data[-offset] ^ pad_length) + 255) >> 8) & 1
+        bad |= inside_padding & differs
+    if bad:
+        raise ValueError(_DECRYPT_ERROR)
     return data[:-pad_length]
 
 
 class SM4:
-    """SM4-CBC cipher. Call :meth:`set_key` before encrypting or decrypting."""
+    """SM4-CBC cipher. Call :meth:`set_key` before encrypting or decrypting.
+
+    See the module documentation: CBC has no integrity, and the IV stays the same for
+    every :meth:`encrypt` until the next :meth:`set_key`.
+    """
 
     def __init__(self) -> None:
-        self._encrypt_keys: _RoundKeys = ()
-        self._decrypt_keys: _RoundKeys = ()
-        self._iv = b""
-        self._iv_words = (0, 0, 0, 0)
+        # Replaced as one object, so another thread sees an old or a new key and IV
+        # together, never a mix of the two.
+        self._keys: tuple = ()
 
     def set_key(self, key: bytes, iv: bytes) -> None:
-        """Set the key and IV; values that are not 16 bytes are derived via SM3."""
-        keys = _expand_key(_prepare_key(key))
-        self._encrypt_keys = _group_round_keys(keys)
-        self._decrypt_keys = _group_round_keys(keys[::-1])
-        self._iv = _prepare_key(iv)
-        self._iv_words = _unpack_block(self._iv)
+        """Set the key and IV, each exactly 16 bytes; anything else raises ValueError."""
+        key_bytes = _require_16_bytes(key, "key")
+        iv_bytes = _require_16_bytes(iv, "iv")
+        expanded = _expand_key(key_bytes)
+        self._keys = (
+            _group_round_keys(expanded),
+            _group_round_keys(expanded[::-1]),
+            iv_bytes,
+        )
 
-    def _require_key(self) -> None:
-        if not self._encrypt_keys:
+    def _require_key(self) -> tuple:
+        keys = self._keys
+        if not keys:
             raise ValueError("key not set")
+        return keys
 
     def encrypt_block(self, block: bytes) -> bytes:
-        """Encrypt one raw 16-byte block without chaining or padding."""
-        self._require_key()
-        return _crypt_block(block, self._encrypt_keys)
+        """Encrypt one raw 16-byte block without chaining or padding (ECB)."""
+        keys = self._require_key()[0]
+        data = _require_16_bytes(block, "block")
+        return _pack_block(*_crypt_one(*_unpack_block(data), keys))
 
     def decrypt_block(self, block: bytes) -> bytes:
-        """Decrypt one raw 16-byte block without chaining or padding."""
-        self._require_key()
-        return _crypt_block(block, self._decrypt_keys)
+        """Decrypt one raw 16-byte block without chaining or padding (ECB)."""
+        keys = self._require_key()[1]
+        data = _require_16_bytes(block, "block")
+        return _pack_block(*_crypt_one(*_unpack_block(data), keys))
 
     def encrypt(self, plaintext: str) -> str:
-        """Encrypt a string (UTF-8) and return lowercase hex ciphertext."""
-        self._require_key()
-        padded = pkcs7_pad(plaintext.encode("utf-8"))
-        output = _crypt_bytes(padded, self._encrypt_keys, self._iv_words)
-        return bytes_to_hex(output)
+        """Encrypt a string (UTF-8) and return lowercase hex ciphertext.
+
+        CBC gives no integrity, and this reuses the IV of :meth:`set_key`.
+        """
+        keys, _, iv = self._require_key()
+        if not isinstance(plaintext, str):
+            raise TypeError("plaintext must be a string")
+        try:
+            encoded = plaintext.encode("utf-8")
+        except UnicodeEncodeError:
+            encoded = None
+        if encoded is None:
+            raise ValueError("plaintext is not valid text")
+        padded = pkcs7_pad(encoded)
+        p0, p1, p2, p3 = _unpack_block(iv)
+        words = Struct(f">{len(padded) // 4}I").unpack(padded)
+        output = []
+        for offset in range(0, len(words), 4):
+            p0, p1, p2, p3 = _crypt_one(
+                words[offset] ^ p0,
+                words[offset + 1] ^ p1,
+                words[offset + 2] ^ p2,
+                words[offset + 3] ^ p3,
+                keys,
+            )
+            output += (p0, p1, p2, p3)
+        return bytes_to_hex(Struct(f">{len(output)}I").pack(*output))
 
     def decrypt(self, ciphertext: str) -> str:
         """Decrypt hex ciphertext and return the UTF-8 plaintext.
 
-        Raises ValueError on malformed hex, bad length, bad padding or
-        plaintext that is not valid UTF-8.
+        Malformed hex, a bad length (including empty input), bad padding and
+        plaintext that is not valid UTF-8 all raise the same ValueError. CBC gives no
+        integrity, so authenticate the ciphertext first; UTF-8 decoding still takes
+        time that depends on the plaintext.
         """
-        self._require_key()
-        data = hex_to_bytes(ciphertext)
+        _, keys, iv = self._require_key()
+        if not isinstance(ciphertext, str):
+            raise TypeError("ciphertext must be a string")
+        try:
+            data = hex_to_bytes(ciphertext)
+        except ValueError:
+            data = b""
         size = len(data)
-        if size % _BLOCK_SIZE != 0:
-            raise ValueError("invalid ciphertext length")
-        if not size:
-            return ""
+        if size == 0 or size % _BLOCK_SIZE != 0:
+            raise ValueError(_DECRYPT_ERROR)
         # CBC decryption: P[i] = D(C[i]) ^ C[i-1], one big XOR after the block loop.
-        decrypted = _crypt_bytes(data, self._decrypt_keys, None)
-        shifted = self._iv + data[:-_BLOCK_SIZE]
+        decrypted = _decrypt_blocks(data, keys)
+        shifted = iv + data[:-_BLOCK_SIZE]
         plain = int.from_bytes(decrypted, "big") ^ int.from_bytes(shifted, "big")
-        return pkcs7_unpad(plain.to_bytes(size, "big")).decode("utf-8")
+        unpadded = pkcs7_unpad(plain.to_bytes(size, "big"))
+        # The exception must not be raised inside the handler: it would keep the
+        # plaintext in __context__, and its message quotes a plaintext byte.
+        try:
+            text = unpadded.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is None:
+            raise ValueError(_DECRYPT_ERROR)
+        return text

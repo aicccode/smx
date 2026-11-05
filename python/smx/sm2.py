@@ -10,12 +10,12 @@ import hashlib
 import hmac
 import secrets
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
 from . import _ec
-from .hexutil import bytes_to_hex, hex_to_bytes, hex_to_int
+from .hexutil import as_bytes, bytes_to_hex, hex_to_bytes, hex_to_int
 from .point import SM2_A, SM2_B, SM2_GX, SM2_GY, SM2_N, ECPoint
 from .sm3 import _BLOCK_SIZE, _IV, _digest, _finish_digest, compress_blocks
 
@@ -26,6 +26,13 @@ _TWO_POW_W = 1 << 127
 _W_MASK = _TWO_POW_W - 1
 _TAG_SB = 0x02
 _TAG_SA = 0x03
+_PRIVATE_KEY_HEX_LEN = 64
+_SIGNATURE_LEN = 129
+_MAX_RETRIES = 128  # each retry has a negligible chance of being needed at all
+_MAX_KDF_BYTES = (2**32 - 1) * _HASH_SIZE
+_MAX_USER_ID_BYTES = 8191  # ENTL is the bit length in 16 bits
+_MAX_EXCHANGE_KEY_BYTES = 1 << 20
+_DECRYPT_ERROR = "decryption failed"
 _Z_CURVE_PARAMETERS = b"".join(
     value.to_bytes(_HASH_SIZE, "big") for value in (SM2_A, SM2_B, SM2_GX, SM2_GY)
 )
@@ -43,10 +50,11 @@ class SM2KeySwapParams:
 
     sa: str = ""
     sb: str = ""
-    ka: str = ""
-    kb: str = ""
+    # The shared keys and the shared point are secret, so repr() must not show them.
+    ka: str = field(default="", repr=False)
+    kb: str = field(default="", repr=False)
     # typing.get_type_hints() cannot evaluate "X | None" on Python 3.9.
-    v: Optional[ECPoint] = None  # noqa: UP045
+    v: Optional[ECPoint] = field(default=None, repr=False)  # noqa: UP045
     za: bytes = b""
     zb: bytes = b""
     success: bool = False
@@ -54,7 +62,11 @@ class SM2KeySwapParams:
 
 
 def _random_scalar() -> int:
-    """Return a uniformly random integer in [1, n-1]."""
+    """Return a uniform integer in [1, n-1] from the operating system CSPRNG.
+
+    ``secrets.randbelow`` uses rejection sampling, so there is no modulo bias. A
+    failing OS generator raises OSError, and no other source is ever tried.
+    """
     return secrets.randbelow(SM2_N - 1) + 1
 
 
@@ -68,14 +80,51 @@ def _xor(left: bytes, right: bytes) -> bytes:
     return value.to_bytes(len(left), "big")
 
 
-def _clear_caches() -> None:
+def clear_key_caches() -> None:
     """Forget per-key cached values: Z values, public keys and point tables."""
     _cached_z.cache_clear()
     _public_key_cache.clear()
     _ec.clear_caches()
 
 
+def set_key_cache_enabled(enabled: bool) -> None:
+    """Turn the per-key caches on or off; turning them off also empties them.
+
+    They start on unless the environment variable SMX_DISABLE_KEY_CACHE is set.
+    """
+    if not isinstance(enabled, bool):
+        raise TypeError("enabled must be a bool")
+    _ec.key_cache_enabled = enabled
+    if not enabled:
+        clear_key_caches()
+
+
+def _encode_text(value: str, name: str) -> bytes:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    # The exception must not be raised inside the handler: UnicodeError keeps the
+    # whole text and quotes part of it.
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        encoded = None
+    if encoded is None:
+        raise ValueError(f"{name} is not valid text")
+    return encoded
+
+
+def _encode_user_id(user_id: str) -> bytes:
+    encoded = _encode_text(user_id, "user id")
+    if len(encoded) > _MAX_USER_ID_BYTES:
+        raise ValueError("user id too long")
+    return encoded
+
+
 def _parse_private_key(text: str) -> int:
+    if not isinstance(text, str):
+        raise TypeError("private key must be a hex string")
+    if len(text) != _PRIVATE_KEY_HEX_LEN:
+        raise ValueError("private key must be 64 hex digits")
     d = hex_to_int(text)
     if not 1 <= d <= SM2_N - 2:
         raise ValueError("private key out of range")
@@ -83,11 +132,21 @@ def _parse_private_key(text: str) -> int:
 
 
 def _is_usable_public_point(point: ECPoint) -> bool:
-    return not point.infinity and point.is_on_curve()
+    return isinstance(point, ECPoint) and point._is_valid_public()
+
+
+def _is_private_scalar(value: int) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= SM2_N - 2
+    )
 
 
 def _kdf(key_length: int, seed_parts: Iterable[bytes]) -> bytes:
     """GB/T 32918.4 KDF: concatenate SM3(seed || counter) for counters 1, 2, ..."""
+    if key_length > _MAX_KDF_BYTES:
+        raise ValueError("KDF output too long")
     seed = b"".join(seed_parts)
     blocks = (key_length + _HASH_SIZE - 1) // _HASH_SIZE
     # Only the block holding the counter changes, so absorb the whole blocks once.
@@ -106,14 +165,22 @@ def _kdf(key_length: int, seed_parts: Iterable[bytes]) -> bytes:
 
 def user_sm3_z(user_id: bytes, public_key: ECPoint) -> bytes:
     """Compute Z = SM3(ENTL || ID || a || b || Gx || Gy || x || y)."""
-    identity = bytes(user_id)
-    if len(identity) > _Z_CACHE_MAX_ID_LENGTH:
-        return _compute_z(identity, public_key.x, public_key.y)
-    return _cached_z(identity, public_key.x, public_key.y)
+    identity = as_bytes(user_id)
+    if len(identity) > _MAX_USER_ID_BYTES:
+        raise ValueError("user id too long")
+    if not _is_usable_public_point(public_key):
+        raise ValueError("invalid public key")
+    x, y = public_key.x, public_key.y
+    if not _ec.key_cache_enabled or len(identity) > _Z_CACHE_MAX_ID_LENGTH:
+        return _compute_z(identity, x, y)
+    z = _cached_z(identity, x, y)
+    if not _ec.key_cache_enabled:  # disabled by another thread during the call
+        _cached_z.cache_clear()
+    return z
 
 
 def _compute_z(user_id: bytes, x: int, y: int) -> bytes:
-    entl = (len(user_id) * 8) & 0xFFFF
+    entl = len(user_id) * 8  # at most 65528, as callers limit the length
     return _sm3(
         entl.to_bytes(2, "big"),
         user_id,
@@ -129,6 +196,8 @@ _cached_z = lru_cache(maxsize=256)(_compute_z)
 
 def _public_key_of(d: int) -> ECPoint:
     """Return [d]G, remembering it under a digest of the private key."""
+    if not _ec.key_cache_enabled:
+        return ECPoint.generator().multiply(d)
     key = hashlib.sha256(d.to_bytes(_HASH_SIZE, "big")).digest()
     public_key = _public_key_cache.get(key)
     if public_key is None:
@@ -136,33 +205,37 @@ def _public_key_of(d: int) -> ECPoint:
         if len(_public_key_cache) >= _PUBLIC_KEY_CACHE_SIZE:
             _public_key_cache.clear()
         _public_key_cache[key] = public_key
+        if not _ec.key_cache_enabled:  # disabled by another thread during the call
+            _public_key_cache.clear()
     return public_key
 
 
 def _message_digest(user_id: str, message: str, public_key: ECPoint) -> int:
-    z = user_sm3_z(user_id.encode("utf-8"), public_key)
-    return int.from_bytes(_sm3(z, message.encode("utf-8")), "big")
+    z = user_sm3_z(_encode_user_id(user_id), public_key)
+    return int.from_bytes(_sm3(z, _encode_text(message, "message")), "big")
 
 
 def sm2_gen_key_pair() -> tuple[str, str]:
     """Return ``(private_key_hex, public_key_hex)``; d is in [1, n-2]."""
-    while True:
+    for _ in range(_MAX_RETRIES):
         d = _random_scalar()
         if d <= SM2_N - 2:
             return f"{d:064X}", ECPoint.generator().multiply(d).to_hex_encoded()
+    raise ValueError("could not generate a key")
 
 
 def sm2_encrypt(plaintext: str, public_key: str) -> str:
     """Encrypt a UTF-8 string and return ``C1 || C3 || C2`` as lowercase hex."""
-    message = plaintext.encode("utf-8")
+    message = _encode_text(plaintext, "plaintext")
     if not message:
         raise ValueError("plaintext cannot be empty")
+    if len(message) > _MAX_KDF_BYTES:
+        raise ValueError("plaintext too long")
 
+    # Decoding has already rejected anything that is not a usable public key.
     point = ECPoint.from_hex_encoded(public_key)
-    if not _is_usable_public_point(point):
-        raise ValueError("invalid public key")
 
-    while True:
+    for _ in range(_MAX_RETRIES):
         k = _random_scalar()
         c1 = ECPoint.generator().multiply(k)
         p2 = point._multiply_cached(k)
@@ -176,29 +249,46 @@ def sm2_encrypt(plaintext: str, public_key: str) -> str:
         c2 = _xor(message, key)
         c3 = _sm3(p2.x_bytes(), message, p2.y_bytes())
         return c1.to_hex_encoded() + bytes_to_hex(c3) + bytes_to_hex(c2)
+    raise ValueError("encryption failed")
 
 
 def sm2_decrypt(ciphertext: str, private_key: str) -> str:
-    """Decrypt ``C1 || C3 || C2`` hex; raises ValueError if verification fails."""
-    if len(ciphertext) < _C1_HEX_LEN + _C3_HEX_LEN:
-        raise ValueError("ciphertext too short")
+    """Decrypt ``C1 || C3 || C2`` hex; raises ValueError if verification fails.
+
+    Malformed input can raise different messages, but everything that depends on
+    the private key raises the same one.
+    """
+    if not isinstance(ciphertext, str):
+        raise TypeError("ciphertext must be a hex string")
+    # C2 holds at least one byte, as encryption refuses an empty plaintext.
+    if len(ciphertext) < _C1_HEX_LEN + _C3_HEX_LEN + 2 or len(ciphertext) % 2:
+        raise ValueError("invalid ciphertext length")
 
     c1 = ECPoint.from_hex_encoded(ciphertext[:_C1_HEX_LEN])
-    if not _is_usable_public_point(c1):
-        raise ValueError("invalid C1 point")
-
     c3 = hex_to_bytes(ciphertext[_C1_HEX_LEN : _C1_HEX_LEN + _C3_HEX_LEN])
     c2 = hex_to_bytes(ciphertext[_C1_HEX_LEN + _C3_HEX_LEN :])
+    if len(c2) > _MAX_KDF_BYTES:
+        raise ValueError("invalid ciphertext length")
 
     p2 = c1.multiply(_parse_private_key(private_key))
     if p2.infinity:
-        raise ValueError("invalid decryption")
+        raise ValueError(_DECRYPT_ERROR)
 
     key = _kdf(len(c2), (p2.x_bytes(), p2.y_bytes()))
+    if not any(key):
+        raise ValueError(_DECRYPT_ERROR)
     message = _xor(c2, key)
     if not hmac.compare_digest(_sm3(p2.x_bytes(), message, p2.y_bytes()), c3):
-        raise ValueError("decryption verification failed")
-    return message.decode("utf-8")
+        raise ValueError(_DECRYPT_ERROR)
+    # The exception must not be raised inside the handler: it would keep the plaintext
+    # in __context__, and its message quotes a plaintext byte.
+    try:
+        text = message.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is None:
+        raise ValueError(_DECRYPT_ERROR)
+    return text
 
 
 def sm2_sign(user_id: str, message: str, private_key: str) -> str:
@@ -207,7 +297,7 @@ def sm2_sign(user_id: str, message: str, private_key: str) -> str:
     e = _message_digest(user_id, message, _public_key_of(d))
     d_plus_1_inv = _ec.invert_blinded(d + 1, SM2_N)
 
-    while True:
+    for _ in range(_MAX_RETRIES):
         k = _random_scalar()
         x1 = ECPoint.generator().multiply(k).x
         r = (e + x1) % SM2_N
@@ -217,29 +307,30 @@ def sm2_sign(user_id: str, message: str, private_key: str) -> str:
         if s == 0:
             continue
         return f"{r:064x}h{s:064x}"
+    raise ValueError("signing failed")
 
 
-def _parse_signature(signature: str) -> tuple[int, int] | None:
-    parts = signature.split("h")
-    if len(parts) != 2:
+def _parse_signature(signature: str) -> Optional[tuple[int, int]]:  # noqa: UP045
+    if len(signature) != _SIGNATURE_LEN or signature[64] != "h":
         return None
     try:
-        return hex_to_int(parts[0]), hex_to_int(parts[1])
+        return hex_to_int(signature[:64]), hex_to_int(signature[65:])
     except ValueError:
         return None
 
 
 def sm2_verify(user_id: str, signature: str, message: str, public_key: str) -> bool:
-    """Verify a signature.
-
-    A malformed or invalid signature, or a point that is not a usable public
-    key, returns False. A public key that cannot be decoded raises ValueError.
-    """
-    point = ECPoint.from_hex_encoded(public_key)
-    parsed = _parse_signature(signature)
-    if parsed is None or not _is_usable_public_point(point):
+    """Verify a signature. Any invalid input of any kind returns False."""
+    if not (
+        isinstance(user_id, str)
+        and isinstance(signature, str)
+        and isinstance(message, str)
+        and isinstance(public_key, str)
+    ):
         return False
-
+    parsed = _parse_signature(signature)
+    if parsed is None:
+        return False
     r, s = parsed
     if not (1 <= r < SM2_N and 1 <= s < SM2_N):
         return False
@@ -248,7 +339,11 @@ def sm2_verify(user_id: str, signature: str, message: str, public_key: str) -> b
     if t == 0:
         return False
 
-    e = _message_digest(user_id, message, point)
+    try:
+        point = ECPoint.from_hex_encoded(public_key)
+        e = _message_digest(user_id, message, point)
+    except ValueError:
+        return False
     result = _ec.to_affine_public(_ec.mul_shamir(s, t, point.x, point.y))
     if result is None:
         return False
@@ -282,8 +377,25 @@ def _create_s(
 
 
 def _require_key_length(byte_len: int) -> None:
-    if byte_len <= 0:
-        raise ValueError("key length must be positive")
+    if (
+        not isinstance(byte_len, int)
+        or isinstance(byte_len, bool)
+        or not 1 <= byte_len <= _MAX_EXCHANGE_KEY_BYTES
+    ):
+        raise ValueError("key length must be between 1 and 1048576")
+
+
+def _encode_ids(id_a: str, id_b: str) -> Optional[tuple[bytes, bytes]]:  # noqa: UP045
+    try:
+        return _encode_user_id(id_a), _encode_user_id(id_b)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_hash_value(value: bytes) -> bool:
+    return isinstance(value, (bytes, bytearray, memoryview)) and (
+        len(as_bytes(value)) == _HASH_SIZE
+    )
 
 
 def sm2_get_sb(
@@ -297,20 +409,33 @@ def sm2_get_sb(
     id_a: str,
     id_b: str,
 ) -> SM2KeySwapParams:
-    """Compute responder B's shared key Kb and confirmation value Sb."""
+    """Compute responder B's shared key Kb and confirmation value Sb.
+
+    A key length outside 1 to 1 MiB raises ValueError. Every other invalid input
+    returns a result with ``success=False``.
+    """
     _require_key_length(byte_len)
     if not _is_usable_public_point(p_a):
         return SM2KeySwapParams(message="PA point is not on curve")
     if not _is_usable_public_point(r_a):
         return SM2KeySwapParams(message="RA point is not on curve")
+    if not _is_usable_public_point(p_b):
+        return SM2KeySwapParams(message="PB point is not on curve")
+    if not _is_usable_public_point(r_b):
+        return SM2KeySwapParams(message="RB point is not on curve")
+    if not (_is_private_scalar(d_b) and _is_private_scalar(rb)):
+        return SM2KeySwapParams(message="private key out of range")
+    ids = _encode_ids(id_a, id_b)
+    if ids is None:
+        return SM2KeySwapParams(message="invalid user id")
 
     tb = _calc_t(rb, d_b, _calc_x(r_b.x))
     v = _calc_point(tb, _calc_x(r_a.x), p_a, r_a)
     if v.infinity:
         return SM2KeySwapParams(message="V is point at infinity")
 
-    za = user_sm3_z(id_a.encode("utf-8"), p_a)
-    zb = user_sm3_z(id_b.encode("utf-8"), p_b)
+    za = user_sm3_z(ids[0], p_a)
+    zb = user_sm3_z(ids[1], p_b)
     kb = _kdf(byte_len, (v.x_bytes(), v.y_bytes(), za, zb))
     sb = _create_s(_TAG_SB, v, za, zb, r_a, r_b)
     return SM2KeySwapParams(
@@ -330,21 +455,36 @@ def sm2_get_sa(
     id_b: str,
     sb: bytes,
 ) -> SM2KeySwapParams:
-    """Verify B's Sb, then compute initiator A's shared key Ka and value Sa."""
+    """Verify B's Sb, then compute initiator A's shared key Ka and value Sa.
+
+    A key length outside 1 to 1 MiB raises ValueError. Every other invalid input
+    returns a result with ``success=False``.
+    """
     _require_key_length(byte_len)
     if not _is_usable_public_point(p_b):
         return SM2KeySwapParams(message="PB point is not on curve")
     if not _is_usable_public_point(r_b):
         return SM2KeySwapParams(message="RB point is not on curve")
+    if not _is_usable_public_point(p_a):
+        return SM2KeySwapParams(message="PA point is not on curve")
+    if not _is_usable_public_point(r_a):
+        return SM2KeySwapParams(message="RA point is not on curve")
+    if not (_is_private_scalar(d_a) and _is_private_scalar(ra)):
+        return SM2KeySwapParams(message="private key out of range")
+    ids = _encode_ids(id_a, id_b)
+    if ids is None:
+        return SM2KeySwapParams(message="invalid user id")
+    if not _is_hash_value(sb):
+        return SM2KeySwapParams(message="B's verification value does not match")
 
     ta = _calc_t(ra, d_a, _calc_x(r_a.x))
     u = _calc_point(ta, _calc_x(r_b.x), p_b, r_b)
     if u.infinity:
         return SM2KeySwapParams(message="U is point at infinity")
 
-    za = user_sm3_z(id_a.encode("utf-8"), p_a)
-    zb = user_sm3_z(id_b.encode("utf-8"), p_b)
-    if not hmac.compare_digest(_create_s(_TAG_SB, u, za, zb, r_a, r_b), sb):
+    za = user_sm3_z(ids[0], p_a)
+    zb = user_sm3_z(ids[1], p_b)
+    if not hmac.compare_digest(_create_s(_TAG_SB, u, za, zb, r_a, r_b), as_bytes(sb)):
         return SM2KeySwapParams(message="B's verification value does not match")
 
     ka = _kdf(byte_len, (u.x_bytes(), u.y_bytes(), za, zb))
@@ -355,8 +495,18 @@ def sm2_get_sa(
 def sm2_check_sa(
     v: ECPoint, za: bytes, zb: bytes, r_a: ECPoint, r_b: ECPoint, sa: bytes
 ) -> bool:
-    """Verify A's confirmation value Sa on B's side."""
-    return hmac.compare_digest(_create_s(_TAG_SA, v, za, zb, r_a, r_b), sa)
+    """Verify A's confirmation value Sa on B's side. Invalid input returns False."""
+    if not (
+        _is_usable_public_point(v)
+        and _is_usable_public_point(r_a)
+        and _is_usable_public_point(r_b)
+        and _is_hash_value(za)
+        and _is_hash_value(zb)
+        and _is_hash_value(sa)
+    ):
+        return False
+    expected = _create_s(_TAG_SA, v, as_bytes(za), as_bytes(zb), r_a, r_b)
+    return hmac.compare_digest(expected, as_bytes(sa))
 
 
 def sm2_decode_point(text: str) -> ECPoint:
@@ -365,5 +515,7 @@ def sm2_decode_point(text: str) -> ECPoint:
 
 
 def sm2_get_public_key(private_key: int) -> ECPoint:
-    """Compute the public key point for a private key integer."""
+    """Compute the public key for a private key integer in [1, n-2]."""
+    if not _is_private_scalar(private_key):
+        raise ValueError("private key out of range")
     return ECPoint.generator().multiply(private_key)

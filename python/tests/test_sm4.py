@@ -11,16 +11,14 @@ def make_cipher(key: bytes, iv: bytes) -> SM4:
 
 
 class SM4Test(unittest.TestCase):
-    def test_hashed_key_vector_shared_by_all_languages(self):
-        # Keys and IVs that are not 16 bytes go through SM3 (uppercase hex prefix).
-        sm4 = make_cipher(b"this is the key", b"this is the iv")
-        plaintext = "国密SM4对称加密算法"
-        ciphertext = sm4.encrypt(plaintext)
-        self.assertEqual(
-            ciphertext,
-            "09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc",
-        )
-        self.assertEqual(sm4.decrypt(ciphertext), plaintext)
+    def test_keys_and_ivs_of_other_sizes_are_rejected(self):
+        # These used to be hashed through SM3 down to 64 bits of entropy.
+        for key, iv in (
+            (b"this is the key", bytes(16)),
+            (bytes(16), b"this is the iv"),
+        ):
+            with self.assertRaises(ValueError):
+                make_cipher(key, iv)
 
     def test_raw_16_byte_key_vector_generated_by_go(self):
         sm4 = make_cipher(b"0123456789abcdef", bytes(16))
@@ -50,9 +48,11 @@ class SM4Test(unittest.TestCase):
         sm4 = make_cipher(b"0123456789abcdef", bytes(16))
         self.assertEqual(sm4.encrypt("same"), sm4.encrypt("same"))
 
-    def test_empty_ciphertext_decrypts_to_empty_string(self):
+    def test_empty_ciphertext_is_rejected(self):
+        # A valid ciphertext always holds at least the padding block.
         sm4 = make_cipher(b"0123456789abcdef", bytes(16))
-        self.assertEqual(sm4.decrypt(""), "")
+        with self.assertRaises(ValueError):
+            sm4.decrypt("")
 
     def test_decrypt_rejects_malformed_ciphertext(self):
         sm4 = make_cipher(b"0123456789abcdef", bytes(16))
@@ -82,8 +82,12 @@ class SM4Test(unittest.TestCase):
         self.assertEqual(pkcs7_pad(b""), bytes([16]) * 16)
         self.assertEqual(pkcs7_pad(b"a" * 15), b"a" * 15 + b"\x01")
         self.assertEqual(pkcs7_unpad(pkcs7_pad(b"abc")), b"abc")
-        self.assertEqual(pkcs7_unpad(b""), b"")
-        for bad in (b"a" * 15 + b"\x00", b"a" * 15 + b"\x11", b"a" * 14 + b"\x01\x02"):
+        for bad in (
+            b"",
+            b"a" * 15 + b"\x00",
+            b"a" * 15 + b"\x11",
+            b"a" * 14 + b"\x01\x02",
+        ):
             with self.assertRaises(ValueError):
                 pkcs7_unpad(bad)
 

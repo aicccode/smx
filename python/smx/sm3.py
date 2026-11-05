@@ -7,6 +7,7 @@ from struct import Struct
 from ._sm3_core import compress_blocks
 
 _BLOCK_SIZE = 64
+_MAX_MESSAGE_BYTES = 2**61 - 1  # the padded length field holds 64 bits
 _IV = (
     0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600,
     0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E,
@@ -35,7 +36,10 @@ def _digest(data: bytes) -> bytes:
 
 
 class SM3:
-    """Incremental SM3 hash; the instance resets itself after :meth:`finish`."""
+    """Incremental SM3 hash; the instance resets itself after :meth:`finish`.
+
+    An instance holds mutable state, so do not share one between threads.
+    """
 
     def __init__(self) -> None:
         self._state = _IV
@@ -44,12 +48,18 @@ class SM3:
         self._digest = b""
 
     def update(self, data: bytes) -> SM3:
-        """Feed bytes into the hash."""
-        self._length += len(data)
+        """Feed bytes into the hash.
+
+        Accepts any buffer object and counts its size in bytes. Raises ValueError
+        beyond 2**61 - 1 bytes in total, leaving the hash state unchanged.
+        """
         view = memoryview(data)
-        if view.format != "B" or view.ndim != 1:
-            view = view.cast("B")
+        if view.format != "B" or view.ndim != 1 or not view.contiguous:
+            view = memoryview(view.tobytes())
         size = view.nbytes
+        if self._length + size > _MAX_MESSAGE_BYTES:
+            raise ValueError("message too long for SM3")
+        self._length += size
         start = 0
         buffer = self._buffer
         if buffer:
@@ -69,6 +79,8 @@ class SM3:
 
     def update_byte(self, value: int) -> SM3:
         """Feed a single byte (0-255) into the hash."""
+        if self._length + 1 > _MAX_MESSAGE_BYTES:
+            raise ValueError("message too long for SM3")
         buffer = self._buffer
         buffer.append(value)
         self._length += 1
@@ -79,10 +91,8 @@ class SM3:
 
     def finish(self) -> SM3:
         """Apply padding, store the digest and reset for reuse."""
-        bit_length = self._length * 8
-        zeros = (55 - self._length) % _BLOCK_SIZE
-        self.update(b"\x80" + bytes(zeros) + bit_length.to_bytes(8, "big"))
-        self._digest = _pack_digest(*self._state)
+        self._digest = _finish_digest(self._state, bytes(self._buffer), self._length)
+        self._buffer.clear()
         self._state = _IV
         self._length = 0
         return self

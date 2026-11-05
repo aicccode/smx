@@ -160,7 +160,9 @@ def main() -> int:
 
     print(f"python {sys.version.split()[0]}; smx from {Path(smx.__file__).parent}")
     print(f"import smx: {(perf_counter() - start) * 1e3:.2f} ms")
-    clear_caches = getattr(smx.sm2, "_clear_caches", lambda: None)
+    clear_caches = getattr(
+        smx, "clear_key_caches", getattr(smx.sm2, "_clear_caches", lambda: None)
+    )
 
     results: dict[str, float] = {}
     groups = (sm3_cases(smx), sm4_cases(smx), sm2_cases(smx, clear_caches))

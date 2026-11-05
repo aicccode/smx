@@ -39,7 +39,8 @@ class ECPointTest(unittest.TestCase):
     def test_encode_decode(self):
         self.assertEqual(ECPoint.from_encoded(G.to_encoded()), G)
         self.assertEqual(ECPoint.from_hex_encoded(G.to_hex_encoded()), G)
-        self.assertTrue(ECPoint.from_encoded(b"").infinity)
+        with self.assertRaises(ValueError):
+            ECPoint.from_encoded(b"")
         self.assertEqual(ECPoint.at_infinity().to_encoded(), b"\x00")
 
     def test_decode_rejects_malformed_input(self):

@@ -213,8 +213,7 @@ class SignatureTest(unittest.TestCase):
         self.assertFalse(sm2_verify(ID_A, signature, "x", off_curve))
         # An empty key decodes to infinity; it must not be usable as a key.
         self.assertFalse(sm2_verify(ID_A, signature, "x", ""))
-        with self.assertRaises(ValueError):
-            sm2_verify(ID_A, signature, "x", "04abc")
+        self.assertFalse(sm2_verify(ID_A, signature, "x", "04abc"))
 
     def test_sign_rejects_private_key_that_has_no_inverse(self):
         # d = n - 1 makes (1 + d) non-invertible.

@@ -9,15 +9,17 @@ Multiplication, ``%``, ``&`` and object allocation all take time that can depend
 on the values. What this module does for secret scalars is remove what it can
 control: no branch and no table index depends on the scalar (apart from a branch
 that a random scalar reaches with negligible probability), the whole table is read
-for each digit, and Z is blinded before the variable-time inversion. That raises
-the bar and does not make the code constant-time. Do not use this library where an
-attacker can take precise timing or cache measurements of the process.
+for each digit, dividends are kept non-negative, and Z is blinded before the
+variable-time inversion. That raises the bar and does not make the code constant-time.
+Do not use this library where an attacker can take precise timing or cache measurements
+of the process.
 
 ``mul_public`` and ``mul_shamir`` are variable time and are only for public scalars.
 """
 
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Sequence
 from functools import lru_cache
@@ -57,6 +59,13 @@ _SELECT_LEVELS = tuple(
     )
     for level in range(_WINDOW - 2, -1, -1)
 )
+
+# Masks for choosing y or p - y. Both have the same size, and both are always used.
+_SIGN_MASKS = (1 << 256, (1 << 257) - 1)
+_THREE_P = 3 * P
+_EIGHT_P = 8 * P
+_P_SQUARED = P * P
+_EIGHT_P_SQUARED = 8 * P * P
 
 _G_WNAF_WINDOW = 8
 _P_WNAF_WINDOW = 6  # uses the same 1P..31P as the secret-scalar table
@@ -152,7 +161,8 @@ def batch_to_affine(points: Sequence[Jacobian]) -> list[Affine]:
 def _odd_multiples(x: int, y: int, count: int) -> list[Jacobian]:
     """Return 1P, 3P, ..., (2*count - 1)P as Jacobian points."""
     twice = to_affine_public(double((x, y, 1)))
-    assert twice is not None  # P has odd prime order
+    if twice is None:
+        raise ValueError("point is not in the group of order n")
     x2, y2 = twice
     current: Jacobian = (x, y, 1)
     multiples = [current]
@@ -187,15 +197,15 @@ def _recode(k: int) -> int:
     Reading A in base 32 gives digits a_i for which d_i = 2*a_i - 31 is odd and
     non-zero, and k' = sum(d_i * 32**i). No digit needs a carry or a branch.
     """
-    return (k + N * (~k & 1) + _RECODE_OFFSET) >> 1
+    # Multiplying by 1 or 2 rather than 0 or 1, because CPython returns early for 0.
+    return (k + N * ((~k & 1) + 1) - N + _RECODE_OFFSET) >> 1
 
 
 def mul_double_and_add(x: int, y: int, k: int) -> Jacobian:
-    """Compute [k]P for any point and any k > 0. Variable time, handles every case.
+    """Compute [k]P for any k > 0. Variable time, handles every case.
 
-    Off-curve input can only reach this function through ``ECPoint.multiply``, and
-    every sm2_* function rejects off-curve points first. It is also the fallback
-    for the exceptional scalars of the two fixed-window functions below.
+    This is only the fallback for the one exceptional scalar of each of the two
+    fixed-window functions below.
     """
     result = INFINITY
     for i in range(k.bit_length() - 1, -1, -1):
@@ -239,8 +249,11 @@ def mul_generator(k: int) -> Jacobian:
         rows = _generator_rows = _build_generator_rows()
 
     p = P
+    p_squared = _P_SQUARED
+    three_p = _THREE_P
     coord_mask = _COORD_MASK
     sentinel = 1 << 256
+    sign_masks = _SIGN_MASKS
     index_mask = _INDEX_MASK
     window = _WINDOW
     window_mask = _WINDOW_MASK
@@ -254,20 +267,21 @@ def mul_generator(k: int) -> Jacobian:
         positive = digit >> top_bit
         lane = _select(table, (digit ^ (positive - 1)) & index_mask)
         x2 = lane >> 256 ^ sentinel
-        y2 = (lane & coord_mask) * (2 * positive - 1)
-        if z1 == 0:
-            x1, y1, z1 = x2, y2 % p, 1
+        y2 = lane & coord_mask
+        y2 = y2 & sign_masks[positive] | (p - y2) & sign_masks[1 - positive]
+        if z1 == 0:  # the first row; this depends only on the position
+            x1, y1, z1 = x2, y2, 1
             continue
         z1z1 = z1 * z1 % p
-        h = (x2 * z1z1 - x1) % p
+        h = (x2 * z1z1 + p - x1) % p
         if h == 0:
             return mul_double_and_add(GX, GY, k)
-        r = (y2 * (z1 * z1z1 % p) - y1) % p
+        r = (y2 * (z1 * z1z1 % p) + p - y1) % p
         hh = h * h % p
         hhh = hh * h % p
         x1hh = x1 * hh % p
-        x3 = (r * r - hhh - 2 * x1hh) % p
-        y1 = (r * (x1hh - x3) - y1 * hhh) % p
+        x3 = (r * r + three_p - hhh - 2 * x1hh) % p
+        y1 = (r * (x1hh + p - x3) + p_squared - y1 * hhh) % p
         x1 = x3
         z1 = z1 * h % p
     return x1, y1, z1
@@ -302,9 +316,23 @@ class _KeyTables:
 
 
 @lru_cache(maxsize=32)
+def _remembered_key_tables(x: int, y: int) -> _KeyTables:
+    return _KeyTables(x, y)
+
+
+# Per-key caches are on unless the environment variable turns them off. Any non-empty
+# value other than "0" disables them, so a mistyped "true" still fails safe.
+key_cache_enabled = os.environ.get("SMX_DISABLE_KEY_CACHE", "") in ("", "0")
+
+
 def cached_key_tables(x: int, y: int) -> _KeyTables:
     """Return the tables of a public key. Never pass a secret point here."""
-    return _KeyTables(x, y)
+    if not key_cache_enabled:
+        return _KeyTables(x, y)
+    tables = _remembered_key_tables(x, y)
+    if not key_cache_enabled:  # disabled by another thread during the call
+        _remembered_key_tables.cache_clear()
+    return tables
 
 
 def mul_point(x: int, y: int, k: int) -> Jacobian:
@@ -322,8 +350,13 @@ def mul_point_with_table(x: int, y: int, k: int, table: int) -> Jacobian:
     result.
     """
     p = P
+    p_squared = _P_SQUARED
+    three_p = _THREE_P
+    eight_p = _EIGHT_P
+    eight_p_squared = _EIGHT_P_SQUARED
     sentinel = 1 << 256
     coord_mask = _COORD_MASK
+    sign_masks = _SIGN_MASKS
     index_mask = _INDEX_MASK
     window_mask = _WINDOW_MASK
     top_bit = _WINDOW - 1
@@ -334,7 +367,8 @@ def mul_point_with_table(x: int, y: int, k: int, table: int) -> Jacobian:
     positive = digit >> top_bit
     lane = _select(table, (digit ^ (positive - 1)) & index_mask)
     x1 = lane >> 256 ^ sentinel
-    y1 = (lane & coord_mask) * (2 * positive - 1) % p
+    y2 = lane & coord_mask
+    y1 = y2 & sign_masks[positive] | (p - y2) & sign_masks[1 - positive]
     z1 = 1
 
     for shift in range(top_shift - _WINDOW, -1, -_WINDOW):
@@ -342,27 +376,28 @@ def mul_point_with_table(x: int, y: int, k: int, table: int) -> Jacobian:
             delta = z1 * z1 % p
             gamma = y1 * y1 % p
             beta = x1 * gamma % p
-            alpha = 3 * (x1 - delta) * (x1 + delta) % p
+            alpha = 3 * (x1 + p - delta) * (x1 + delta) % p
             z1 = 2 * y1 * z1 % p
-            x1 = (alpha * alpha - 8 * beta) % p
-            y1 = (alpha * (4 * beta - x1) - 8 * gamma * gamma) % p
+            x1 = (alpha * alpha + eight_p - 8 * beta) % p
+            y1 = (alpha * (4 * beta + p - x1) + eight_p_squared - 8 * gamma * gamma) % p
 
         digit = digits >> shift & window_mask
         positive = digit >> top_bit
         lane = _select(table, (digit ^ (positive - 1)) & index_mask)
         x2 = lane >> 256 ^ sentinel
-        y2 = (lane & coord_mask) * (2 * positive - 1)
+        y2 = lane & coord_mask
+        y2 = y2 & sign_masks[positive] | (p - y2) & sign_masks[1 - positive]
 
         z1z1 = z1 * z1 % p
-        h = (x2 * z1z1 - x1) % p
+        h = (x2 * z1z1 + p - x1) % p
         if h == 0:
             return mul_double_and_add(x, y, k)
-        r = (y2 * (z1 * z1z1 % p) - y1) % p
+        r = (y2 * (z1 * z1z1 % p) + p - y1) % p
         hh = h * h % p
         hhh = hh * h % p
         x1hh = x1 * hh % p
-        x3 = (r * r - hhh - 2 * x1hh) % p
-        y1 = (r * (x1hh - x3) - y1 * hhh) % p
+        x3 = (r * r + three_p - hhh - 2 * x1hh) % p
+        y1 = (r * (x1hh + p - x3) + p_squared - y1 * hhh) % p
         x1 = x3
         z1 = z1 * h % p
     return x1, y1, z1
@@ -425,7 +460,8 @@ def _lookups_for_split(x: int, y: int, window: int) -> list[list[Affine | None]]
         for _bit in range(_SPLIT_BITS):
             point = double(point)
         affine = to_affine_public(point)
-        assert affine is not None  # P has odd prime order
+        if affine is None:
+            raise ValueError("point is not in the group of order n")
         x, y = affine
     return lookups
 
@@ -503,4 +539,4 @@ def mul_shamir(s: int, t: int, x: int, y: int) -> Jacobian:
 
 def clear_caches() -> None:
     """Forget per-key tables. The generator tables stay, as they are not per key."""
-    cached_key_tables.cache_clear()
+    _remembered_key_tables.cache_clear()

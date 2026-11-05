@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""SM2 key exchange and SM4 crypto demo client (side A), using the Java demo server."""
+"""SM2 key exchange and SM4 crypto demo client (side A), using the Java demo server.
+
+This demo talks plain HTTP to localhost, so nothing protects it on a real network, and
+SM4-CBC with the zero IV of this protocol is for demonstration only. Do not copy either
+choice into production. Private keys and negotiated keys are never printed.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ SERVER_URL = "http://localhost:8080"
 ID_A = "python-client@demo.aicc"
 KEY_LEN = 16
 HTTP_TIMEOUT_SECONDS = 10
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 # Ignore proxy environment variables: the demo server only listens on localhost.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -38,9 +44,15 @@ def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers={"Content-Type": "application/json"},
     )
     with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-        text = response.read().decode("utf-8")
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("response too large")
+    text = raw.decode("utf-8")
     print(f"Response: {text}")
-    return json.loads(text)
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise TypeError("response is not a JSON object")
+    return parsed
 
 
 def run() -> int:
@@ -48,12 +60,10 @@ def run() -> int:
 
     da_hex, pa_hex = sm2_gen_key_pair()
     print("Generated A certificate keypair:")
-    print(f"  Private key (dA): {da_hex}")
     print(f"  Public key (pA): {pa_hex}")
 
     ra_hex, ra_pub_hex = sm2_gen_key_pair()
     print("\nGenerated A random keypair:")
-    print(f"  Private key (ra): {ra_hex}")
     print(f"  Public key (Ra): {ra_pub_hex}")
 
     print("\n--- Step 1: Key Exchange Init ---")
@@ -79,7 +89,6 @@ def run() -> int:
         print(f"getSa failed: {result.message}", file=sys.stderr)
         return 1
     print(f"Sa: {result.sa}")
-    print(f"Ka (negotiated key): {result.ka}")
 
     print("\n--- Step 3: Key Exchange Confirm ---")
     confirm = post_json(
@@ -89,7 +98,6 @@ def run() -> int:
         print("Key exchange confirmation failed", file=sys.stderr)
         return 1
     print("\nKey exchange completed successfully!")
-    print(f"Negotiated key (Ka): {result.ka}")
 
     print("\n--- Step 4: Bidirectional Crypto Test ---")
     sm4 = SM4()
@@ -136,8 +144,8 @@ def main() -> int:
     except (urllib.error.URLError, OSError) as error:
         print(f"Failed to connect to server: {error}", file=sys.stderr)
         print("Make sure the Java server is running on port 8080", file=sys.stderr)
-    except (KeyError, ValueError) as error:
-        print(f"Invalid server response: {error!r}", file=sys.stderr)
+    except (KeyError, TypeError, ValueError) as error:
+        print(f"Invalid server response: {type(error).__name__}", file=sys.stderr)
     return 1
 
 
