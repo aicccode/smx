@@ -4,11 +4,13 @@
 import Foundation
 import GMSwift
 
-let SERVER_URL = "http://localhost:8080"
-let IDA = "swift-client@demo.aicc"
+let serverURL = "http://localhost:8080"
+let clientId = "swift-client@demo.aicc"
 
 // MARK: - JSON Models
+// 字段名就是服务端 JSON 协议的键名，不能按命名规范修改
 
+// swift-format-ignore: AlwaysUseLowerCamelCase
 struct InitRequest: Encodable {
     let IDa: String
     let pA: String
@@ -16,6 +18,7 @@ struct InitRequest: Encodable {
     let keyLen: Int
 }
 
+// swift-format-ignore: AlwaysUseLowerCamelCase
 struct InitResponse: Decodable {
     let sessionId: String
     let IDb: String
@@ -24,6 +27,7 @@ struct InitResponse: Decodable {
     let Sb: String
 }
 
+// swift-format-ignore: AlwaysUseLowerCamelCase
 struct ConfirmRequest: Encodable {
     let sessionId: String
     let Sa: String
@@ -113,7 +117,7 @@ func main() {
     // Step 1: 发起密钥交换
     print("\n--- Step 1: Key Exchange Init ---")
     let initRequest = InitRequest(
-        IDa: IDA,
+        IDa: clientId,
         pA: paHex,
         Ra: raPubHex,
         keyLen: keyLen
@@ -129,7 +133,7 @@ func main() {
 
     let initResponse: InitResponse
     do {
-        initResponse = try postJSON("\(SERVER_URL)/api/keyswap/init", body: initRequest)
+        initResponse = try postJSON("\(serverURL)/api/keyswap/init", body: initRequest)
         print("Response: sessionId=\(initResponse.sessionId), IDb=\(initResponse.IDb)")
         print("  pB: \(initResponse.pB)")
         print("  Rb: \(initResponse.Rb)")
@@ -144,18 +148,18 @@ func main() {
     print("\n--- Step 2: Calculate Sa and Ka ---")
 
     let pB = ECPoint.fromHexEncoded(initResponse.pB)
-    let Rb = ECPoint.fromHexEncoded(initResponse.Rb)
+    let pointRb = ECPoint.fromHexEncoded(initResponse.Rb)
     let pA = ECPoint.fromHexEncoded(paHex)
-    let Ra = ECPoint.fromHexEncoded(raPubHex)
+    let pointRa = ECPoint.fromHexEncoded(raPubHex)
     let dA = BigInt256.fromHex(daHex)
     let ra = BigInt256.fromHex(raHex)
     let sbBytes = hexToBytes(initResponse.Sb)
 
     let result = SM2.getSa(
         byteLen: keyLen,
-        pB: pB, Rb: Rb,
-        pA: pA, dA: dA, Ra: Ra, ra: ra,
-        IDa: IDA, IDb: initResponse.IDb,
+        pB: pB, Rb: pointRb,
+        pA: pA, dA: dA, Ra: pointRa, ra: ra,
+        IDa: clientId, IDb: initResponse.IDb,
         Sb: sbBytes
     )
 
@@ -181,7 +185,7 @@ func main() {
     }
 
     do {
-        let confirmResponse: ConfirmResponse = try postJSON("\(SERVER_URL)/api/keyswap/confirm", body: confirmRequest)
+        let confirmResponse: ConfirmResponse = try postJSON("\(serverURL)/api/keyswap/confirm", body: confirmRequest)
         print("Response: success=\(confirmResponse.success)")
 
         if !confirmResponse.success {
@@ -223,7 +227,7 @@ func main() {
     }
 
     do {
-        let cryptoResponse: CryptoTestResponse = try postJSON("\(SERVER_URL)/api/crypto/test", body: cryptoRequest)
+        let cryptoResponse: CryptoTestResponse = try postJSON("\(serverURL)/api/crypto/test", body: cryptoRequest)
         print("Response:")
         print("  clientDecrypted: \(cryptoResponse.clientDecrypted)")
         print("  clientDecryptMatch: \(cryptoResponse.clientDecryptMatch)")

@@ -13,7 +13,10 @@ let package = Package(
         .target(
             name: "GMSwift",
             path: "Sources/GMSwift",
-            sources: ["SM2.swift", "SM2BigInt.swift", "SM3.swift", "SM4.swift"],
+            sources: [
+                "Hex.swift", "SM2.swift", "SM2BigInt.swift", "SM2ECPoint.swift", "SM2Field.swift", "SM2Point.swift",
+                "SM2Scalar.swift", "SM3.swift", "SM4.swift",
+            ],
             publicHeadersPath: ""
         ),
         .testTarget(
