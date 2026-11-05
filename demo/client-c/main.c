@@ -26,14 +26,18 @@ static char *json_get_string(const char *json, const char *key) {
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(json, pattern);
-    if (!p) return NULL;
+    if (!p)
+        return NULL;
     p += strlen(pattern);
-    while (*p == ' ' || *p == ':' || *p == '\t') p++;
-    if (*p != '"') return NULL;
+    while (*p == ' ' || *p == ':' || *p == '\t')
+        p++;
+    if (*p != '"')
+        return NULL;
     p++;
     const char *end = p;
     while (*end && *end != '"') {
-        if (*end == '\\') end++;
+        if (*end == '\\')
+            end++;
         end++;
     }
     size_t len = (size_t)(end - p);
@@ -48,9 +52,11 @@ static int json_get_bool(const char *json, const char *key) {
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(json, pattern);
-    if (!p) return 0;
+    if (!p)
+        return 0;
     p += strlen(pattern);
-    while (*p == ' ' || *p == ':' || *p == '\t') p++;
+    while (*p == ' ' || *p == ':' || *p == '\t')
+        p++;
     return strncmp(p, "true", 4) == 0;
 }
 
@@ -65,7 +71,8 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
     size_t total = size * nmemb;
     ResponseBuffer *buf = (ResponseBuffer *)userp;
     char *tmp = (char *)realloc(buf->data, buf->len + total + 1);
-    if (!tmp) return 0;
+    if (!tmp)
+        return 0;
     buf->data = tmp;
     memcpy(buf->data + buf->len, contents, total);
     buf->len += total;
@@ -76,9 +83,10 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
 /* POST JSON to url, returns response body (malloc'd). Caller must free(). */
 static char *post_json(const char *url, const char *json_body) {
     CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl)
+        return NULL;
 
-    ResponseBuffer buf = { NULL, 0 };
+    ResponseBuffer buf = {NULL, 0};
     buf.data = (char *)malloc(1);
     buf.data[0] = '\0';
 
@@ -108,13 +116,16 @@ static char *json_escape(const char *s) {
     size_t len = 0;
     const char *p;
     for (p = s; *p; p++) {
-        if (*p == '"' || *p == '\\') len += 2;
-        else len++;
+        if (*p == '"' || *p == '\\')
+            len += 2;
+        else
+            len++;
     }
     char *out = (char *)malloc(len + 1);
     char *q = out;
     for (p = s; *p; p++) {
-        if (*p == '"' || *p == '\\') *q++ = '\\';
+        if (*p == '"' || *p == '\\')
+            *q++ = '\\';
         *q++ = *p;
     }
     *q = '\0';
@@ -143,12 +154,13 @@ int main(void) {
     printf("\n--- Step 2: Key Exchange Init ---\n");
     char init_body[512];
     snprintf(init_body, sizeof(init_body),
-        "{\"IDa\":\"%s\",\"pA\":\"%s\",\"Ra\":\"%s\",\"keyLen\":%d}",
-        IDA, pubA, rA_pub, keyLen);
+             "{\"IDa\":\"%s\",\"pA\":\"%s\",\"Ra\":\"%s\",\"keyLen\":%d}", IDA, pubA, rA_pub,
+             keyLen);
 
     char *init_resp = post_json(SERVER_URL "/api/keyswap/init", init_body);
     if (!init_resp) {
-        fprintf(stderr, "Failed to connect to server. Make sure Java server is running on port 8080\n");
+        fprintf(stderr,
+                "Failed to connect to server. Make sure Java server is running on port 8080\n");
         curl_global_cleanup();
         return 1;
     }
@@ -178,8 +190,7 @@ int main(void) {
     uint8_t sb_bytes[32];
     hex_to_bytes(Sb_hex, sb_bytes, 32);
 
-    SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra,
-                                           IDA, IDb, sb_bytes, 32);
+    SM2KeySwapParams resultA = sm2_get_sa(keyLen, pB, rB, pA, &dA, rA, &ra, IDA, IDb, sb_bytes, 32);
     check("getSa success", resultA.success);
     if (!resultA.success) {
         fprintf(stderr, "  Error: %s\n", resultA.message);
@@ -191,8 +202,8 @@ int main(void) {
     /* Step 4: Key Exchange Confirm */
     printf("\n--- Step 4: Key Exchange Confirm ---\n");
     char confirm_body[256];
-    snprintf(confirm_body, sizeof(confirm_body),
-        "{\"sessionId\":\"%s\",\"Sa\":\"%s\"}", sessionId, resultA.sa);
+    snprintf(confirm_body, sizeof(confirm_body), "{\"sessionId\":\"%s\",\"Sa\":\"%s\"}", sessionId,
+             resultA.sa);
 
     char *confirm_resp = post_json(SERVER_URL "/api/keyswap/confirm", confirm_body);
     if (!confirm_resp) {
@@ -231,11 +242,12 @@ int main(void) {
 
     /* Build crypto test request */
     char *escaped_plain = json_escape(clientPlaintext);
-    size_t crypto_body_len = 256 + strlen(sessionId) + strlen(clientCiphertext) + strlen(escaped_plain);
+    size_t crypto_body_len =
+        256 + strlen(sessionId) + strlen(clientCiphertext) + strlen(escaped_plain);
     char *crypto_body = (char *)malloc(crypto_body_len);
     snprintf(crypto_body, crypto_body_len,
-        "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\",\"clientPlaintext\":\"%s\"}",
-        sessionId, clientCiphertext, escaped_plain);
+             "{\"sessionId\":\"%s\",\"clientCiphertext\":\"%s\",\"clientPlaintext\":\"%s\"}",
+             sessionId, clientCiphertext, escaped_plain);
     free(escaped_plain);
 
     char *crypto_resp = post_json(SERVER_URL "/api/crypto/test", crypto_body);
@@ -260,7 +272,8 @@ int main(void) {
         int clientDecryptOk = decrypted && strcmp(decrypted, serverPlaintext) == 0;
         check("client decrypted server message", clientDecryptOk);
         printf("  Server plaintext: %s\n", serverPlaintext);
-        if (decrypted) printf("  Client decrypted: %s\n", decrypted);
+        if (decrypted)
+            printf("  Client decrypted: %s\n", decrypted);
 
         if (serverDecryptOk && clientDecryptOk)
             printf("\n  Bidirectional Crypto test PASSED!\n");

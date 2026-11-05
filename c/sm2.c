@@ -5,35 +5,23 @@
 
 /* ========== SM2 Curve Constants ========== */
 
-const BigInt256 SM2_P = {{
-    0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFF00000000ULL,
-    0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL
-}};
+const BigInt256 SM2_P = {
+    {0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFF00000000ULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL}};
 
-const BigInt256 SM2_N = {{
-    0x53BBF40939D54123ULL, 0x7203DF6B21C6052BULL,
-    0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL
-}};
+const BigInt256 SM2_N = {
+    {0x53BBF40939D54123ULL, 0x7203DF6B21C6052BULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL}};
 
-static const FpElement SM2_A = {{{
-    0xFFFFFFFFFFFFFFFCULL, 0xFFFFFFFF00000000ULL,
-    0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL
-}}};
+static const FpElement SM2_A = {
+    {{0xFFFFFFFFFFFFFFFCULL, 0xFFFFFFFF00000000ULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFEFFFFFFFFULL}}};
 
-static const FpElement SM2_B = {{{
-    0xDDBCBD414D940E93ULL, 0xF39789F515AB8F92ULL,
-    0x4D5A9E4BCF6509A7ULL, 0x28E9FA9E9D9F5E34ULL
-}}};
+static const FpElement SM2_B = {
+    {{0xDDBCBD414D940E93ULL, 0xF39789F515AB8F92ULL, 0x4D5A9E4BCF6509A7ULL, 0x28E9FA9E9D9F5E34ULL}}};
 
-static const FpElement SM2_GX = {{{
-    0x715A4589334C74C7ULL, 0x8FE30BBFF2660BE1ULL,
-    0x5F9904466A39C994ULL, 0x32C4AE2C1F198119ULL
-}}};
+static const FpElement SM2_GX = {
+    {{0x715A4589334C74C7ULL, 0x8FE30BBFF2660BE1ULL, 0x5F9904466A39C994ULL, 0x32C4AE2C1F198119ULL}}};
 
-static const FpElement SM2_GY = {{{
-    0x02DF32E52139F0A0ULL, 0xD0A9877CC62A4740ULL,
-    0x59BDCEE36B692153ULL, 0xBC3736A2F4F6779CULL
-}}};
+static const FpElement SM2_GY = {
+    {{0x02DF32E52139F0A0ULL, 0xD0A9877CC62A4740ULL, 0x59BDCEE36B692153ULL, 0xBC3736A2F4F6779CULL}}};
 
 /* ========== FpElement ========== */
 
@@ -66,7 +54,6 @@ int fp_is_zero(const FpElement *a) {
     return bigint256_is_zero(&a->value);
 }
 
-
 FpElement fp_add(FpElement a, FpElement b) {
     FpElement r;
     bigint256_mod_add(&r.value, &a.value, &b.value, &SM2_P);
@@ -92,7 +79,8 @@ FpElement fp_square(FpElement a) {
 }
 
 FpElement fp_negate(FpElement a) {
-    if (fp_is_zero(&a)) return a;
+    if (fp_is_zero(&a))
+        return a;
     FpElement r;
     bigint256_mod_sub(&r.value, &SM2_P, &a.value, &SM2_P);
     return r;
@@ -137,13 +125,17 @@ void fp_to_be_bytes(const FpElement *a, uint8_t out[32]) {
 
 ECPoint ec_point_new(FpElement x, FpElement y) {
     ECPoint p;
-    p.x = x; p.y = y; p.infinity = 0;
+    p.x = x;
+    p.y = y;
+    p.infinity = 0;
     return p;
 }
 
 ECPoint ec_point_infinity(void) {
     ECPoint p;
-    p.x = fp_zero(); p.y = fp_zero(); p.infinity = 1;
+    p.x = fp_zero();
+    p.y = fp_zero();
+    p.infinity = 1;
     return p;
 }
 
@@ -153,7 +145,8 @@ ECPoint ec_point_generator(void) {
 
 ECPoint ec_point_from_hex_encoded(const char *hex) {
     size_t hex_len = strlen(hex);
-    if (hex_len < 2) return ec_point_infinity();
+    if (hex_len < 2)
+        return ec_point_infinity();
     size_t byte_len = hex_len / 2;
     uint8_t *data = (uint8_t *)malloc(byte_len);
     hex_to_bytes(hex, data, byte_len);
@@ -174,7 +167,9 @@ ECPoint ec_point_from_hex_encoded(const char *hex) {
 
 void ec_point_to_hex_encoded(const ECPoint *p, char out[131]) {
     if (p->infinity) {
-        out[0] = '0'; out[1] = '0'; out[2] = '\0';
+        out[0] = '0';
+        out[1] = '0';
+        out[2] = '\0';
         return;
     }
     uint8_t encoded[65];
@@ -184,9 +179,9 @@ void ec_point_to_hex_encoded(const ECPoint *p, char out[131]) {
     bytes_to_hex(encoded, 65, out);
 }
 
-
 int ec_point_is_on_curve(const ECPoint *p) {
-    if (p->infinity) return 1;
+    if (p->infinity)
+        return 1;
     /* y^2 = x^3 + a*x + b */
     FpElement lhs = fp_square(p->y);
     FpElement x2_plus_a = fp_add(fp_square(p->x), SM2_A);
@@ -196,23 +191,31 @@ int ec_point_is_on_curve(const ECPoint *p) {
 
 /* ========== Jacobian coordinates ========== */
 
-typedef struct { FpElement x, y, z; } JacobianPoint;
+typedef struct {
+    FpElement x, y, z;
+} JacobianPoint;
 
 static JacobianPoint jac_infinity(void) {
     JacobianPoint j;
-    j.x = fp_one(); j.y = fp_one(); j.z = fp_zero();
+    j.x = fp_one();
+    j.y = fp_one();
+    j.z = fp_zero();
     return j;
 }
 
 static JacobianPoint jac_from_affine(ECPoint p) {
-    if (p.infinity) return jac_infinity();
+    if (p.infinity)
+        return jac_infinity();
     JacobianPoint j;
-    j.x = p.x; j.y = p.y; j.z = fp_one();
+    j.x = p.x;
+    j.y = p.y;
+    j.z = fp_one();
     return j;
 }
 
 static ECPoint jac_to_affine(JacobianPoint j) {
-    if (fp_is_zero(&j.z)) return ec_point_infinity();
+    if (fp_is_zero(&j.z))
+        return ec_point_infinity();
     FpElement zinv = fp_invert(j.z);
     FpElement zinv2 = fp_square(zinv);
     FpElement zinv3 = fp_mul(zinv2, zinv);
@@ -228,7 +231,7 @@ static JacobianPoint jac_double(JacobianPoint j) {
 
     FpElement delta = fp_square(j.z);
     FpElement gamma = fp_square(j.y);
-    FpElement beta  = fp_mul(j.x, gamma);
+    FpElement beta = fp_mul(j.x, gamma);
 
     /* alpha = 3*(X-delta)*(X+delta) using a=-3 */
     FpElement alpha = fp_triple(fp_mul(fp_sub(j.x, delta), fp_add(j.x, delta)));
@@ -246,27 +249,32 @@ static JacobianPoint jac_double(JacobianPoint j) {
     FpElement y3 = fp_sub(fp_mul(alpha, fp_sub(beta4, x3)), gamma_sq8);
 
     JacobianPoint r;
-    r.x = x3; r.y = y3; r.z = z3;
+    r.x = x3;
+    r.y = y3;
+    r.z = z3;
     return r;
 }
 
 /* mixed addition: Jacobian + affine */
 static JacobianPoint jac_add_affine(JacobianPoint j, ECPoint q) {
-    if (q.infinity) return j;
-    if (fp_is_zero(&j.z)) return jac_from_affine(q);
+    if (q.infinity)
+        return j;
+    if (fp_is_zero(&j.z))
+        return jac_from_affine(q);
 
     FpElement z1z1 = fp_square(j.z);
     FpElement u2 = fp_mul(q.x, z1z1);
     FpElement s2 = fp_mul(fp_mul(q.y, j.z), z1z1);
-    FpElement h  = fp_sub(u2, j.x);
+    FpElement h = fp_sub(u2, j.x);
     FpElement rr = fp_sub(s2, j.y);
 
     if (fp_is_zero(&h)) {
-        if (fp_is_zero(&rr)) return jac_double(j);
+        if (fp_is_zero(&rr))
+            return jac_double(j);
         return jac_infinity();
     }
 
-    FpElement hh  = fp_square(h);
+    FpElement hh = fp_square(h);
     FpElement hhh = fp_mul(hh, h);
     FpElement x1hh = fp_mul(j.x, hh);
     FpElement x3 = fp_sub(fp_sub(fp_square(rr), hhh), fp_double(x1hh));
@@ -274,21 +282,27 @@ static JacobianPoint jac_add_affine(JacobianPoint j, ECPoint q) {
     FpElement z3 = fp_mul(j.z, h);
 
     JacobianPoint res;
-    res.x = x3; res.y = y3; res.z = z3;
+    res.x = x3;
+    res.y = y3;
+    res.z = z3;
     return res;
 }
 
 ECPoint ec_point_add(ECPoint p, ECPoint q) {
-    if (p.infinity) return q;
-    if (q.infinity) return p;
+    if (p.infinity)
+        return q;
+    if (q.infinity)
+        return p;
     JacobianPoint jp = jac_from_affine(p);
     JacobianPoint result = jac_add_affine(jp, q);
     return jac_to_affine(result);
 }
 
 ECPoint ec_point_multiply(ECPoint p, const BigInt256 *k) {
-    if (bigint256_is_zero(k) || p.infinity) return ec_point_infinity();
-    if (bigint256_is_one(k)) return p;
+    if (bigint256_is_zero(k) || p.infinity)
+        return ec_point_infinity();
+    if (bigint256_is_one(k))
+        return p;
 
     JacobianPoint result = jac_infinity();
     int bit_len = bigint256_bit_length(k);
@@ -330,12 +344,18 @@ static void user_sm3_z(const char *user_id, ECPoint pub, uint8_t z[32]) {
     sm3_update(&sm3, (const uint8_t *)user_id, uid_len);
 
     uint8_t buf[32];
-    fp_to_be_bytes(&SM2_A, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&SM2_B, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&SM2_GX, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&SM2_GY, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&pub.x, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&pub.y, buf); sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&SM2_A, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&SM2_B, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&SM2_GX, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&SM2_GY, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&pub.x, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&pub.y, buf);
+    sm3_update(&sm3, buf, 32);
 
     sm3_finish(&sm3);
     memcpy(z, sm3.hash_bytes, 32);
@@ -353,20 +373,22 @@ static void sm2_kdf(int keylen, ECPoint p2, uint8_t *out) {
         fp_to_be_bytes(&p2.y, yb);
         sm3_update(&sm3, xb, 32);
         sm3_update(&sm3, yb, 32);
-        uint8_t ct_bytes[4] = {(uint8_t)(ct>>24),(uint8_t)(ct>>16),(uint8_t)(ct>>8),(uint8_t)ct};
+        uint8_t ct_bytes[4] = {(uint8_t)(ct >> 24), (uint8_t)(ct >> 16), (uint8_t)(ct >> 8),
+                               (uint8_t)ct};
         sm3_update(&sm3, ct_bytes, 4);
         sm3_finish(&sm3);
 
         int start = i * 32;
         int end = (i + 1) * 32;
-        if (end > keylen) end = keylen;
+        if (end > keylen)
+            end = keylen;
         memcpy(out + start, sm3.hash_bytes, (size_t)(end - start));
         ct++;
     }
 }
 
-static void sm2_kdf_key_swap(int keylen, ECPoint vu, const uint8_t *za,
-                              const uint8_t *zb, uint8_t *out) {
+static void sm2_kdf_key_swap(int keylen, ECPoint vu, const uint8_t *za, const uint8_t *zb,
+                             uint8_t *out) {
     uint32_t ct = 1;
     int blocks = (keylen + 31) / 32;
     int i;
@@ -380,13 +402,15 @@ static void sm2_kdf_key_swap(int keylen, ECPoint vu, const uint8_t *za,
         sm3_update(&sm3, yb, 32);
         sm3_update(&sm3, za, 32);
         sm3_update(&sm3, zb, 32);
-        uint8_t ct_bytes[4] = {(uint8_t)(ct>>24),(uint8_t)(ct>>16),(uint8_t)(ct>>8),(uint8_t)ct};
+        uint8_t ct_bytes[4] = {(uint8_t)(ct >> 24), (uint8_t)(ct >> 16), (uint8_t)(ct >> 8),
+                               (uint8_t)ct};
         sm3_update(&sm3, ct_bytes, 4);
         sm3_finish(&sm3);
 
         int start = i * 32;
         int end = (i + 1) * 32;
-        if (end > keylen) end = keylen;
+        if (end > keylen)
+            end = keylen;
         memcpy(out + start, sm3.hash_bytes, (size_t)(end - start));
         ct++;
     }
@@ -402,8 +426,8 @@ static BigInt256 calc_x(BigInt256 x) {
     return result;
 }
 
-static BigInt256 calc_t(const BigInt256 *n, const BigInt256 *r,
-                         const BigInt256 *d, const BigInt256 *x_) {
+static BigInt256 calc_t(const BigInt256 *n, const BigInt256 *r, const BigInt256 *d,
+                        const BigInt256 *x_) {
     BigInt256 xr;
     bigint256_mod_mul(&xr, x_, r, n);
     BigInt256 result;
@@ -411,25 +435,29 @@ static BigInt256 calc_t(const BigInt256 *n, const BigInt256 *r,
     return result;
 }
 
-static ECPoint calc_point(const BigInt256 *t, const BigInt256 *x_,
-                           ECPoint p, ECPoint r) {
+static ECPoint calc_point(const BigInt256 *t, const BigInt256 *x_, ECPoint p, ECPoint r) {
     ECPoint xr = ec_point_multiply(r, x_);
     ECPoint sum = ec_point_add(p, xr);
     return ec_point_multiply(sum, t);
 }
 
-static void create_s(uint8_t tag, ECPoint vu, const uint8_t *za, const uint8_t *zb,
-                      ECPoint ra, ECPoint rb, uint8_t out[32]) {
+static void create_s(uint8_t tag, ECPoint vu, const uint8_t *za, const uint8_t *zb, ECPoint ra,
+                     ECPoint rb, uint8_t out[32]) {
     SM3 sm3;
     sm3_init(&sm3);
     uint8_t buf[32];
-    fp_to_be_bytes(&vu.x, buf); sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&vu.x, buf);
+    sm3_update(&sm3, buf, 32);
     sm3_update(&sm3, za, 32);
     sm3_update(&sm3, zb, 32);
-    fp_to_be_bytes(&ra.x, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&ra.y, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&rb.x, buf); sm3_update(&sm3, buf, 32);
-    fp_to_be_bytes(&rb.y, buf); sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&ra.x, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&ra.y, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&rb.x, buf);
+    sm3_update(&sm3, buf, 32);
+    fp_to_be_bytes(&rb.y, buf);
+    sm3_update(&sm3, buf, 32);
     sm3_finish(&sm3);
     uint8_t h1[32];
     memcpy(h1, sm3.hash_bytes, 32);
@@ -437,7 +465,8 @@ static void create_s(uint8_t tag, ECPoint vu, const uint8_t *za, const uint8_t *
     SM3 hash;
     sm3_init(&hash);
     sm3_update_byte(&hash, tag);
-    fp_to_be_bytes(&vu.y, buf); sm3_update(&hash, buf, 32);
+    fp_to_be_bytes(&vu.y, buf);
+    sm3_update(&hash, buf, 32);
     sm3_update(&hash, h1, 32);
     sm3_finish(&hash);
     memcpy(out, hash.hash_bytes, 32);
@@ -446,7 +475,8 @@ static void create_s(uint8_t tag, ECPoint vu, const uint8_t *za, const uint8_t *
 static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len) {
     size_t i;
     for (i = 0; i < len; i++) {
-        if (a[i] != b[i]) return 0;
+        if (a[i] != b[i])
+            return 0;
     }
     return 1;
 }
@@ -477,18 +507,22 @@ void sm2_gen_keypair(char pri_hex[65], char pub_hex[131]) {
 
 char *sm2_encrypt(const char *plaintext, const char *public_key_hex) {
     size_t msg_len = strlen(plaintext);
-    if (msg_len == 0) return NULL;
+    if (msg_len == 0)
+        return NULL;
 
     ECPoint pub = ec_point_from_hex_encoded(public_key_hex);
-    if (!ec_point_is_on_curve(&pub)) return NULL;
+    if (!ec_point_is_on_curve(&pub))
+        return NULL;
 
     for (;;) {
         BigInt256 k = random_bigint();
-        if (bigint256_is_zero(&k) || bigint256_compare(&k, &SM2_N) >= 0) continue;
+        if (bigint256_is_zero(&k) || bigint256_compare(&k, &SM2_N) >= 0)
+            continue;
 
         ECPoint c1 = ec_point_multiply(ec_point_generator(), &k);
         ECPoint p2 = ec_point_multiply(pub, &k);
-        if (p2.infinity) continue;
+        if (p2.infinity)
+            continue;
 
         uint8_t *key = (uint8_t *)malloc(msg_len);
         sm2_kdf((int)msg_len, p2, key);
@@ -496,9 +530,15 @@ char *sm2_encrypt(const char *plaintext, const char *public_key_hex) {
         int all_zero = 1;
         size_t i;
         for (i = 0; i < msg_len; i++) {
-            if (key[i] != 0) { all_zero = 0; break; }
+            if (key[i] != 0) {
+                all_zero = 0;
+                break;
+            }
         }
-        if (all_zero) { free(key); continue; }
+        if (all_zero) {
+            free(key);
+            continue;
+        }
 
         uint8_t *c2 = (uint8_t *)malloc(msg_len);
         for (i = 0; i < msg_len; i++) {
@@ -510,9 +550,11 @@ char *sm2_encrypt(const char *plaintext, const char *public_key_hex) {
         SM3 sm3;
         sm3_init(&sm3);
         uint8_t buf32[32];
-        fp_to_be_bytes(&p2.x, buf32); sm3_update(&sm3, buf32, 32);
+        fp_to_be_bytes(&p2.x, buf32);
+        sm3_update(&sm3, buf32, 32);
         sm3_update(&sm3, (const uint8_t *)plaintext, msg_len);
-        fp_to_be_bytes(&p2.y, buf32); sm3_update(&sm3, buf32, 32);
+        fp_to_be_bytes(&p2.y, buf32);
+        sm3_update(&sm3, buf32, 32);
         sm3_finish(&sm3);
 
         /* result = C1_hex || C3_hex || C2_hex */
@@ -538,7 +580,8 @@ char *sm2_encrypt(const char *plaintext, const char *public_key_hex) {
 
 char *sm2_decrypt(const char *ciphertext_hex, const char *private_key_hex) {
     size_t ct_len = strlen(ciphertext_hex);
-    if (ct_len < 130 + 64) return NULL;
+    if (ct_len < 130 + 64)
+        return NULL;
 
     /* C1: first 130 hex chars (65 bytes: 04 || x || y) */
     char c1_hex[131];
@@ -559,11 +602,17 @@ char *sm2_decrypt(const char *ciphertext_hex, const char *private_key_hex) {
     hex_to_bytes(c2_hex, c2, c2_byte_len);
 
     ECPoint c1 = ec_point_from_hex_encoded(c1_hex);
-    if (!ec_point_is_on_curve(&c1)) { free(c2); return NULL; }
+    if (!ec_point_is_on_curve(&c1)) {
+        free(c2);
+        return NULL;
+    }
 
     BigInt256 d = bigint256_from_hex(private_key_hex);
     ECPoint p2 = ec_point_multiply(c1, &d);
-    if (p2.infinity) { free(c2); return NULL; }
+    if (p2.infinity) {
+        free(c2);
+        return NULL;
+    }
 
     uint8_t *key = (uint8_t *)malloc(c2_byte_len);
     sm2_kdf((int)c2_byte_len, p2, key);
@@ -578,9 +627,11 @@ char *sm2_decrypt(const char *ciphertext_hex, const char *private_key_hex) {
     SM3 sm3;
     sm3_init(&sm3);
     uint8_t buf32[32];
-    fp_to_be_bytes(&p2.x, buf32); sm3_update(&sm3, buf32, 32);
+    fp_to_be_bytes(&p2.x, buf32);
+    sm3_update(&sm3, buf32, 32);
     sm3_update(&sm3, c2, c2_byte_len);
-    fp_to_be_bytes(&p2.y, buf32); sm3_update(&sm3, buf32, 32);
+    fp_to_be_bytes(&p2.y, buf32);
+    sm3_update(&sm3, buf32, 32);
     sm3_finish(&sm3);
 
     if (!bytes_equal(sm3.hash_bytes, c3, 32)) {
@@ -611,18 +662,21 @@ char *sm2_sign(const char *user_id, const char *message, const char *private_key
 
     for (;;) {
         BigInt256 k = random_bigint();
-        if (bigint256_is_zero(&k) || bigint256_compare(&k, &SM2_N) >= 0) continue;
+        if (bigint256_is_zero(&k) || bigint256_compare(&k, &SM2_N) >= 0)
+            continue;
 
         ECPoint kp = ec_point_multiply(ec_point_generator(), &k);
         BigInt256 x1 = kp.x.value;
 
         BigInt256 r;
         bigint256_mod_add(&r, &e, &x1, &SM2_N);
-        if (bigint256_is_zero(&r)) continue;
+        if (bigint256_is_zero(&r))
+            continue;
 
         BigInt256 rk;
         uint64_t carry = bigint256_add(&rk, &r, &k);
-        if (carry == 0 && bigint256_compare(&rk, &SM2_N) == 0) continue;
+        if (carry == 0 && bigint256_compare(&rk, &SM2_N) == 0)
+            continue;
 
         BigInt256 one = bigint256_one();
         BigInt256 d_plus_1;
@@ -637,7 +691,8 @@ char *sm2_sign(const char *user_id, const char *message, const char *private_key
         BigInt256 s;
         bigint256_mod_mul(&s, &k_minus_rd, &d_plus_1_inv, &SM2_N);
 
-        if (bigint256_is_zero(&s)) continue;
+        if (bigint256_is_zero(&s))
+            continue;
 
         char r_hex[65], s_hex[65];
         bigint256_to_hex_lower(&r, r_hex);
@@ -654,30 +709,36 @@ char *sm2_sign(const char *user_id, const char *message, const char *private_key
     }
 }
 
-int sm2_verify(const char *user_id, const char *signature,
-                const char *message, const char *public_key_hex) {
+int sm2_verify(const char *user_id, const char *signature, const char *message,
+               const char *public_key_hex) {
     /* split signature on 'h' */
     const char *h_pos = strchr(signature, 'h');
-    if (!h_pos) return 0;
+    if (!h_pos)
+        return 0;
 
     size_t r_len = (size_t)(h_pos - signature);
     char r_str[65], s_str[65];
-    if (r_len > 64) return 0;
+    if (r_len > 64)
+        return 0;
     memcpy(r_str, signature, r_len);
     r_str[r_len] = '\0';
     size_t s_len = strlen(h_pos + 1);
-    if (s_len > 64) return 0;
+    if (s_len > 64)
+        return 0;
     memcpy(s_str, h_pos + 1, s_len);
     s_str[s_len] = '\0';
 
     BigInt256 r = bigint256_from_hex(r_str);
     BigInt256 s = bigint256_from_hex(s_str);
 
-    if (bigint256_is_zero(&r) || bigint256_compare(&r, &SM2_N) >= 0) return 0;
-    if (bigint256_is_zero(&s) || bigint256_compare(&s, &SM2_N) >= 0) return 0;
+    if (bigint256_is_zero(&r) || bigint256_compare(&r, &SM2_N) >= 0)
+        return 0;
+    if (bigint256_is_zero(&s) || bigint256_compare(&s, &SM2_N) >= 0)
+        return 0;
 
     ECPoint pub = ec_point_from_hex_encoded(public_key_hex);
-    if (!ec_point_is_on_curve(&pub)) return 0;
+    if (!ec_point_is_on_curve(&pub))
+        return 0;
 
     uint8_t z[32];
     user_sm3_z(user_id, pub, z);
@@ -691,13 +752,15 @@ int sm2_verify(const char *user_id, const char *signature,
 
     BigInt256 t;
     bigint256_mod_add(&t, &r, &s, &SM2_N);
-    if (bigint256_is_zero(&t)) return 0;
+    if (bigint256_is_zero(&t))
+        return 0;
 
     ECPoint sg = ec_point_multiply(ec_point_generator(), &s);
     ECPoint tpa = ec_point_multiply(pub, &t);
     ECPoint point = ec_point_add(sg, tpa);
 
-    if (point.infinity) return 0;
+    if (point.infinity)
+        return 0;
 
     BigInt256 px = point.x.value;
     BigInt256 computed_r;
@@ -707,8 +770,8 @@ int sm2_verify(const char *user_id, const char *signature,
 
 /* ========== SM2 Key Exchange ========== */
 
-SM2KeySwapParams sm2_get_sb(int byte_len, ECPoint pA, ECPoint rA, ECPoint pB,
-    const BigInt256 *dB, ECPoint rB, const BigInt256 *rb, const char *idA, const char *idB) {
+SM2KeySwapParams sm2_get_sb(int byte_len, ECPoint pA, ECPoint rA, ECPoint pB, const BigInt256 *dB,
+                            ECPoint rB, const BigInt256 *rb, const char *idA, const char *idB) {
 
     SM2KeySwapParams result;
     memset(&result, 0, sizeof(result));
@@ -746,9 +809,9 @@ SM2KeySwapParams sm2_get_sb(int byte_len, ECPoint pA, ECPoint rA, ECPoint pB,
     return result;
 }
 
-SM2KeySwapParams sm2_get_sa(int byte_len, ECPoint pB, ECPoint rB, ECPoint pA,
-    const BigInt256 *dA, ECPoint rA, const BigInt256 *ra, const char *idA, const char *idB,
-    const uint8_t *sb, size_t sb_len) {
+SM2KeySwapParams sm2_get_sa(int byte_len, ECPoint pB, ECPoint rB, ECPoint pA, const BigInt256 *dA,
+                            ECPoint rA, const BigInt256 *ra, const char *idA, const char *idB,
+                            const uint8_t *sb, size_t sb_len) {
 
     SM2KeySwapParams result;
     memset(&result, 0, sizeof(result));
@@ -795,8 +858,8 @@ SM2KeySwapParams sm2_get_sa(int byte_len, ECPoint pB, ECPoint rB, ECPoint pA,
     return result;
 }
 
-int sm2_check_sa(ECPoint v, const uint8_t *za, const uint8_t *zb,
-                  ECPoint rA, ECPoint rB, const uint8_t *sa, size_t sa_len) {
+int sm2_check_sa(ECPoint v, const uint8_t *za, const uint8_t *zb, ECPoint rA, ECPoint rB,
+                 const uint8_t *sa, size_t sa_len) {
     uint8_t s2[32];
     create_s(0x03, v, za, zb, rA, rB, s2);
     return bytes_equal(s2, sa, sa_len < 32 ? sa_len : 32);

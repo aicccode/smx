@@ -6,7 +6,9 @@
 
 /* ========== BigInt256: 256-bit unsigned integer, 4 x uint64 limbs, little-endian ========== */
 
-typedef struct { uint64_t limbs[4]; } BigInt256;
+typedef struct {
+    uint64_t limbs[4];
+} BigInt256;
 
 BigInt256 bigint256_zero(void);
 BigInt256 bigint256_one(void);
@@ -25,7 +27,8 @@ void bigint256_mod_add(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, con
 void bigint256_mod_sub(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m);
 void bigint256_mod_mul(BigInt256 *r, const BigInt256 *a, const BigInt256 *b, const BigInt256 *m);
 void bigint256_mod_inverse(BigInt256 *r, const BigInt256 *a, const BigInt256 *m);
-void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp, const BigInt256 *m);
+void bigint256_mod_pow(BigInt256 *r, const BigInt256 *base, const BigInt256 *exp,
+                       const BigInt256 *m);
 void bigint256_sm2_mod_mul_p(BigInt256 *r, const BigInt256 *a, const BigInt256 *b);
 void bigint256_sm2_mod_square_p(BigInt256 *r, const BigInt256 *a);
 int bigint256_get_bit(const BigInt256 *a, int i);
@@ -64,11 +67,16 @@ char *sm4_decrypt(SM4 *ctx, const char *ciphertext_hex);
 
 /* ========== FpElement: field element modulo SM2_P ========== */
 
-typedef struct { BigInt256 value; } FpElement;
+typedef struct {
+    BigInt256 value;
+} FpElement;
 
 /* ========== ECPoint: affine point on SM2 curve ========== */
 
-typedef struct { FpElement x, y; int infinity; } ECPoint;
+typedef struct {
+    FpElement x, y;
+    int infinity;
+} ECPoint;
 
 /* SM2 curve constants */
 extern const BigInt256 SM2_P;
@@ -109,7 +117,8 @@ char *sm2_encrypt(const char *plaintext, const char *public_key_hex);
 char *sm2_decrypt(const char *ciphertext_hex, const char *private_key_hex);
 /* Returns malloc'd signature string "r_hex h s_hex". Caller must free(). */
 char *sm2_sign(const char *user_id, const char *message, const char *private_key_hex);
-int sm2_verify(const char *user_id, const char *signature, const char *message, const char *public_key_hex);
+int sm2_verify(const char *user_id, const char *signature, const char *message,
+               const char *public_key_hex);
 
 /* SM2 Key Exchange */
 typedef struct {
@@ -121,13 +130,13 @@ typedef struct {
     char message[256];
 } SM2KeySwapParams;
 
-SM2KeySwapParams sm2_get_sb(int byte_len, ECPoint pA, ECPoint rA, ECPoint pB,
-    const BigInt256 *dB, ECPoint rB, const BigInt256 *rb, const char *idA, const char *idB);
-SM2KeySwapParams sm2_get_sa(int byte_len, ECPoint pB, ECPoint rB, ECPoint pA,
-    const BigInt256 *dA, ECPoint rA, const BigInt256 *ra, const char *idA, const char *idB,
-    const uint8_t *sb, size_t sb_len);
+SM2KeySwapParams sm2_get_sb(int byte_len, ECPoint pA, ECPoint rA, ECPoint pB, const BigInt256 *dB,
+                            ECPoint rB, const BigInt256 *rb, const char *idA, const char *idB);
+SM2KeySwapParams sm2_get_sa(int byte_len, ECPoint pB, ECPoint rB, ECPoint pA, const BigInt256 *dA,
+                            ECPoint rA, const BigInt256 *ra, const char *idA, const char *idB,
+                            const uint8_t *sb, size_t sb_len);
 int sm2_check_sa(ECPoint v, const uint8_t *za, const uint8_t *zb, ECPoint rA, ECPoint rB,
-    const uint8_t *sa, size_t sa_len);
+                 const uint8_t *sa, size_t sa_len);
 
 /* ========== Utility ========== */
 

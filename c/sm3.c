@@ -2,8 +2,7 @@
 #include <string.h>
 
 static const uint32_t sm3_iv[8] = {
-    0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600,
-    0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E,
+    0x7380166F, 0x4914B2B9, 0x172442D7, 0xDA8A0600, 0xA96F30BC, 0x163138AA, 0xE38DEE4D, 0xB0FB0E4E,
 };
 
 static inline uint32_t rotl32(uint32_t x, int n) {
@@ -33,16 +32,16 @@ static void sm3_process_block(SM3 *ctx, const uint8_t block[64]) {
     /* message expansion */
     for (j = 0; j < 16; j++) {
         int off = j * 4;
-        w[j] = ((uint32_t)block[off] << 24) | ((uint32_t)block[off+1] << 16) |
-               ((uint32_t)block[off+2] << 8) | (uint32_t)block[off+3];
+        w[j] = ((uint32_t)block[off] << 24) | ((uint32_t)block[off + 1] << 16) |
+               ((uint32_t)block[off + 2] << 8) | (uint32_t)block[off + 3];
     }
     for (j = 16; j < 68; j++) {
-        uint32_t r15 = rotl32(w[j-3], 15);
-        uint32_t r7  = rotl32(w[j-13], 7);
-        w[j] = sm3_p1(w[j-16] ^ w[j-9] ^ r15) ^ r7 ^ w[j-6];
+        uint32_t r15 = rotl32(w[j - 3], 15);
+        uint32_t r7 = rotl32(w[j - 13], 7);
+        w[j] = sm3_p1(w[j - 16] ^ w[j - 9] ^ r15) ^ r7 ^ w[j - 6];
     }
     for (j = 0; j < 64; j++) {
-        w2[j] = w[j] ^ w[j+4];
+        w2[j] = w[j] ^ w[j + 4];
     }
 
     /* compression */
@@ -94,16 +93,16 @@ static void sm3_generate_hash(SM3 *ctx) {
     int i, off = 0;
     for (i = 0; i < 8; i++) {
         uint32_t v = ctx->v[i];
-        out[off]   = (uint8_t)(v >> 24);
-        out[off+1] = (uint8_t)(v >> 16);
-        out[off+2] = (uint8_t)(v >> 8);
-        out[off+3] = (uint8_t)(v);
+        out[off] = (uint8_t)(v >> 24);
+        out[off + 1] = (uint8_t)(v >> 16);
+        out[off + 2] = (uint8_t)(v >> 8);
+        out[off + 3] = (uint8_t)(v);
         off += 4;
     }
     memcpy(ctx->hash_bytes, out, 32);
     for (i = 0; i < 32; i++) {
-        ctx->hash_hex[i*2]   = hex_upper[out[i] >> 4];
-        ctx->hash_hex[i*2+1] = hex_upper[out[i] & 0x0F];
+        ctx->hash_hex[i * 2] = hex_upper[out[i] >> 4];
+        ctx->hash_hex[i * 2 + 1] = hex_upper[out[i] & 0x0F];
     }
     ctx->hash_hex[64] = '\0';
 }
@@ -141,13 +140,15 @@ void sm3_finish(SM3 *ctx) {
 
     /* if not enough room for 8-byte length, process and start new block */
     if (pos > 56) {
-        while (pos < 64) ctx->buff[pos++] = 0;
+        while (pos < 64)
+            ctx->buff[pos++] = 0;
         sm3_process_block(ctx, ctx->buff);
         pos = 0;
     }
 
     /* pad with zeros until position 56 */
-    while (pos < 56) ctx->buff[pos++] = 0;
+    while (pos < 56)
+        ctx->buff[pos++] = 0;
 
     /* append 64-bit length in big-endian */
     int i;
