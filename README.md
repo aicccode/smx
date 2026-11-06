@@ -8,6 +8,17 @@
 
 所有实现均严格遵循国家密码管理局发布的算法规范与测试用例，算法输出与官方测试基准完全一致，可直接应用于商用密码产品的研发与部署。
 
+## 为什么选择 SMX
+
+与 OpenSSL、BouncyCastle 相比：
+
+- **更快：** 在 Apple M2 上，SM2 签名 Rust 只需 31.6 µs、Go 32.7 µs、Swift 39.2 µs，而 OpenSSL 3.6.5 需要 55.0 µs，BouncyCastle 需要 603 µs。SM4 解密 1 MiB，Rust 达到 839 MB/s，OpenSSL 为 141 MB/s。Java 版与同为 Java 的 BouncyCastle 相比，签名快 7.5 倍，密钥交换快 13 倍，SM4 加密快 1.6 倍、解密快 2 倍。详见下文“性能”，其中绿色加粗的数值都比 OpenSSL 和 BouncyCastle 快。
+- **完整的 SM2 密钥交换：** OpenSSL 3.x 没有提供 GB/T 32918.3 的 SM2 密钥交换接口；本库八种语言都提供，并包含确认值校验。
+- **八种语言，同一套行为：** 接口语义和输出格式一致，经过互通测试，可以直接跨语言通信，例如 JavaScript 前端与 Java 后端协商密钥后用 SM4 加密通信。各语言实现也与 OpenSSL、BouncyCastle 双向互通。
+- **零依赖：** 不需要安装 OpenSSL 本地库，也不需要引入 BouncyCastle 的 jar 包。JavaScript 和 Python 是纯源码实现，可以在浏览器等无法加载本地库的环境中使用。
+- **更严格地遵循国标：** 按 GB/T 32918.4 的要求，拒绝 KDF 输出全为零的 SM2 密文；OpenSSL 3.0 和 BouncyCastle 1.86 不做这项检查。
+- **可选的高安全版：** `security` 分支提供常数时间的 SM4，适合客户端等与不受信任的代码共用 CPU 的环境。在 Apple M2 上，OpenSSL 3.6.5 的 SM4 只有查表实现，BouncyCastle 的 SM4 同样是查表实现。
+
 ## 版本选择：高性能版与高安全版
 
 本仓库提供两个分支，**算法、接口和输出完全相同，可以互相通信、互相解密**，区别只在 SM4 的内部实现：
@@ -212,18 +223,20 @@ GB/T 32918.4 要求解密时拒绝 KDF 输出全为零的密文，本库照此�
 
 高性能版（`main`）与 OpenSSL 3.6.5、BouncyCastle 1.86 对比：
 
+绿色加粗表示比 OpenSSL 和 BouncyCastle 都快（领先 2% 以上）。
+
 | 操作 | OpenSSL 3.6.5 | BouncyCastle 1.86 | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
 |---|---|---|---|---|---|---|---|---|---|---|
-| SM3 1 MiB（MB/s） | 354 | 245 | 310 | 388 | 323 | 371 | 246 | 352 | 0.908 | 373 |
-| SM4-CBC 加密 1 MiB（MB/s） | 122 | 69.1 | 136 | 155 | 126 | 107 | 113 | 100 | 2.6 | 139 |
-| SM4-CBC 解密 1 MiB（MB/s） | 141 | 71.1 | 373 | 839 | 396 | 175 | 141 | 85.9 | 8.2 | 37.7 |
-| SM4 密钥扩展（µs） | 0.35 | 0.19 | 0.10 | 0.10 | 0.14 | 0.15 | 0.36 | 0.32 | 13.2 | 0.63 |
-| SM2 密钥生成（µs） | 30.9 | 527 | 24.9 | 14.5 | 13.2 | 24.4 | 40.1 | 70.9 | 334 | 16.2 |
-| SM2 签名（µs） | 55.0 | 603 | 50.0 | 31.6 | 32.7 | 49.9 | 79.9 | 210 | 496 | 39.2 |
-| SM2 验签（µs） | 115 | 850 | 76.0 | 76.6 | 55.9 | 123 | 227 | 242 | 709 | 55.4 |
-| SM2 加密 32 B（µs） | 113 | 2560 | 100 | 88.0 | 69.0 | 171 | 257 | 342 | 1800 | 76.1 |
-| SM2 解密 32 B（µs） | 77.6 | 1991 | 84.1 | 72.6 | 59.0 | 148 | 220 | 271 | 1628 | 61.1 |
-| SM2 密钥交换（µs） | — | 11536 | 299 | 262 | 206 | 471 | 897 | 1019 | 6935 | 233 |
+| SM3 1 MiB（MB/s） | 354 | 245 | 310 | $\color{green}{\textbf{388}}$ | 323 | $\color{green}{\textbf{371}}$ | 246 | 352 | 0.908 | $\color{green}{\textbf{373}}$ |
+| SM4-CBC 加密 1 MiB（MB/s） | 122 | 69.1 | $\color{green}{\textbf{136}}$ | $\color{green}{\textbf{155}}$ | $\color{green}{\textbf{126}}$ | 107 | 113 | 100 | 2.6 | $\color{green}{\textbf{139}}$ |
+| SM4-CBC 解密 1 MiB（MB/s） | 141 | 71.1 | $\color{green}{\textbf{373}}$ | $\color{green}{\textbf{839}}$ | $\color{green}{\textbf{396}}$ | $\color{green}{\textbf{175}}$ | 141 | 85.9 | 8.2 | 37.7 |
+| SM4 密钥扩展（µs） | 0.35 | 0.19 | $\color{green}{\textbf{0.10}}$ | $\color{green}{\textbf{0.10}}$ | $\color{green}{\textbf{0.14}}$ | $\color{green}{\textbf{0.15}}$ | 0.36 | 0.32 | 13.2 | 0.63 |
+| SM2 密钥生成（µs） | 30.9 | 527 | $\color{green}{\textbf{24.9}}$ | $\color{green}{\textbf{14.5}}$ | $\color{green}{\textbf{13.2}}$ | $\color{green}{\textbf{24.4}}$ | 40.1 | 70.9 | 334 | $\color{green}{\textbf{16.2}}$ |
+| SM2 签名（µs） | 55.0 | 603 | $\color{green}{\textbf{50.0}}$ | $\color{green}{\textbf{31.6}}$ | $\color{green}{\textbf{32.7}}$ | $\color{green}{\textbf{49.9}}$ | 79.9 | 210 | 496 | $\color{green}{\textbf{39.2}}$ |
+| SM2 验签（µs） | 115 | 850 | $\color{green}{\textbf{76.0}}$ | $\color{green}{\textbf{76.6}}$ | $\color{green}{\textbf{55.9}}$ | 123 | 227 | 242 | 709 | $\color{green}{\textbf{55.4}}$ |
+| SM2 加密 32 B（µs） | 113 | 2560 | $\color{green}{\textbf{100}}$ | $\color{green}{\textbf{88.0}}$ | $\color{green}{\textbf{69.0}}$ | 171 | 257 | 342 | 1800 | $\color{green}{\textbf{76.1}}$ |
+| SM2 解密 32 B（µs） | 77.6 | 1991 | 84.1 | $\color{green}{\textbf{72.6}}$ | $\color{green}{\textbf{59.0}}$ | 148 | 220 | 271 | 1628 | $\color{green}{\textbf{61.1}}$ |
+| SM2 密钥交换（µs） | — | 11536 | $\color{green}{\textbf{299}}$ | $\color{green}{\textbf{262}}$ | $\color{green}{\textbf{206}}$ | $\color{green}{\textbf{471}}$ | $\color{green}{\textbf{897}}$ | $\color{green}{\textbf{1019}}$ | $\color{green}{\textbf{6935}}$ | $\color{green}{\textbf{233}}$ |
 
 两个分支只有 SM4 不同。下表每格依次为：改造前 / `security`（高安全版）/ `main`（高性能版）：
 
@@ -262,13 +275,15 @@ GB/T 32918.4 要求解密时拒绝 KDF 输出全为零的密文，本库照此�
 
 在 Intel i5-13500H 的单个性能核上，与 OpenSSL 3.0.13 和 BouncyCastle 1.86 的对比（节选，完整结果和复现方法见 [`compare/`](compare/README.md)）。这组数据测于 SM4 改为查表之前，其中的 SM4 数值对应 `security` 分支：
 
+绿色加粗表示比 OpenSSL 和 BouncyCastle 都快（领先 2% 以上）。
+
 | 操作 | OpenSSL | BouncyCastle | C | Rust | Go | Java |
 |---|---|---|---|---|---|---|
-| SM2 签名（µs） | 202 | 311 | 37.6 | 27.5 | 31.7 | 77.1 |
-| SM2 验签（µs） | 192 | 367 | 67.2 | 64.8 | 49.0 | 221 |
-| SM3 1 MiB（MB/s） | 471 | 288 | 543 | 543 | 440 | 284 |
+| SM2 签名（µs） | 202 | 311 | $\color{green}{\textbf{37.6}}$ | $\color{green}{\textbf{27.5}}$ | $\color{green}{\textbf{31.7}}$ | $\color{green}{\textbf{77.1}}$ |
+| SM2 验签（µs） | 192 | 367 | $\color{green}{\textbf{67.2}}$ | $\color{green}{\textbf{64.8}}$ | $\color{green}{\textbf{49.0}}$ | 221 |
+| SM3 1 MiB（MB/s） | 471 | 288 | $\color{green}{\textbf{543}}$ | $\color{green}{\textbf{543}}$ | 440 | 284 |
 | SM4 加密 1 MiB（MB/s） | 157 | 101 | 117 | 123 | 109 | 26.4 |
-| SM4 解密 1 MiB（MB/s） | 177 | 103 | 815 | 1298 | 519 | 24.6 |
+| SM4 解密 1 MiB（MB/s） | 177 | 103 | $\color{green}{\textbf{815}}$ | $\color{green}{\textbf{1298}}$ | $\color{green}{\textbf{519}}$ | 24.6 |
 
 `security` 分支的 SM4 加密慢于 OpenSSL，是因为它不使用依赖秘密数据的查表。
 

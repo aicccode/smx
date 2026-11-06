@@ -8,6 +8,17 @@ Built entirely on the commercial cryptographic algorithm standards published by 
 
 Every implementation strictly follows the algorithm specifications and test vectors published by the State Cryptography Administration, and its output matches the official test reference values exactly, so it can be used directly in the development and deployment of commercial cryptographic products.
 
+## Why SMX
+
+Compared with OpenSSL and BouncyCastle:
+
+- **Faster:** on an Apple M2, SM2 signing takes 31.6 µs in Rust, 32.7 µs in Go and 39.2 µs in Swift, against 55.0 µs for OpenSSL 3.6.5 and 603 µs for BouncyCastle. SM4 decryption of 1 MiB runs at 839 MB/s in Rust against 141 MB/s for OpenSSL. The Java version, compared with BouncyCastle (also Java), signs 7.5 times faster, completes a key exchange 13 times faster, and runs SM4 encryption 1.6 times and decryption 2 times faster. See "Performance" below, where every value in green bold beats both OpenSSL and BouncyCastle.
+- **Complete SM2 key exchange:** OpenSSL 3.x offers no API for the GB/T 32918.3 SM2 key exchange; this library provides it in all eight languages, including the confirmation values.
+- **Eight languages, one behaviour:** the same API semantics and output formats, tested for interoperability, so languages can talk to each other directly, for example a JavaScript front end and a Java back end agreeing on a key and then encrypting with SM4. Every implementation also interoperates both ways with OpenSSL and BouncyCastle.
+- **Zero dependencies:** no native OpenSSL library to install and no BouncyCastle jar to add. JavaScript and Python are pure source code and work where native libraries cannot be loaded, such as browsers.
+- **Stricter standard compliance:** as GB/T 32918.4 requires, SM2 ciphertexts whose KDF output is all zero are rejected; OpenSSL 3.0 and BouncyCastle 1.86 do not check this.
+- **Optional high-security version:** the `security` branch provides constant-time SM4 for environments such as clients, where untrusted code may share the CPU. On an Apple M2, OpenSSL 3.6.5 only has a table-based SM4, and BouncyCastle's SM4 is table-based as well.
+
 ## Choosing a version: high-performance or high-security
 
 This repository has two branches. **The algorithms, API and output are identical, so the two can talk to each other and decrypt each other's data.** The only difference is the internal implementation of SM4:
@@ -212,18 +223,20 @@ Measured on 2026-11-06 on an idle Apple M2 Mac (macOS 14.1.1). Each implementati
 
 High-performance version (`main`) compared with OpenSSL 3.6.5 and BouncyCastle 1.86:
 
+Green bold marks results faster than both OpenSSL and BouncyCastle (by more than 2%).
+
 | Operation | OpenSSL 3.6.5 | BouncyCastle 1.86 | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
 |---|---|---|---|---|---|---|---|---|---|---|
-| SM3 1 MiB (MB/s) | 354 | 245 | 310 | 388 | 323 | 371 | 246 | 352 | 0.908 | 373 |
-| SM4-CBC encrypt 1 MiB (MB/s) | 122 | 69.1 | 136 | 155 | 126 | 107 | 113 | 100 | 2.6 | 139 |
-| SM4-CBC decrypt 1 MiB (MB/s) | 141 | 71.1 | 373 | 839 | 396 | 175 | 141 | 85.9 | 8.2 | 37.7 |
-| SM4 key schedule (µs) | 0.35 | 0.19 | 0.10 | 0.10 | 0.14 | 0.15 | 0.36 | 0.32 | 13.2 | 0.63 |
-| SM2 key generation (µs) | 30.9 | 527 | 24.9 | 14.5 | 13.2 | 24.4 | 40.1 | 70.9 | 334 | 16.2 |
-| SM2 sign (µs) | 55.0 | 603 | 50.0 | 31.6 | 32.7 | 49.9 | 79.9 | 210 | 496 | 39.2 |
-| SM2 verify (µs) | 115 | 850 | 76.0 | 76.6 | 55.9 | 123 | 227 | 242 | 709 | 55.4 |
-| SM2 encrypt 32 B (µs) | 113 | 2560 | 100 | 88.0 | 69.0 | 171 | 257 | 342 | 1800 | 76.1 |
-| SM2 decrypt 32 B (µs) | 77.6 | 1991 | 84.1 | 72.6 | 59.0 | 148 | 220 | 271 | 1628 | 61.1 |
-| SM2 key exchange (µs) | — | 11536 | 299 | 262 | 206 | 471 | 897 | 1019 | 6935 | 233 |
+| SM3 1 MiB (MB/s) | 354 | 245 | 310 | $\color{green}{\textbf{388}}$ | 323 | $\color{green}{\textbf{371}}$ | 246 | 352 | 0.908 | $\color{green}{\textbf{373}}$ |
+| SM4-CBC encrypt 1 MiB (MB/s) | 122 | 69.1 | $\color{green}{\textbf{136}}$ | $\color{green}{\textbf{155}}$ | $\color{green}{\textbf{126}}$ | 107 | 113 | 100 | 2.6 | $\color{green}{\textbf{139}}$ |
+| SM4-CBC decrypt 1 MiB (MB/s) | 141 | 71.1 | $\color{green}{\textbf{373}}$ | $\color{green}{\textbf{839}}$ | $\color{green}{\textbf{396}}$ | $\color{green}{\textbf{175}}$ | 141 | 85.9 | 8.2 | 37.7 |
+| SM4 key schedule (µs) | 0.35 | 0.19 | $\color{green}{\textbf{0.10}}$ | $\color{green}{\textbf{0.10}}$ | $\color{green}{\textbf{0.14}}$ | $\color{green}{\textbf{0.15}}$ | 0.36 | 0.32 | 13.2 | 0.63 |
+| SM2 key generation (µs) | 30.9 | 527 | $\color{green}{\textbf{24.9}}$ | $\color{green}{\textbf{14.5}}$ | $\color{green}{\textbf{13.2}}$ | $\color{green}{\textbf{24.4}}$ | 40.1 | 70.9 | 334 | $\color{green}{\textbf{16.2}}$ |
+| SM2 sign (µs) | 55.0 | 603 | $\color{green}{\textbf{50.0}}$ | $\color{green}{\textbf{31.6}}$ | $\color{green}{\textbf{32.7}}$ | $\color{green}{\textbf{49.9}}$ | 79.9 | 210 | 496 | $\color{green}{\textbf{39.2}}$ |
+| SM2 verify (µs) | 115 | 850 | $\color{green}{\textbf{76.0}}$ | $\color{green}{\textbf{76.6}}$ | $\color{green}{\textbf{55.9}}$ | 123 | 227 | 242 | 709 | $\color{green}{\textbf{55.4}}$ |
+| SM2 encrypt 32 B (µs) | 113 | 2560 | $\color{green}{\textbf{100}}$ | $\color{green}{\textbf{88.0}}$ | $\color{green}{\textbf{69.0}}$ | 171 | 257 | 342 | 1800 | $\color{green}{\textbf{76.1}}$ |
+| SM2 decrypt 32 B (µs) | 77.6 | 1991 | 84.1 | $\color{green}{\textbf{72.6}}$ | $\color{green}{\textbf{59.0}}$ | 148 | 220 | 271 | 1628 | $\color{green}{\textbf{61.1}}$ |
+| SM2 key exchange (µs) | — | 11536 | $\color{green}{\textbf{299}}$ | $\color{green}{\textbf{262}}$ | $\color{green}{\textbf{206}}$ | $\color{green}{\textbf{471}}$ | $\color{green}{\textbf{897}}$ | $\color{green}{\textbf{1019}}$ | $\color{green}{\textbf{6935}}$ | $\color{green}{\textbf{233}}$ |
 
 The two branches differ only in SM4. Each cell below reads: before the rework / `security` (high-security) / `main` (high-performance):
 
@@ -262,13 +275,15 @@ Speed-up of `main` over the code before the rework (above 1 means faster):
 
 On a single performance core of an Intel i5-13500H, compared with OpenSSL 3.0.13 and BouncyCastle 1.86 (excerpt; full results and how to reproduce them are in [`compare/`](compare/README.md)). These numbers were taken before SM4 was switched to tables, so the SM4 figures correspond to the `security` branch:
 
+Green bold marks results faster than both OpenSSL and BouncyCastle (by more than 2%).
+
 | Operation | OpenSSL | BouncyCastle | C | Rust | Go | Java |
 |---|---|---|---|---|---|---|
-| SM2 sign (µs) | 202 | 311 | 37.6 | 27.5 | 31.7 | 77.1 |
-| SM2 verify (µs) | 192 | 367 | 67.2 | 64.8 | 49.0 | 221 |
-| SM3 1 MiB (MB/s) | 471 | 288 | 543 | 543 | 440 | 284 |
+| SM2 sign (µs) | 202 | 311 | $\color{green}{\textbf{37.6}}$ | $\color{green}{\textbf{27.5}}$ | $\color{green}{\textbf{31.7}}$ | $\color{green}{\textbf{77.1}}$ |
+| SM2 verify (µs) | 192 | 367 | $\color{green}{\textbf{67.2}}$ | $\color{green}{\textbf{64.8}}$ | $\color{green}{\textbf{49.0}}$ | 221 |
+| SM3 1 MiB (MB/s) | 471 | 288 | $\color{green}{\textbf{543}}$ | $\color{green}{\textbf{543}}$ | 440 | 284 |
 | SM4 encrypt 1 MiB (MB/s) | 157 | 101 | 117 | 123 | 109 | 26.4 |
-| SM4 decrypt 1 MiB (MB/s) | 177 | 103 | 815 | 1298 | 519 | 24.6 |
+| SM4 decrypt 1 MiB (MB/s) | 177 | 103 | $\color{green}{\textbf{815}}$ | $\color{green}{\textbf{1298}}$ | $\color{green}{\textbf{519}}$ | 24.6 |
 
 SM4 encryption on the `security` branch is slower than OpenSSL because it does not use table lookups indexed by secret data.
 

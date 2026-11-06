@@ -98,6 +98,11 @@ def fmt(op, t):
     return f"{t:.0f}" if t >= 100 else (f"{t:.1f}" if t >= 10 else f"{t:.2f}")
 
 
+def green(text):
+    """Green bold text; GitHub renders this math form in colour (plain HTML colour is stripped)."""
+    return f"$\\color{{green}}{{\\textbf{{{text}}}}}$"
+
+
 def ratio(b, a, digits=2):
     if b is None or a is None:
         return "—"
@@ -143,7 +148,11 @@ def summary():
     print(f"| {T['op']} | " + " | ".join(n for _, n in refs + LANGS) + " |")
     print("|---|" + "---|" * (len(refs) + len(LANGS)))
     for o, key in SUMMARY:
-        cells = [fmt(o, us(k, o)) for k, _ in refs] + [fmt(o, us(f"{k}-{main}", o)) for k, _ in LANGS]
+        ref_times = [us(k, o) for k, _ in refs if us(k, o) is not None]
+        cells = [fmt(o, t) for t in (us(k, o) for k, _ in refs)]
+        for k, _ in LANGS:
+            t = us(f"{k}-{main}", o)
+            cells.append(green(fmt(o, t)) if t is not None and all(t < 0.98 * r for r in ref_times) else fmt(o, t))
         print(f"| {T[key]} | " + " | ".join(cells) + " |")
 
     sides = ["base"] + VARIANTS
