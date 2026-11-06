@@ -213,24 +213,6 @@ public class SecurityVectorTests
     [Fact]
     public void Sm3LengthIsCorrectAt1024MiB() => Assert.Equal(S(Sm3Vectors, "zeros_1024_mib"), HashZeros(1024));
 
-    private static void OnEverySm4Path(Action action)
-    {
-        foreach (var (software, noAvx2) in new[] { (false, false), (false, true), (true, false) })
-        {
-            Sm4Core.ForceSoftware = software;
-            Sm4Core.ForceNoAvx2 = noAvx2;
-            try
-            {
-                action();
-            }
-            finally
-            {
-                Sm4Core.ForceSoftware = false;
-                Sm4Core.ForceNoAvx2 = false;
-            }
-        }
-    }
-
     private static SM4 VectorSm4()
     {
         var c = new SM4();
@@ -241,15 +223,12 @@ public class SecurityVectorTests
     [Fact]
     public void Sm4ValidVectors()
     {
-        OnEverySm4Path(() =>
-        {
-            var c = VectorSm4();
-            string plain = S(Sm4Vectors, "valid_padded_plaintext");
-            Assert.Equal(S(Sm4Vectors, "valid_padded_ciphertext"), c.Encrypt(plain));
-            Assert.Equal(plain, c.Decrypt(S(Sm4Vectors, "valid_padded_ciphertext")));
-            Assert.Equal("", c.Decrypt(S(Sm4Vectors, "valid_full_padding_block_ciphertext")));
-            Assert.Equal(S(Sm4Vectors, "valid_full_padding_block_ciphertext"), c.Encrypt(""));
-        });
+        var c = VectorSm4();
+        string plain = S(Sm4Vectors, "valid_padded_plaintext");
+        Assert.Equal(S(Sm4Vectors, "valid_padded_ciphertext"), c.Encrypt(plain));
+        Assert.Equal(plain, c.Decrypt(S(Sm4Vectors, "valid_padded_ciphertext")));
+        Assert.Equal("", c.Decrypt(S(Sm4Vectors, "valid_full_padding_block_ciphertext")));
+        Assert.Equal(S(Sm4Vectors, "valid_full_padding_block_ciphertext"), c.Encrypt(""));
     }
 
     [Fact]
@@ -273,29 +252,26 @@ public class SecurityVectorTests
     [Fact]
     public void Sm4AllDecryptFailuresLookTheSame()
     {
-        OnEverySm4Path(() =>
+        var c = VectorSm4();
+        var messages = new HashSet<string>();
+        void Check(string ciphertext, string name)
         {
-            var c = VectorSm4();
-            var messages = new HashSet<string>();
-            void Check(string ciphertext, string name)
-            {
-                var ex = Assert.Throws<ArgumentException>(() => c.Decrypt(ciphertext));
-                Assert.True(ex.GetType() == typeof(ArgumentException), name);
-                messages.Add(ex.Message);
-            }
+            var ex = Assert.Throws<ArgumentException>(() => c.Decrypt(ciphertext));
+            Assert.True(ex.GetType() == typeof(ArgumentException), name);
+            messages.Add(ex.Message);
+        }
 
-            foreach (var e in Cases(Sm4Vectors, "invalid_paddings"))
-            {
-                Check(S(e, "value"), S(e, "name"));
-            }
-            foreach (var length in Sm4Vectors.GetProperty("invalid_ciphertext_lengths_bytes").EnumerateArray().Select(e => e.GetInt32()))
-            {
-                Check(new string('a', length * 2), "length " + length);
-            }
-            Check("abc", "odd digits");
-            Check(new string('z', 32), "not hex");
-            Check("0x" + new string('a', 30), "prefix");
-            Assert.Single(messages);
-        });
+        foreach (var e in Cases(Sm4Vectors, "invalid_paddings"))
+        {
+            Check(S(e, "value"), S(e, "name"));
+        }
+        foreach (var length in Sm4Vectors.GetProperty("invalid_ciphertext_lengths_bytes").EnumerateArray().Select(e => e.GetInt32()))
+        {
+            Check(new string('a', length * 2), "length " + length);
+        }
+        Check("abc", "odd digits");
+        Check(new string('z', 32), "not hex");
+        Check("0x" + new string('a', 30), "prefix");
+        Assert.Single(messages);
     }
 }

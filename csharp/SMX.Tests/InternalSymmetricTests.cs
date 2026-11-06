@@ -8,13 +8,13 @@ public class HardwarePathSwitches
 {
 }
 
-/// <summary>SM4 and hex paths (hardware, AVX2, scalar) must agree with published vectors and with one another.</summary>
+/// <summary>SM4 must match the published vectors and tables; the hex paths (vector, scalar) must agree with one another.</summary>
 [Collection("Hardware path switches")]
 public class InternalSymmetricTests
 {
     private static readonly byte[] StandardKey = Convert.FromHexString("0123456789ABCDEFFEDCBA9876543210");
 
-    /// <summary>The published S-box (GB/T 32907), which the library itself no longer contains.</summary>
+    /// <summary>The published S-box (GB/T 32907), kept apart from the library's copy so that a typo in either shows.</summary>
     private static readonly byte[] StandardSBox = Convert.FromHexString(
         "D690E9FECCE13DB716B614C228FB2C052B679A762ABE04C3AA441326498606999C4250F491EF987A33540B43EDCFAC62" +
         "E4B31CA9C908E89580DF94FA758F3FA64707A7FCF37317BA83593C19E6854FA8686B81B27164DA8BF8EB0F4B70569D35" +
@@ -24,34 +24,18 @@ public class InternalSymmetricTests
         "18F07DEC3ADC4D2079EE5F3ED7CB3948");
 
     [Fact]
-    public void Sm4CircuitMatchesStandardSBoxForAllBytesInAllPositions()
+    public void Sm4TablesMatchStandardSBoxForAllBytesInAllPositions()
     {
+        Assert.Equal(StandardSBox, Sm4Core.SBox.ToArray());
         for (int i = 0; i < 256; i++)
         {
-            for (int shift = 0; shift < 32; shift += 8)
+            for (int position = 0; position < 4; position++)
             {
-                uint fill = 0x5A5A5A5A & ~(0xFFu << shift);
-                uint fillOutput = StandardSBox[0x5A] * 0x01010101u & ~(0xFFu << shift);
-                Assert.Equal(((uint)StandardSBox[i] << shift) | fillOutput, Sm4SBoxCircuit.Substitute(fill | ((uint)i << shift)));
-            }
-        }
-    }
-
-    /// <summary>Runs the action once per implementation path this machine can actually execute.</summary>
-    private static void OnEveryPath(Action action)
-    {
-        foreach (var (software, noAvx2) in new[] { (false, false), (false, true), (true, false) })
-        {
-            Sm4Core.ForceSoftware = software;
-            Sm4Core.ForceNoAvx2 = noAvx2;
-            try
-            {
-                action();
-            }
-            finally
-            {
-                Sm4Core.ForceSoftware = false;
-                Sm4Core.ForceNoAvx2 = false;
+                uint b = (uint)StandardSBox[i] << (24 - 8 * position);
+                uint round = b ^ uint.RotateLeft(b, 2) ^ uint.RotateLeft(b, 10) ^ uint.RotateLeft(b, 18) ^ uint.RotateLeft(b, 24);
+                uint key = b ^ uint.RotateLeft(b, 13) ^ uint.RotateLeft(b, 23);
+                Assert.Equal(round, Sm4Core.RoundTable[256 * position + i]);
+                Assert.Equal(key, Sm4Core.KeyTable[256 * position + i]);
             }
         }
     }
@@ -59,55 +43,30 @@ public class InternalSymmetricTests
     [Fact]
     public void Sm4StandardSingleBlockAndKeySchedule()
     {
-        OnEveryPath(() =>
-        {
-            var rk = new uint[Sm4Core.RoundCount];
-            Sm4Core.ExpandKey(StandardKey, rk);
-            Assert.Equal(0xF12186F9u, rk[0]);
-            Assert.Equal(0x9124A012u, rk[31]);
+        var rk = new uint[Sm4Core.RoundCount];
+        Sm4Core.ExpandKey(StandardKey, rk);
+        Assert.Equal(0xF12186F9u, rk[0]);
+        Assert.Equal(0x9124A012u, rk[31]);
 
-            var block = (byte[])StandardKey.Clone();
-            Sm4Core.EncryptBlock(rk, block);
-            Assert.Equal("681EDF34D206965E86B3E94F536E4246", Convert.ToHexString(block));
+        var block = (byte[])StandardKey.Clone();
+        Sm4Core.EncryptBlock(rk, block);
+        Assert.Equal("681EDF34D206965E86B3E94F536E4246", Convert.ToHexString(block));
 
-            Sm4Core.DecryptCbc(rk, new byte[16], block);
-            Assert.Equal(Convert.ToHexString(StandardKey), Convert.ToHexString(block));
-        });
+        Sm4Core.DecryptCbc(rk, new byte[16], block);
+        Assert.Equal(Convert.ToHexString(StandardKey), Convert.ToHexString(block));
     }
 
     [Fact]
     public void Sm4StandardMillionIterations()
     {
-        OnEveryPath(() =>
+        var rk = new uint[Sm4Core.RoundCount];
+        Sm4Core.ExpandKey(StandardKey, rk);
+        var block = (byte[])StandardKey.Clone();
+        for (int i = 0; i < 1_000_000; i++)
         {
-            var rk = new uint[Sm4Core.RoundCount];
-            Sm4Core.ExpandKey(StandardKey, rk);
-            var block = (byte[])StandardKey.Clone();
-            for (int i = 0; i < 1_000_000; i++)
-            {
-                Sm4Core.EncryptBlock(rk, block);
-            }
-            Assert.Equal("595298C7C6FD271F0402F804C33D3F66", Convert.ToHexString(block));
-        });
-    }
-
-    [Fact]
-    public void Sm4HardwareSubstitutionMatchesTableForAllBytesInAllPositions()
-    {
-        if (!Sm4Core.HardwareAvailable)
-        {
-            return;
+            Sm4Core.EncryptBlock(rk, block);
         }
-        for (int i = 0; i < 256; i++)
-        {
-            uint expected = StandardSBox[i];
-            for (int shift = 0; shift < 32; shift += 8)
-            {
-                uint fill = 0x5A5A5A5A & ~(0xFFu << shift);
-                uint fillOutput = (uint)StandardSBox[0x5A] * 0x01010101u & ~(0xFFu << shift);
-                Assert.Equal((expected << shift) | fillOutput, Sm4Core.SubstituteWithHardware(fill | ((uint)i << shift)));
-            }
-        }
+        Assert.Equal("595298C7C6FD271F0402F804C33D3F66", Convert.ToHexString(block));
     }
 
     [Fact]
@@ -124,52 +83,46 @@ public class InternalSymmetricTests
             rng.NextBytes(plain);
 
             byte[]? referenceCipher = null;
-            OnEveryPath(() =>
+            var rk = new uint[Sm4Core.RoundCount];
+            Sm4Core.ExpandKey(key, rk);
+
+            var cipher = (byte[])plain.Clone();
+            Sm4Core.EncryptCbc(rk, iv, cipher);
+            referenceCipher ??= cipher;
+            Assert.Equal(referenceCipher, cipher);
+
+            var back = (byte[])cipher.Clone();
+            Sm4Core.DecryptCbc(rk, iv, back);
+            Assert.Equal(plain, back);
+
+            // CBC by definition, one block at a time through the single-block primitive.
+            var expected = new byte[plain.Length];
+            var chain = (byte[])iv.Clone();
+            for (int i = 0; i < blocks; i++)
             {
-                var rk = new uint[Sm4Core.RoundCount];
-                Sm4Core.ExpandKey(key, rk);
-
-                var cipher = (byte[])plain.Clone();
-                Sm4Core.EncryptCbc(rk, iv, cipher);
-                referenceCipher ??= cipher;
-                Assert.Equal(referenceCipher, cipher);
-
-                var back = (byte[])cipher.Clone();
-                Sm4Core.DecryptCbc(rk, iv, back);
-                Assert.Equal(plain, back);
-
-                // CBC by definition, one block at a time through the single-block primitive.
-                var expected = new byte[plain.Length];
-                var chain = (byte[])iv.Clone();
-                for (int i = 0; i < blocks; i++)
+                var block = plain.AsSpan(i * 16, 16).ToArray();
+                for (int j = 0; j < 16; j++)
                 {
-                    var block = plain.AsSpan(i * 16, 16).ToArray();
-                    for (int j = 0; j < 16; j++)
-                    {
-                        block[j] ^= chain[j];
-                    }
-                    Sm4Core.EncryptBlock(rk, block);
-                    block.CopyTo(expected, i * 16);
-                    chain = block;
+                    block[j] ^= chain[j];
                 }
-                Assert.Equal(expected, cipher);
-            });
+                Sm4Core.EncryptBlock(rk, block);
+                block.CopyTo(expected, i * 16);
+                chain = block;
+            }
+            Assert.Equal(expected, cipher);
         }
     }
 
     [Fact]
     public void Sm4PublicApiMatchesOnEveryPath()
     {
-        OnEveryPath(() =>
-        {
-            var c = new SM4();
-            c.SetKey(Encoding.ASCII.GetBytes("157224F19FD4C080"), Encoding.ASCII.GetBytes("65B06A99625C008A"));
+        var c = new SM4();
+        c.SetKey(Encoding.ASCII.GetBytes("157224F19FD4C080"), Encoding.ASCII.GetBytes("65B06A99625C008A"));
 
-            const string Plain = "国密SM4对称加密算法";
-            var cipher = c.Encrypt(Plain);
-            Assert.Equal("09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc", cipher);
-            Assert.Equal(Plain, c.Decrypt(cipher));
-        });
+        const string Plain = "国密SM4对称加密算法";
+        var cipher = c.Encrypt(Plain);
+        Assert.Equal("09908004c24cece806ee6dc2d6a3d154907048fb96d0201a8c47f4f1e03995bc", cipher);
+        Assert.Equal(Plain, c.Decrypt(cipher));
     }
 
     [Fact]
