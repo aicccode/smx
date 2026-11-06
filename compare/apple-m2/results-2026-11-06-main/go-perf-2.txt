@@ -1,0 +1,16 @@
+sm3/64B	0.432	0.432
+sm3/1KB	3.428	3.426
+sm3/1MB	3245.572	3243.186
+sm4/key_schedule	0.135	0.134
+sm4/cbc_encrypt/16B	0.276	0.275
+sm4/cbc_encrypt/1KB	8.305	8.298
+sm4/cbc_encrypt/1MB	8297.737	8292.655
+sm4/cbc_decrypt/16B	0.186	0.186
+sm4/cbc_decrypt/1KB	2.828	2.825
+sm4/cbc_decrypt/1MB	2645.835	2643.906
+sm2/keygen	13.242	13.234
+sm2/sign	32.659	32.649
+sm2/verify	55.897	55.863
+sm2/encrypt/32B	68.997	68.943
+sm2/decrypt/32B	58.930	58.913
+sm2/key_exchange	205.784	205.280

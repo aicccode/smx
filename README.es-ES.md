@@ -2,9 +2,36 @@
 
 # SMX - Implementación Multilingüe de Algoritmos Criptográficos Nacionales
 
+[中文](README.md) | [English](README.en-US.md) | Español
+
 Basado completamente en los estándares de algoritmos criptográficos comerciales publicados por la Administración Estatal de Criptografía, esta implementación logra la aplicación integral de los algoritmos criptográficos nacionales SM2, SM3 y SM4 en ocho lenguajes de programación principales: **Java, JavaScript, Swift, Rust, Go, C, C# y Python**, con **cero dependencias de terceros**.
 
 Todas las implementaciones siguen estrictamente las especificaciones algorítmicas y los casos de prueba publicados por la Administración Estatal de Criptografía. La salida de los algoritmos coincide completamente con los estándares de prueba oficiales, por lo que pueden aplicarse directamente al desarrollo y despliegue de productos de criptografía comercial.
+
+## Elegir versión: alto rendimiento o alta seguridad
+
+Este repositorio ofrece dos ramas. **Los algoritmos, la API y las salidas son idénticos, de modo que ambas versiones se comunican entre sí y descifran los datos de la otra.** Solo cambia la implementación interna de SM4:
+
+| Rama | Implementación de SM4 | Uso recomendado |
+|---|---|---|
+| `main` (alto rendimiento, por defecto) | Basada en tablas, como OpenSSL y BouncyCastle; la más rápida | Servidores y cualquier entorno donde ningún código no confiable comparta la misma CPU |
+| `security` (alta seguridad) | Tiempo constante, sin accesos a tablas que dependan de la clave; SM4 más lento | Clientes (apps, programas de escritorio, navegadores) y nubes donde la CPU física se comparte con otros inquilinos |
+
+Fuera de SM4, el código de ambas ramas es el mismo: el SM2 de tiempo constante, el generador de números aleatorios seguro y la validación estricta de entradas están en las dos.
+
+**Alto rendimiento no significa inseguro.** Una implementación con tablas está expuesta a ataques de temporización de caché: el atacante no lee su memoria, sino que ejecuta su propio programa en **la misma máquina y la misma CPU**, mide cuánto tardan sus propios accesos a memoria y deduce qué entradas de la tabla usó el cifrado, y de ahí la clave. Por tanto:
+
+- **En un servidor que usted controla** y que solo ejecuta sus servicios, el atacante no puede ejecutar código en la misma CPU, así que este ataque prácticamente no tiene por dónde empezar. Medir tiempos a través de la red es posible en teoría, pero exige una cantidad enorme de mediciones precisas y en la práctica es muy difícil. El SM4 de OpenSSL en ARM y otras plataformas también usa tablas y se emplea ampliamente en servidores.
+- **En un cliente**, el mismo dispositivo puede ejecutar a la vez apps o scripts web no confiables que comparten la caché de la CPU con su código criptográfico, y el riesgo es claramente mayor.
+- **En una nube con CPU física compartida**, otros inquilinos del mismo anfitrión podrían, en teoría, lanzar este ataque. Usar núcleos físicos dedicados o anfitriones dedicados lo evita.
+
+Una aclaración más: si un atacante ya puede leer directamente la memoria de su proceso, la clave queda expuesta y ninguna de las dos versiones lo impide; no es algo que se resuelva eligiendo rama.
+
+Para obtener la versión de alta seguridad:
+
+```bash
+git clone -b security https://github.com/aicccode/smx.git
+```
 
 ## Matriz de funcionalidades
 
@@ -160,9 +187,9 @@ SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # Incluye las prue
 
 ### Canales laterales
 
-- Las operaciones con la clave privada (generación de claves, firma, descifrado, intercambio de claves) usan ventanas fijas y selección enmascarada en tablas, sin ramas ni direcciones de memoria que dependan de datos secretos. C, Rust y Swift incluyen herramientas que revisan el código compilado (`make check-ct` en C, `rust/tools/check_ct_asm.py`, `swift/Tools/check_constant_time.py`); vuelva a ejecutarlas al cambiar de compilador.
-- SM4 nunca usa tablas indexadas por datos secretos: utiliza AES-NI, GFNI o las instrucciones AES de ARM cuando existen y, si no, una S-box implementada como circuito booleano.
-- Java, C#, JavaScript y Python se ejecutan en entornos gestionados que no garantizan tiempo constante; la biblioteca solo puede evitar en el código fuente las ramas y los accesos a tablas que dependen de secretos.
+- En SM2, las operaciones con la clave privada (generación de claves, firma, descifrado, intercambio de claves) usan ventanas fijas y selección enmascarada en tablas, sin ramas ni direcciones de memoria que dependan de datos secretos. C, Rust y Swift incluyen herramientas que revisan el código compilado (`make check-ct` en C, `rust/tools/check_ct_asm.py`, `swift/Tools/check_constant_time.py`); vuelva a ejecutarlas al cambiar de compilador.
+- **En esta rama (`main`), SM4 usa tablas**: es rápido, pero no resiste ataques de temporización de caché; vea «Elegir versión» más arriba. En la rama `security`, SM4 no usa tablas indexadas por datos secretos: utiliza AES-NI, GFNI o las instrucciones AES de ARM cuando existen y, si no, una S-box implementada como circuito booleano.
+- Java, C#, JavaScript y Python se ejecutan en entornos gestionados que no garantizan tiempo constante; la biblioteca solo puede evitar en el código fuente las ramas y los accesos a tablas que dependen de secretos (en SM2; en la rama `security`, también en SM4).
 - La verificación de firmas solo maneja datos públicos y usa algoritmos de tiempo variable por velocidad.
 
 ### Claves antiguas que deben sustituirse
@@ -179,45 +206,61 @@ GB/T 32918.4 exige rechazar al descifrar los textos cifrados cuya salida KDF sea
 
 ## Rendimiento
 
-### Apple M2: antes y después de la optimización
+### Apple M2: antes de la optimización, alta seguridad y alto rendimiento
 
-Medido el 2026-11-06 en un Mac Apple M2 sin carga (macOS 14.1.1). Cada implementación se ejecutó 3 veces completas; en cada ejecución se toma la mediana de 7 muestras por operación, y la tabla muestra la mediana de las 3 ejecuciones. La mediana de la variación entre ejecuciones está entre el 0 % y el 3,3 %. Las tablas completas por algoritmo, el método, los datos en bruto y los scripts para reproducirlo están en [`compare/apple-m2/`](compare/apple-m2/README.md) (en chino).
+Medido el 2026-11-06 en un Mac Apple M2 sin carga (macOS 14.1.1). Cada implementación se ejecutó 3 veces completas; en cada ejecución se toma la mediana de 7 muestras por operación, y las tablas muestran la mediana de las 3 ejecuciones. La mediana de la variación entre ejecuciones está entre el 0 % y el 3,7 %. Las tablas completas por algoritmo, el método, los datos en bruto y los scripts para reproducirlo están en [`compare/apple-m2/`](compare/apple-m2/README.md) (en chino).
 
-Rendimiento actual, comparado con OpenSSL 3.6.5 y BouncyCastle 1.86:
+Versión de alto rendimiento (`main`) comparada con OpenSSL 3.6.5 y BouncyCastle 1.86:
 
 | Operación | OpenSSL 3.6.5 | BouncyCastle 1.86 | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
 |---|---|---|---|---|---|---|---|---|---|---|
-| SM3 1 MiB (MB/s) | 354 | 245 | 310 | 389 | 323 | 371 | 247 | 352 | 0.945 | 373 |
-| Cifrado SM4-CBC 1 MiB (MB/s) | 122 | 69.1 | 60.4 | 58.3 | 25.1 | 24.1 | 24.1 | 20.1 | 0.102 | 20.1 |
-| Descifrado SM4-CBC 1 MiB (MB/s) | 141 | 71.1 | 195 | 839 | 113 | 23.4 | 23.1 | 43.9 | 8.2 | 20.9 |
-| Generación de claves SM2 (µs) | 30.9 | 527 | 24.9 | 14.6 | 13.2 | 24.4 | 40.1 | 71.0 | 330 | 16.2 |
-| Firma SM2 (µs) | 55.0 | 603 | 50.0 | 31.8 | 32.6 | 49.9 | 80.5 | 211 | 490 | 39.3 |
-| Verificación SM2 (µs) | 115 | 850 | 75.7 | 75.5 | 55.7 | 122 | 224 | 240 | 712 | 56.0 |
-| Cifrado SM2 32 B (µs) | 113 | 2560 | 100 | 87.7 | 69.0 | 171 | 257 | 343 | 1783 | 76.1 |
-| Descifrado SM2 32 B (µs) | 77.6 | 1991 | 84.1 | 72.5 | 59.0 | 148 | 220 | 271 | 1606 | 61.1 |
-| Intercambio de claves SM2 (µs) | — | 11536 | 299 | 263 | 206 | 471 | 897 | 1021 | 6823 | 233 |
+| SM3 1 MiB (MB/s) | 354 | 245 | 310 | 388 | 323 | 371 | 246 | 352 | 0.908 | 373 |
+| Cifrado SM4-CBC 1 MiB (MB/s) | 122 | 69.1 | 136 | 155 | 126 | 107 | 113 | 100 | 2.6 | 139 |
+| Descifrado SM4-CBC 1 MiB (MB/s) | 141 | 71.1 | 373 | 839 | 396 | 175 | 141 | 85.9 | 8.2 | 37.7 |
+| Expansión de clave SM4 (µs) | 0.35 | 0.19 | 0.10 | 0.10 | 0.14 | 0.15 | 0.36 | 0.32 | 13.2 | 0.63 |
+| Generación de claves SM2 (µs) | 30.9 | 527 | 24.9 | 14.5 | 13.2 | 24.4 | 40.1 | 70.9 | 334 | 16.2 |
+| Firma SM2 (µs) | 55.0 | 603 | 50.0 | 31.6 | 32.7 | 49.9 | 79.9 | 210 | 496 | 39.2 |
+| Verificación SM2 (µs) | 115 | 850 | 76.0 | 76.6 | 55.9 | 123 | 227 | 242 | 709 | 55.4 |
+| Cifrado SM2 32 B (µs) | 113 | 2560 | 100 | 88.0 | 69.0 | 171 | 257 | 342 | 1800 | 76.1 |
+| Descifrado SM2 32 B (µs) | 77.6 | 1991 | 84.1 | 72.6 | 59.0 | 148 | 220 | 271 | 1628 | 61.1 |
+| Intercambio de claves SM2 (µs) | — | 11536 | 299 | 262 | 206 | 471 | 897 | 1019 | 6935 | 233 |
 
-Aceleración respecto al código anterior (más de 1 significa más rápido):
+Las dos ramas solo se diferencian en SM4. Cada celda indica: antes / `security` (alta seguridad) / `main` (alto rendimiento):
+
+| Lenguaje | Cifrado 1 MiB (MB/s) | Descifrado 1 MiB (MB/s) | Expansión de clave (µs) |
+|---|---|---|---|
+| C | 72.7 / 60.4 / **136** | 80.0 / 195 / **373** | 0.14 / 0.34 / **0.10** |
+| Rust | 22.7 / 58.3 / **155** | 67.4 / 839 / **839** | 0.17 / 0.23 / **0.10** |
+| Go | 58.2 / 25.1 / **126** | 59.3 / 113 / **396** | 0.22 / 0.64 / **0.14** |
+| C# | 52.3 / 24.1 / **107** | 42.0 / 23.4 / **175** | 0.23 / 0.65 / **0.15** |
+| Java | 36.8 / 24.1 / **113** | 40.4 / 23.1 / **141** | 0.58 / 0.97 / **0.36** |
+| JavaScript | 12.2 / 20.1 / **100** | 17.6 / 43.9 / **85.9** | 1.29 / 0.84 / **0.32** |
+| Python | 0.387 / 0.102 / **2.6** | 0.387 / 8.2 / **8.2** | 32.6 / 147 / **13.2** |
+| Swift | 5.3 / 20.1 / **139** | 5.1 / 20.9 / **37.7** | 3.90 / 1.08 / **0.63** |
+
+Aceleración de `main` respecto al código anterior (más de 1 significa más rápido):
 
 | Operación | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
 |---|---|---|---|---|---|---|---|---|
 | SM3 1 MiB | **1.6×** | **2.9×** | **2.2×** | **2.2×** | **1.3×** | **4.3×** | **2.0×** | **3.3×** |
-| Cifrado SM4-CBC 1 MiB | 0.83× | **2.6×** | 0.43× | 0.46× | 0.66× | **1.7×** | 0.26× | **3.8×** |
-| Descifrado SM4-CBC 1 MiB | **2.4×** | **12.4×** | **1.9×** | 0.56× | 0.57× | **2.5×** | **21.1×** | **4.1×** |
-| Generación de claves SM2 | **8.1×** | **8.6×** | **48.4×** | **42.0×** | **458.6×** | **304.5×** | **4.9×** | **70.5×** |
-| Firma SM2 | **24.2×** | **34.3×** | **96.9×** | **86.2×** | **63.5×** | **228.1×** | **8.5×** | **79.1×** |
-| Verificación SM2 | **3.5×** | **3.1×** | **24.2×** | **17.8×** | **21.4×** | **180.5×** | **5.9×** | **23.3×** |
-| Cifrado SM2 32 B | **3.4×** | **2.8×** | **18.6×** | **12.1×** | **18.8×** | **126.1×** | **2.1×** | **29.7×** |
+| Cifrado SM4-CBC 1 MiB | **1.9×** | **6.8×** | **2.2×** | **2.0×** | **3.1×** | **8.2×** | **6.7×** | **26.2×** |
+| Descifrado SM4-CBC 1 MiB | **4.7×** | **12.4×** | **6.7×** | **4.2×** | **3.5×** | **4.9×** | **21.1×** | **7.3×** |
+| Expansión de clave SM4 | **1.5×** | **1.7×** | **1.6×** | **1.6×** | **1.6×** | **4.1×** | **2.5×** | **6.2×** |
+| Generación de claves SM2 | **8.1×** | **8.6×** | **48.4×** | **42.0×** | **459.0×** | **304.7×** | **4.8×** | **70.6×** |
+| Firma SM2 | **24.2×** | **34.4×** | **96.8×** | **86.1×** | **64.0×** | **228.5×** | **8.4×** | **79.4×** |
+| Verificación SM2 | **3.5×** | **3.1×** | **24.1×** | **17.7×** | **21.1×** | **179.1×** | **5.9×** | **23.5×** |
+| Cifrado SM2 32 B | **3.4×** | **2.8×** | **18.6×** | **12.1×** | **18.8×** | **126.3×** | **2.1×** | **29.7×** |
 | Descifrado SM2 32 B | **1.4×** | **1.5×** | **11.1×** | **6.7×** | **11.0×** | **79.8×** | **1.3×** | **17.5×** |
-| Intercambio de claves SM2 | **2.9×** | **2.6×** | **16.6×** | **11.7×** | **63.4×** | **127.7×** | **2.2×** | **35.7×** |
+| Intercambio de claves SM2 | **2.9×** | **2.6×** | **16.6×** | **11.7×** | **63.4×** | **127.9×** | **2.1×** | **35.7×** |
 
-- **SM2:** todos los lenguajes son mucho más rápidos. Rust, Go y Swift firman entre 1,4 y 1,7 veces más rápido que OpenSSL 3.6.5; Java es entre 7,5 veces (firma) y 13 veces (intercambio de claves) más rápido que BouncyCastle. OpenSSL no ofrece intercambio de claves SM2.
-- **SM3:** todos los lenguajes son entre 1,3 y 4,3 veces más rápidos. Rust, C# y Swift superan a OpenSSL; JavaScript lo iguala.
-- **SM4:** esta biblioteca no usa tablas indexadas por datos secretos, para evitar ataques de temporización de caché. Antes, Go, C#, Java y Python sí usaban tablas, por lo que en el M2 su SM4 es ahora más lento. Go y C# tienen implementaciones con AES-NI/GFNI en x86, pero todavía no en ARM. En el M2, OpenSSL 3.6.5 también usa tablas (su código fuente solo usa ensamblador con la extensión SM4, Neoverse N1/V1 o Kunpeng 920), por eso cifra con SM4 aproximadamente el doble de rápido, pero no con el mismo nivel de seguridad.
+- **Alto rendimiento (`main`):** todos los lenguajes, operaciones y tamaños son más rápidos que antes; nada empeoró. En cifrado SM4 de 1 MiB, Rust, Swift, C y Go superan a OpenSSL 3.6.5, y Java, C# y JavaScript se le acercan; en descifrado de 1 MiB, Rust, Go, C y C# superan a OpenSSL y Java lo iguala.
+- **Alta seguridad (`security`):** SM4 no accede a tablas con índices que dependan de datos secretos. Go, C#, Java y Python no disponen de instrucciones de hardware en ARM y calculan la S-box como circuito booleano, por lo que su SM4 es más lento que antes (el cifrado va al 26 %–66 % de la velocidad anterior). C y Rust usan las instrucciones AES de ARM y siguen descifrando rápido.
+- **SM2 y SM3 (idénticos en ambas ramas):** todos los lenguajes son mucho más rápidos. Rust, Go y Swift firman entre 1,4 y 1,7 veces más rápido que OpenSSL 3.6.5; Java es entre 7,5 veces (firma) y 13 veces (intercambio de claves) más rápido que BouncyCastle. OpenSSL no ofrece intercambio de claves SM2.
+- El SM4 de OpenSSL 3.6.5 en el M2 también usa tablas: su código fuente solo usa ensamblador si la CPU tiene la extensión SM4 o es Neoverse N1/V1 o Kunpeng 920.
 
 ### x86: comparación con OpenSSL y BouncyCastle
 
-Comparación con OpenSSL 3.0.13 y BouncyCastle 1.86 en un núcleo de alto rendimiento de un Intel i5-13500H (extracto; los resultados completos y cómo reproducirlos están en [`compare/`](compare/README.md)):
+Comparación con OpenSSL 3.0.13 y BouncyCastle 1.86 en un núcleo de alto rendimiento de un Intel i5-13500H (extracto; los resultados completos y cómo reproducirlos están en [`compare/`](compare/README.md)). Estos datos se tomaron antes de pasar SM4 a tablas, así que las cifras de SM4 corresponden a la rama `security`:
 
 | Operación | OpenSSL | BouncyCastle | C | Rust | Go | Java |
 |---|---|---|---|---|---|---|
@@ -227,7 +270,7 @@ Comparación con OpenSSL 3.0.13 y BouncyCastle 1.86 en un núcleo de alto rendim
 | Cifrado SM4 1 MiB (MB/s) | 157 | 101 | 117 | 123 | 109 | 26.4 |
 | Descifrado SM4 1 MiB (MB/s) | 177 | 103 | 815 | 1298 | 519 | 24.6 |
 
-El cifrado SM4 es más lento que en OpenSSL porque esta biblioteca no usa tablas indexadas por datos secretos.
+El cifrado SM4 de la rama `security` es más lento que en OpenSSL porque no usa tablas indexadas por datos secretos.
 
 ## Demo interlenguajes
 
