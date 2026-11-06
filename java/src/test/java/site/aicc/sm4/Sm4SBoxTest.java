@@ -4,7 +4,7 @@ import static org.junit.Assert.assertEquals;
 
 import org.junit.Test;
 
-/** Checks the Boolean circuit against the S-box table printed in GB/T 32907. */
+/** Checks the S-box and T-tables that SM4 looks up against the S-box printed in GB/T 32907. */
 public class Sm4SBoxTest {
   private static final int[] STANDARD_SBOX = {
     0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
@@ -26,18 +26,27 @@ public class Sm4SBoxTest {
   };
 
   @Test
-  public void circuitMatchesTheStandardTableInEveryLane() {
-    for (int a = 0; a < 256; a++) {
-      int expected = STANDARD_SBOX[a];
-      assertEquals(expected, Sm4SBox.apply(a) & 0xFF);
-      for (int b = 0; b < 256; b += 17) {
-        int input = a << 24 | b << 16 | (a ^ b) << 8 | (a + b & 0xFF);
-        int output =
-            STANDARD_SBOX[a] << 24
-                | STANDARD_SBOX[b] << 16
-                | STANDARD_SBOX[a ^ b] << 8
-                | STANDARD_SBOX[a + b & 0xFF];
-        assertEquals(output, Sm4SBox.apply(input));
+  public void sboxTableMatchesTheStandard() {
+    assertEquals(256, SM4.SBOX.length);
+    for (int x = 0; x < 256; x++) {
+      assertEquals("S(" + x + ")", STANDARD_SBOX[x], SM4.SBOX[x] & 0xFF);
+    }
+  }
+
+  @Test
+  public void tTablesAreTheLinearTransformOfTheStandardSbox() {
+    int[][] tables = {SM4.T0, SM4.T1, SM4.T2, SM4.T3};
+    for (int i = 0; i < 4; i++) {
+      assertEquals(256, tables[i].length);
+      for (int x = 0; x < 256; x++) {
+        int b = STANDARD_SBOX[x] << (24 - 8 * i);
+        int l =
+            b
+                ^ Integer.rotateLeft(b, 2)
+                ^ Integer.rotateLeft(b, 10)
+                ^ Integer.rotateLeft(b, 18)
+                ^ Integer.rotateLeft(b, 24);
+        assertEquals("T" + i + "[" + x + "]", l, tables[i][x]);
       }
     }
   }
