@@ -25,7 +25,7 @@ one() { # label command...
 log "start rounds=$ROUNDS"
 sw_vers -productVersion >"$R/system.txt"; sysctl -n machdep.cpu.brand_string >>"$R/system.txt"
 
-for v in ${OPENSSL_VERSIONS:-3.0.13 3.6.5}; do
+for v in ${OPENSSL_VERSIONS-3.0.13 3.6.5}; do
   [ -x "$K/openssl/ob-$v" ] || { log "openssl-$v skipped: not built"; continue; }
   for i in $(seq 1 "$ROUNDS"); do one "openssl-$v-$i" "$K/openssl/ob-$v"; done
 done
@@ -36,8 +36,11 @@ if [ "${SKIP_BC:-0}" != 1 ]; then
 fi
 for lang in ${LANGS:-c rust go csharp java javascript python swift}; do
   for i in $(seq 1 "$ROUNDS"); do
-    one "$lang-base-$i" bash -c "cd '$K/$lang' && ./run.sh base"
-    one "$lang-new-$i" bash -c "cd '$K/$lang' && ./run.sh new"
+    for side in ${SIDES:-base new}; do
+      # LABEL_new renames the "new" side in the result files, e.g. LABEL_new=perf for the main branch
+      label=$side; [ "$side" = new ] && label=${LABEL_new:-new}
+      one "$lang-$label-$i" bash -c "cd '$K/$lang' && ./run.sh $side"
+    done
   done
 done
 log "finished"

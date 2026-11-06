@@ -2,6 +2,8 @@
 
 本目录用同一套操作，对比 SMX 的八种实现与 OpenSSL、BouncyCastle 的性能。在 Apple M2 上改造前后的对比，以及与 OpenSSL 3.6.5 的对比，见 [`apple-m2/`](apple-m2/README.md)。
 
+> **注意：** 本页的 x86 数据测于 `main` 分支把 SM4 改为查表实现之前，其中的 SM4 数值对应现在的 `security` 分支（常数时间实现）。高性能版（`main`）的 SM4 在 Apple M2 上的正式数据见 [`apple-m2/`](apple-m2/README.md)；SM2、SM3 两个分支相同。
+
 ## 测试环境（2026-11-06）
 
 - CPU：Intel Core i5-13500H，固定在一个性能核上运行（`taskset -c 6`；JVM 用 6、7 两个线程）
