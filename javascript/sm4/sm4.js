@@ -4,7 +4,7 @@ import {
   requireWellFormedString,
 } from '../common/hex.js'
 import { bytesToString, bytesToHex, stringToBytes } from '../common/utils.js'
-import { sboxPlanes, sboxWord } from './sbox-circuit.js'
+import { SBOX, T0, T1, T2, T3 } from './tables.js'
 
 // ---- SM4 常量 ----
 
@@ -24,8 +24,6 @@ const CK = new Int32Array([
 const INSPECT = Symbol.for('nodejs.util.inspect.custom')
 const BLOCK_BYTES = 16
 const KEY_BYTES = 16
-const LANES = 8
-const LANE_BYTES = LANES * BLOCK_BYTES
 const DECRYPT_ERROR = 'SM4 decryption failed'
 
 // ---- 内部函数 ----
@@ -42,21 +40,20 @@ function writeWord(out, o, x) {
   out[o + 3] = x
 }
 
-/** 合成置换 T（加解密轮函数）：S 盒电路后接线性变换 L */
+/** 合成置换 T（加解密轮函数）：S 盒后接线性变换 L，合并为 4 次 T 表查找 */
 function roundT(a) {
-  const b = sboxWord(a)
   return (
-    b ^
-    ((b << 2) | (b >>> 30)) ^
-    ((b << 10) | (b >>> 22)) ^
-    ((b << 18) | (b >>> 14)) ^
-    ((b << 24) | (b >>> 8))
+    T0[a >>> 24] ^ T1[(a >>> 16) & 0xff] ^ T2[(a >>> 8) & 0xff] ^ T3[a & 0xff]
   )
 }
 
-/** 合成置换 T'（密钥扩展）：S 盒电路后接 L' */
+/** 合成置换 T'（密钥扩展）：S 盒查表后接 L' */
 function keyT(a) {
-  const b = sboxWord(a)
+  const b =
+    (SBOX[a >>> 24] << 24) |
+    (SBOX[(a >>> 16) & 0xff] << 16) |
+    (SBOX[(a >>> 8) & 0xff] << 8) |
+    SBOX[a & 0xff]
   return b ^ ((b << 13) | (b >>> 19)) ^ ((b << 23) | (b >>> 9))
 }
 
@@ -83,74 +80,6 @@ function processBlock(rk, first, step, x0, x1, x2, x3, out, outOff) {
   writeWord(out, outOff + 12, x0)
 }
 
-/** Swaps bit groups between two words of the buffer, for the 8x8 transpose. */
-function transposeBits(w) {
-  for (let shift = 4, mask = 0x0f0f0f0f; shift > 0;) {
-    for (let i = 0; i < LANES; i = (i + shift + 1) & ~shift) {
-      const j = i + shift
-      const t = ((w[i] >>> shift) ^ w[j]) & mask
-      w[j] ^= t
-      w[i] ^= t << shift
-    }
-    shift >>>= 1
-    mask = shift === 2 ? 0x33333333 : 0x55555555
-  }
-}
-
-const laneState = [
-  new Int32Array(LANES),
-  new Int32Array(LANES),
-  new Int32Array(LANES),
-  new Int32Array(LANES),
-]
-const lanePlanes = new Int32Array(LANES)
-
-/**
- * Decrypts eight blocks in parallel: the Boolean S-box evaluates 32 bytes at once
- * on bit planes, so one round costs about a quarter of eight separate rounds.
- */
-function decryptEightBlocks(rk, input, inOff, out, outOff) {
-  const [a, b, c, d] = laneState
-  const p = lanePlanes
-  for (let lane = 0; lane < LANES; lane++) {
-    const o = inOff + lane * BLOCK_BYTES
-    a[lane] = readWord(input, o)
-    b[lane] = readWord(input, o + 4)
-    c[lane] = readWord(input, o + 8)
-    d[lane] = readWord(input, o + 12)
-  }
-  let k = 31
-  for (let round = 0; round < 32; round++, k--) {
-    const target = laneState[round & 3]
-    const x1 = laneState[(round + 1) & 3]
-    const x2 = laneState[(round + 2) & 3]
-    const x3 = laneState[(round + 3) & 3]
-    const key = rk[k]
-    for (let i = 0; i < LANES; i++) p[i] = x1[i] ^ x2[i] ^ x3[i] ^ key
-    transposeBits(p)
-    sboxPlanes(p)
-    transposeBits(p)
-    for (let i = 0; i < LANES; i++) {
-      const v = p[i]
-      target[i] ^=
-        v ^
-        ((v << 2) | (v >>> 30)) ^
-        ((v << 10) | (v >>> 22)) ^
-        ((v << 18) | (v >>> 14)) ^
-        ((v << 24) | (v >>> 8))
-    }
-  }
-  for (let lane = 0; lane < LANES; lane++) {
-    const o = outOff + lane * BLOCK_BYTES
-    writeWord(out, o, d[lane])
-    writeWord(out, o + 4, c[lane])
-    writeWord(out, o + 8, b[lane])
-    writeWord(out, o + 12, a[lane])
-  }
-  p.fill(0)
-  for (const s of laneState) s.fill(0)
-}
-
 /**
  * SM4 对称加密算法（CBC 模式，PKCS7 填充）
  *
@@ -167,7 +96,10 @@ function decryptEightBlocks(rk, input, inOff, out, outOff) {
  * - 同一实例的每次 encrypt 都重用 setKey 给定的 IV，相同明文产生相同密文。CBC 要求
  *   每条消息使用新的不可预测 IV：请为每条消息调用 setKey。
  * - 字符串密钥必须恰好 16 字节，且应当是随机值；可读文本的熵很低。
- * - S 盒是布尔电路，没有依赖秘密的查表或分支。JavaScript 引擎不提供常数时间保证。
+ * - 本分支是高性能版本：加解密和密钥扩展都用以秘密为下标的查表（S 盒与 T 表，
+ *   与 OpenSSL、BouncyCastle 相同），不抗缓存计时攻击：与本进程共享 CPU 缓存的攻击者
+ *   可能从访问时间推出密钥。需要常数时间 SM4（布尔电路 S 盒）时请使用本项目的
+ *   security 分支。
  */
 export class SM4 {
   constructor() {
@@ -307,11 +239,8 @@ export class SM4 {
     const rk = this._rk
     const iv = this._iv
 
-    let off = 0
-    for (; off + LANE_BYTES <= input.length; off += LANE_BYTES) {
-      decryptEightBlocks(rk, input, off, output, off)
-    }
-    for (; off < input.length; off += BLOCK_BYTES) {
+    // 逐块查表解密：在 V8 上它比多块交错和位切片都快（x86_64 与 arm64 实测）
+    for (let off = 0; off < input.length; off += BLOCK_BYTES) {
       processBlock(
         rk,
         31,

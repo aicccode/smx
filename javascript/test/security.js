@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { getSM2 } from '../sm2/sm2.js'
 import { SM3 } from '../sm3/sm3.js'
 import { SM4 } from '../sm4/sm4.js'
-import { sboxPlanes, sboxWord } from '../sm4/sbox-circuit.js'
+import { SBOX as TABLE_SBOX, T0, T1, T2, T3 } from '../sm4/tables.js'
 import { createRandomFill } from '../common/rng.js'
 import { fieldScratchForTest } from '../sm2/fe.js'
 import { pointScratchForTest } from '../sm2/point.js'
@@ -322,27 +322,24 @@ const SBOX = fromHex(
     '8969974a0c96777e65b9f109c56ec684' +
     '18f07dec3adc4d2079ee5f3ed7cb3948',
 )
+// The S-box and T-tables that SM4 looks up, against the published S-box
+ok('sbox table size', TABLE_SBOX.length === 256)
 for (let x = 0; x < 256; x++) {
-  const word = (x << 24) | (x << 16) | (x << 8) | x
-  const y = SBOX[x]
-  const expected = (y << 24) | (y << 16) | (y << 8) | y
-  ok(`sbox word ${x}`, sboxWord(word) === expected)
-  const planes = new Int32Array(8)
-  for (let bit = 0; bit < 8; bit++) planes[bit] = (x >> bit) & 1 ? -1 : 0
-  sboxPlanes(planes)
-  let same = true
-  for (let bit = 0; bit < 8; bit++) {
-    same = same && planes[bit] === ((y >> bit) & 1 ? -1 : 0)
+  ok(`sbox table ${x}`, TABLE_SBOX[x] === SBOX[x])
+  const tables = [T0, T1, T2, T3]
+  for (let i = 0; i < 4; i++) {
+    const b = SBOX[x] << (24 - 8 * i)
+    const l =
+      b ^
+      ((b << 2) | (b >>> 30)) ^
+      ((b << 10) | (b >>> 22)) ^
+      ((b << 18) | (b >>> 14)) ^
+      ((b << 24) | (b >>> 8))
+    ok(`T${i}[${x}]`, tables[i].length === 256 && tables[i][x] === l)
   }
-  ok(`sbox planes ${x}`, same)
 }
-ok(
-  'sbox word mixes four separate bytes',
-  sboxWord(0x00015380 | 0) ===
-    ((SBOX[0x00] << 24) | (SBOX[0x01] << 16) | (SBOX[0x53] << 8) | SBOX[0x80]),
-)
 
-// Encrypt and the parallel decrypt path agree at every length around the lane size.
+// Encrypt and decrypt round-trip at many lengths.
 {
   const c = sm4()
   for (const n of [
