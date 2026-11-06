@@ -1,0 +1,13 @@
+# Filled by prepare.sh and build outputs
+kits/*/base/
+kits/*/new/
+kits/*/bin/
+kits/*/build/
+kits/*/out/
+kits/*/target/
+kits/csharp/bench/*/bin/
+kits/csharp/bench/*/obj/
+kits/bc/cls/
+kits/bc/*.jar
+kits/openssl/ob-*
+results/

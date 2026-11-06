@@ -1,6 +1,6 @@
 # 与 OpenSSL、BouncyCastle 的性能对比
 
-本目录用同一套操作，对比 SMX 的八种实现与 OpenSSL、BouncyCastle 的性能。
+本目录用同一套操作，对比 SMX 的八种实现与 OpenSSL、BouncyCastle 的性能。在 Apple M2 上改造前后的对比，以及与 OpenSSL 3.6.5 的对比，见 [`apple-m2/`](apple-m2/README.md)。
 
 ## 测试环境（2026-11-06）
 
@@ -40,7 +40,7 @@
 
 ## 结论
 
-- **SM2：** C、Rust、Go、Swift、C# 的签名比 OpenSSL 快 5 到 7 倍，加解密和验签快 1.5 到 6 倍。Java 比 BouncyCastle 快 1.7 到 8 倍。OpenSSL 3.0 的 SM2 使用通用曲线代码，较新版本的 OpenSSL 可能会缩小这个差距，这里只测了 3.0.13。
+- **SM2：** C、Rust、Go、Swift、C# 的签名比 OpenSSL 快 5 到 7 倍，加解密和验签快 1.5 到 6 倍。Java 比 BouncyCastle 快 1.7 到 8 倍。OpenSSL 3.0 的 SM2 使用通用曲线代码。较新版本的 OpenSSL 缩小了这个差距：在 Apple M2 上，3.6.5 的签名比 3.0.13 快约 3 倍，但仍慢于 Rust、Go、Swift，见 [`apple-m2/`](apple-m2/README.md)。
 - **SM3：** C、Rust、C#、Swift、JS 在三种长度上都快于 OpenSSL；Go 在 64 B 和 1 KiB 上更快，在 1 MiB 上慢约 7%。Java 与 BouncyCastle 持平，受 JVM 生成代码的限制。
 - **SM4 解密：** 用 AES-NI/GFNI 并行处理多个分组，C、Rust、Go、C# 比 OpenSSL 快 2 到 7 倍。
 - **SM4 加密：** CBC 加密只能逐块进行。本库在所有平台上都不使用依赖秘密数据的查表，以避免缓存时序攻击，所以比 OpenSSL 慢 20% 到 50%。Java、JS、Swift、Python 没有可用的硬件指令，使用布尔电路实现 S 盒，速度较慢，这是为常数时间付出的代价。

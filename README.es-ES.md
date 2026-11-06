@@ -179,6 +179,44 @@ GB/T 32918.4 exige rechazar al descifrar los textos cifrados cuya salida KDF sea
 
 ## Rendimiento
 
+### Apple M2: antes y después de la optimización
+
+Medido el 2026-11-06 en un Mac Apple M2 sin carga (macOS 14.1.1). Cada implementación se ejecutó 3 veces completas; en cada ejecución se toma la mediana de 7 muestras por operación, y la tabla muestra la mediana de las 3 ejecuciones. La mediana de la variación entre ejecuciones está entre el 0 % y el 3,3 %. Las tablas completas por algoritmo, el método, los datos en bruto y los scripts para reproducirlo están en [`compare/apple-m2/`](compare/apple-m2/README.md) (en chino).
+
+Rendimiento actual, comparado con OpenSSL 3.6.5 y BouncyCastle 1.86:
+
+| Operación | OpenSSL 3.6.5 | BouncyCastle 1.86 | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
+|---|---|---|---|---|---|---|---|---|---|---|
+| SM3 1 MiB (MB/s) | 354 | 245 | 310 | 389 | 323 | 371 | 247 | 352 | 0.945 | 373 |
+| Cifrado SM4-CBC 1 MiB (MB/s) | 122 | 69.1 | 60.4 | 58.3 | 25.1 | 24.1 | 24.1 | 20.1 | 0.102 | 20.1 |
+| Descifrado SM4-CBC 1 MiB (MB/s) | 141 | 71.1 | 195 | 839 | 113 | 23.4 | 23.1 | 43.9 | 8.2 | 20.9 |
+| Generación de claves SM2 (µs) | 30.9 | 527 | 24.9 | 14.6 | 13.2 | 24.4 | 40.1 | 71.0 | 330 | 16.2 |
+| Firma SM2 (µs) | 55.0 | 603 | 50.0 | 31.8 | 32.6 | 49.9 | 80.5 | 211 | 490 | 39.3 |
+| Verificación SM2 (µs) | 115 | 850 | 75.7 | 75.5 | 55.7 | 122 | 224 | 240 | 712 | 56.0 |
+| Cifrado SM2 32 B (µs) | 113 | 2560 | 100 | 87.7 | 69.0 | 171 | 257 | 343 | 1783 | 76.1 |
+| Descifrado SM2 32 B (µs) | 77.6 | 1991 | 84.1 | 72.5 | 59.0 | 148 | 220 | 271 | 1606 | 61.1 |
+| Intercambio de claves SM2 (µs) | — | 11536 | 299 | 263 | 206 | 471 | 897 | 1021 | 6823 | 233 |
+
+Aceleración respecto al código anterior (más de 1 significa más rápido):
+
+| Operación | C | Rust | Go | C# | Java | JavaScript | Python | Swift |
+|---|---|---|---|---|---|---|---|---|
+| SM3 1 MiB | **1.6×** | **2.9×** | **2.2×** | **2.2×** | **1.3×** | **4.3×** | **2.0×** | **3.3×** |
+| Cifrado SM4-CBC 1 MiB | 0.83× | **2.6×** | 0.43× | 0.46× | 0.66× | **1.7×** | 0.26× | **3.8×** |
+| Descifrado SM4-CBC 1 MiB | **2.4×** | **12.4×** | **1.9×** | 0.56× | 0.57× | **2.5×** | **21.1×** | **4.1×** |
+| Generación de claves SM2 | **8.1×** | **8.6×** | **48.4×** | **42.0×** | **458.6×** | **304.5×** | **4.9×** | **70.5×** |
+| Firma SM2 | **24.2×** | **34.3×** | **96.9×** | **86.2×** | **63.5×** | **228.1×** | **8.5×** | **79.1×** |
+| Verificación SM2 | **3.5×** | **3.1×** | **24.2×** | **17.8×** | **21.4×** | **180.5×** | **5.9×** | **23.3×** |
+| Cifrado SM2 32 B | **3.4×** | **2.8×** | **18.6×** | **12.1×** | **18.8×** | **126.1×** | **2.1×** | **29.7×** |
+| Descifrado SM2 32 B | **1.4×** | **1.5×** | **11.1×** | **6.7×** | **11.0×** | **79.8×** | **1.3×** | **17.5×** |
+| Intercambio de claves SM2 | **2.9×** | **2.6×** | **16.6×** | **11.7×** | **63.4×** | **127.7×** | **2.2×** | **35.7×** |
+
+- **SM2:** todos los lenguajes son mucho más rápidos. Rust, Go y Swift firman entre 1,4 y 1,7 veces más rápido que OpenSSL 3.6.5; Java es entre 7,5 veces (firma) y 13 veces (intercambio de claves) más rápido que BouncyCastle. OpenSSL no ofrece intercambio de claves SM2.
+- **SM3:** todos los lenguajes son entre 1,3 y 4,3 veces más rápidos. Rust, C# y Swift superan a OpenSSL; JavaScript lo iguala.
+- **SM4:** esta biblioteca no usa tablas indexadas por datos secretos, para evitar ataques de temporización de caché. Antes, Go, C#, Java y Python sí usaban tablas, por lo que en el M2 su SM4 es ahora más lento. Go y C# tienen implementaciones con AES-NI/GFNI en x86, pero todavía no en ARM. En el M2, OpenSSL 3.6.5 también usa tablas (su código fuente solo usa ensamblador con la extensión SM4, Neoverse N1/V1 o Kunpeng 920), por eso cifra con SM4 aproximadamente el doble de rápido, pero no con el mismo nivel de seguridad.
+
+### x86: comparación con OpenSSL y BouncyCastle
+
 Comparación con OpenSSL 3.0.13 y BouncyCastle 1.86 en un núcleo de alto rendimiento de un Intel i5-13500H (extracto; los resultados completos y cómo reproducirlos están en [`compare/`](compare/README.md)):
 
 | Operación | OpenSSL | BouncyCastle | C | Rust | Go | Java |
