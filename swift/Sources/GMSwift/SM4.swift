@@ -5,8 +5,9 @@
 // - IV 在 setKey 时固定，之后每次 encrypt 都复用同一个 IV，相同明文得到相同密文。
 //   调用方必须为每条消息设置新的随机 IV。这是现有接口的形状，无法在库内部解决。
 // - 密钥和 IV 必须恰好16字节，其余长度一律失败（不再做哈希或截断）。
-// - 不含依赖秘密数据的查表或分支（S 盒是布尔电路，见 SM4SBox.swift）；Swift 无法保证恒定时间，
-//   这是源码层面能做到的上限。没有硬件路径：AES-NI/GFNI/NEON 需要 unsafeFlags 或 C 目标，本包都不使用。
+// - 本分支的 SM4 为高性能版本，使用查表（T 表：S 盒与线性变换合并，与 OpenSSL、BouncyCastle 的做法相同），
+//   表的下标依赖密钥和数据，因此不抵抗缓存时序攻击：能在同一台机器上观察缓存时序的攻击者可能恢复密钥。
+//   需要抵抗缓存时序攻击时请使用仓库的 security 分支，那里的 S 盒是布尔电路，不含依赖秘密数据的查表。
 
 import Foundation
 
@@ -45,68 +46,103 @@ private func storeBE(_ value: UInt32, _ pointer: UnsafeMutablePointer<UInt8>) {
     UnsafeMutableRawPointer(pointer).storeBytes(of: value.bigEndian, as: UInt32.self)
 }
 
-/// 同时对64位字里的两个32位值做循环左移
-@inline(__always)
-private func rotlPair(_ x: UInt64, _ count: UInt64) -> UInt64 {
-    let lowBits = (UInt64(1) &<< count) &- 1
-    let carried = lowBits | (lowBits &<< 32)
-    return ((x &<< count) & ~carried) | ((x &>> (32 &- count)) & carried)
+/// GB/T 32907 的 S 盒
+let sm4SBox: [UInt8] = [
+    0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
+    0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
+    0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62,
+    0xe4, 0xb3, 0x1c, 0xa9, 0xc9, 0x08, 0xe8, 0x95, 0x80, 0xdf, 0x94, 0xfa, 0x75, 0x8f, 0x3f, 0xa6,
+    0x47, 0x07, 0xa7, 0xfc, 0xf3, 0x73, 0x17, 0xba, 0x83, 0x59, 0x3c, 0x19, 0xe6, 0x85, 0x4f, 0xa8,
+    0x68, 0x6b, 0x81, 0xb2, 0x71, 0x64, 0xda, 0x8b, 0xf8, 0xeb, 0x0f, 0x4b, 0x70, 0x56, 0x9d, 0x35,
+    0x1e, 0x24, 0x0e, 0x5e, 0x63, 0x58, 0xd1, 0xa2, 0x25, 0x22, 0x7c, 0x3b, 0x01, 0x21, 0x78, 0x87,
+    0xd4, 0x00, 0x46, 0x57, 0x9f, 0xd3, 0x27, 0x52, 0x4c, 0x36, 0x02, 0xe7, 0xa0, 0xc4, 0xc8, 0x9e,
+    0xea, 0xbf, 0x8a, 0xd2, 0x40, 0xc7, 0x38, 0xb5, 0xa3, 0xf7, 0xf2, 0xce, 0xf9, 0x61, 0x15, 0xa1,
+    0xe0, 0xae, 0x5d, 0xa4, 0x9b, 0x34, 0x1a, 0x55, 0xad, 0x93, 0x32, 0x30, 0xf5, 0x8c, 0xb1, 0xe3,
+    0x1d, 0xf6, 0xe2, 0x2e, 0x82, 0x66, 0xca, 0x60, 0xc0, 0x29, 0x23, 0xab, 0x0d, 0x53, 0x4e, 0x6f,
+    0xd5, 0xdb, 0x37, 0x45, 0xde, 0xfd, 0x8e, 0x2f, 0x03, 0xff, 0x6a, 0x72, 0x6d, 0x6c, 0x5b, 0x51,
+    0x8d, 0x1b, 0xaf, 0x92, 0xbb, 0xdd, 0xbc, 0x7f, 0x11, 0xd9, 0x5c, 0x41, 0x1f, 0x10, 0x5a, 0xd8,
+    0x0a, 0xc1, 0x31, 0x88, 0xa5, 0xcd, 0x7b, 0xbd, 0x2d, 0x74, 0xd0, 0x12, 0xb8, 0xe5, 0xb4, 0xb0,
+    0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9, 0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84,
+    0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
+]
+
+/// 4张 T 表连续存放，第 i 张（i = 0 对应最高字节）在 [256 * i, 256 * i + 256)：
+/// T_i[x] = linear(S(x) << (24 - 8i))。一轮的 S 盒和线性变换合并为4次查表。
+private func sm4MakeTables(_ linear: (UInt32) -> UInt32) -> [UInt32] {
+    var tables = [UInt32](repeating: 0, count: 1024)
+    for x in 0..<256 {
+        let value = linear(UInt32(sm4SBox[x]))
+        tables[x] = rotl(value, 24)
+        tables[256 + x] = rotl(value, 16)
+        tables[512 + x] = rotl(value, 8)
+        tables[768 + x] = value
+    }
+    return tables
 }
 
-/// 32轮加密一个分组（输入输出都是大端字）。
-@inline(__always)
-private func encryptWords(
-    _ a: UInt32, _ b: UInt32, _ c: UInt32, _ d: UInt32, roundKeys rk: UnsafePointer<UInt32>
-) -> (UInt32, UInt32, UInt32, UInt32) {
-    @inline(__always)
-    func f(_ v: UInt32) -> UInt32 {
-        let s = sm4SubstituteBytes(v)
-        return s ^ rotl(s, 2) ^ rotl(s, 10) ^ rotl(s, 18) ^ rotl(s, 24)
-    }
+/// 轮函数用的表，L(B) = B ^ (B <<< 2) ^ (B <<< 10) ^ (B <<< 18) ^ (B <<< 24)
+let sm4RoundTables: [UInt32] = sm4MakeTables { $0 ^ rotl($0, 2) ^ rotl($0, 10) ^ rotl($0, 18) ^ rotl($0, 24) }
 
+/// 密钥扩展用的表，L'(B) = B ^ (B <<< 13) ^ (B <<< 23)
+let sm4KeyTables: [UInt32] = sm4MakeTables { $0 ^ rotl($0, 13) ^ rotl($0, 23) }
+
+/// 查表计算 L(S(x))（或 L'(S(x))，取决于 table）
+@inline(__always)
+private func sm4Lookup(_ x: UInt32, _ table: UnsafePointer<UInt32>) -> UInt32 {
+    return table[Int(x &>> 24)] ^ table[256 &+ Int((x &>> 16) & 0xFF)]
+        ^ table[512 &+ Int((x &>> 8) & 0xFF)] ^ table[768 &+ Int(x & 0xFF)]
+}
+
+/// 32轮处理一个分组（输入输出都是大端字）。用加密轮密钥即加密，用逆序轮密钥即解密。
+@inline(__always)
+private func cryptWords(
+    _ a: UInt32, _ b: UInt32, _ c: UInt32, _ d: UInt32, roundKeys rk: UnsafePointer<UInt32>,
+    table: UnsafePointer<UInt32>
+) -> (UInt32, UInt32, UInt32, UInt32) {
     var (x0, x1, x2, x3) = (a, b, c, d)
     var index = 0
     for _ in 0..<8 {
-        x0 ^= f(x1 ^ x2 ^ x3 ^ rk[index])
-        x1 ^= f(x2 ^ x3 ^ x0 ^ rk[index &+ 1])
-        x2 ^= f(x3 ^ x0 ^ x1 ^ rk[index &+ 2])
-        x3 ^= f(x0 ^ x1 ^ x2 ^ rk[index &+ 3])
+        x0 ^= sm4Lookup(x1 ^ x2 ^ x3 ^ rk[index], table)
+        x1 ^= sm4Lookup(x2 ^ x3 ^ x0 ^ rk[index &+ 1], table)
+        x2 ^= sm4Lookup(x3 ^ x0 ^ x1 ^ rk[index &+ 2], table)
+        x3 ^= sm4Lookup(x0 ^ x1 ^ x2 ^ rk[index &+ 3], table)
         index &+= 4
     }
     return (x3, x2, x1, x0)
 }
 
-/// 32轮解密两个分组。每个字的高32位属于一个分组，低32位属于另一个，只有解密可以这样并行。
+/// 交错处理两个互不依赖的分组（只用于解密），让两条查表依赖链并行
 @inline(__always)
-private func decryptPairs(
-    _ a: UInt64, _ b: UInt64, _ c: UInt64, _ d: UInt64, roundKeys rk: UnsafePointer<UInt32>
-) -> (UInt64, UInt64, UInt64, UInt64) {
-    @inline(__always)
-    func f(_ v: UInt64) -> UInt64 {
-        let s = sm4SubstituteBytes(v)
-        return s ^ rotlPair(s, 2) ^ rotlPair(s, 10) ^ rotlPair(s, 18) ^ rotlPair(s, 24)
-    }
-    @inline(__always)
-    func key(_ index: Int) -> UInt64 {
-        let value = UInt64(rk[index])
-        return value | (value &<< 32)
-    }
-
-    var (x0, x1, x2, x3) = (a, b, c, d)
-    var index = 31
+private func cryptWords2(
+    _ a: (UInt32, UInt32, UInt32, UInt32), _ b: (UInt32, UInt32, UInt32, UInt32),
+    roundKeys rk: UnsafePointer<UInt32>, table: UnsafePointer<UInt32>
+) -> ((UInt32, UInt32, UInt32, UInt32), (UInt32, UInt32, UInt32, UInt32)) {
+    var (x0, x1, x2, x3) = a
+    var (y0, y1, y2, y3) = b
+    var index = 0
     for _ in 0..<8 {
-        x0 ^= f(x1 ^ x2 ^ x3 ^ key(index))
-        x1 ^= f(x2 ^ x3 ^ x0 ^ key(index &- 1))
-        x2 ^= f(x3 ^ x0 ^ x1 ^ key(index &- 2))
-        x3 ^= f(x0 ^ x1 ^ x2 ^ key(index &- 3))
-        index &-= 4
+        var k = rk[index]
+        x0 ^= sm4Lookup(x1 ^ x2 ^ x3 ^ k, table)
+        y0 ^= sm4Lookup(y1 ^ y2 ^ y3 ^ k, table)
+        k = rk[index &+ 1]
+        x1 ^= sm4Lookup(x2 ^ x3 ^ x0 ^ k, table)
+        y1 ^= sm4Lookup(y2 ^ y3 ^ y0 ^ k, table)
+        k = rk[index &+ 2]
+        x2 ^= sm4Lookup(x3 ^ x0 ^ x1 ^ k, table)
+        y2 ^= sm4Lookup(y3 ^ y0 ^ y1 ^ k, table)
+        k = rk[index &+ 3]
+        x3 ^= sm4Lookup(x0 ^ x1 ^ x2 ^ k, table)
+        y3 ^= sm4Lookup(y0 ^ y1 ^ y2 ^ k, table)
+        index &+= 4
     }
-    return (x3, x2, x1, x0)
+    return ((x3, x2, x1, x0), (y3, y2, y1, y0))
 }
 
 /// 不可变的密钥状态。替换时旧状态的引用计数归零才清除，正在使用它的线程不受影响。
 private final class SM4KeyState {
     private(set) var roundKeys: [UInt32]
+    /// 逆序的轮密钥，解密用
+    private(set) var decryptKeys: [UInt32]
     private(set) var iv: [UInt8]
 
     /// key、iv 必须已确认恰好16字节
@@ -117,14 +153,18 @@ private final class SM4KeyState {
         var k2 = SM4KeyState.word(key, 8) ^ sm4FK.2
         var k3 = SM4KeyState.word(key, 12) ^ sm4FK.3
         var keys = [UInt32](repeating: 0, count: 32)
-        for round in 0..<32 {
-            let v = k1 ^ k2 ^ k3 ^ sm4CK[round]
-            let s = sm4SubstituteBytes(v)
-            let next = k0 ^ s ^ rotl(s, 13) ^ rotl(s, 23)
-            keys[round] = next
-            (k0, k1, k2, k3) = (k1, k2, k3, next)
+        sm4KeyTables.withUnsafeBufferPointer { tables in
+            guard let table = tables.baseAddress else {
+                return
+            }
+            for round in 0..<32 {
+                let next = k0 ^ sm4Lookup(k1 ^ k2 ^ k3 ^ sm4CK[round], table)
+                keys[round] = next
+                (k0, k1, k2, k3) = (k1, k2, k3, next)
+            }
         }
         self.roundKeys = keys
+        self.decryptKeys = keys.reversed()
     }
 
     private static func word(_ bytes: [UInt8], _ offset: Int) -> UInt32 {
@@ -138,6 +178,7 @@ private final class SM4KeyState {
 
     deinit {
         secureWipe(&roundKeys)
+        secureWipe(&decryptKeys)
         secureWipe(&iv)
     }
 }
@@ -250,7 +291,7 @@ public final class Sm4Impl: @unchecked Sendable {
     private func decryptedBuffer(text: String) throws -> [UInt8] {
         let key = try currentState()
         guard let cipher = Hex.decodeCanonical(text),
-            let plain = Sm4Impl.decryptCBC(cipher, roundKeys: key.roundKeys, iv: key.iv)
+            let plain = Sm4Impl.decryptCBC(cipher, decryptKeys: key.decryptKeys, iv: key.iv)
         else {
             throw SM4Error.decryptionFailed
         }
@@ -286,18 +327,21 @@ public final class Sm4Impl: @unchecked Sendable {
         }
         var output = block
         key.roundKeys.withUnsafeBufferPointer { keys in
-            output.withUnsafeMutableBufferPointer { buffer in
-                guard let rk = keys.baseAddress, let base = buffer.baseAddress else {
-                    return
+            sm4RoundTables.withUnsafeBufferPointer { tables in
+                output.withUnsafeMutableBufferPointer { buffer in
+                    guard let rk = keys.baseAddress, let table = tables.baseAddress, let base = buffer.baseAddress
+                    else {
+                        return
+                    }
+                    let (c0, c1, c2, c3) = cryptWords(
+                        loadBE(UnsafePointer(base)), loadBE(UnsafePointer(base + 4)),
+                        loadBE(UnsafePointer(base + 8)), loadBE(UnsafePointer(base + 12)), roundKeys: rk, table: table
+                    )
+                    storeBE(c0, base)
+                    storeBE(c1, base + 4)
+                    storeBE(c2, base + 8)
+                    storeBE(c3, base + 12)
                 }
-                let (c0, c1, c2, c3) = encryptWords(
-                    loadBE(UnsafePointer(base)), loadBE(UnsafePointer(base + 4)), loadBE(UnsafePointer(base + 8)),
-                    loadBE(UnsafePointer(base + 12)), roundKeys: rk
-                )
-                storeBE(c0, base)
-                storeBE(c1, base + 4)
-                storeBE(c2, base + 8)
-                storeBE(c3, base + 12)
             }
         }
         return output
@@ -320,27 +364,30 @@ public final class Sm4Impl: @unchecked Sendable {
         let blocks = data.count / 16
 
         roundKeys.withUnsafeBufferPointer { keys in
-            iv.withUnsafeBufferPointer { ivBytes in
-                data.withUnsafeMutableBufferPointer { buffer in
-                    guard let rk = keys.baseAddress, let ivBase = ivBytes.baseAddress, var block = buffer.baseAddress
-                    else {
-                        return
-                    }
-                    var c0 = loadBE(ivBase)
-                    var c1 = loadBE(ivBase + 4)
-                    var c2 = loadBE(ivBase + 8)
-                    var c3 = loadBE(ivBase + 12)
-                    for _ in 0..<blocks {
-                        (c0, c1, c2, c3) = encryptWords(
-                            loadBE(UnsafePointer(block)) ^ c0, loadBE(UnsafePointer(block + 4)) ^ c1,
-                            loadBE(UnsafePointer(block + 8)) ^ c2, loadBE(UnsafePointer(block + 12)) ^ c3,
-                            roundKeys: rk
-                        )
-                        storeBE(c0, block)
-                        storeBE(c1, block + 4)
-                        storeBE(c2, block + 8)
-                        storeBE(c3, block + 12)
-                        block += 16
+            sm4RoundTables.withUnsafeBufferPointer { tables in
+                iv.withUnsafeBufferPointer { ivBytes in
+                    data.withUnsafeMutableBufferPointer { buffer in
+                        guard let rk = keys.baseAddress, let table = tables.baseAddress,
+                            let ivBase = ivBytes.baseAddress, var block = buffer.baseAddress
+                        else {
+                            return
+                        }
+                        var c0 = loadBE(ivBase)
+                        var c1 = loadBE(ivBase + 4)
+                        var c2 = loadBE(ivBase + 8)
+                        var c3 = loadBE(ivBase + 12)
+                        for _ in 0..<blocks {
+                            (c0, c1, c2, c3) = cryptWords(
+                                loadBE(UnsafePointer(block)) ^ c0, loadBE(UnsafePointer(block + 4)) ^ c1,
+                                loadBE(UnsafePointer(block + 8)) ^ c2, loadBE(UnsafePointer(block + 12)) ^ c3,
+                                roundKeys: rk, table: table
+                            )
+                            storeBE(c0, block)
+                            storeBE(c1, block + 4)
+                            storeBE(c2, block + 8)
+                            storeBE(c3, block + 12)
+                            block += 16
+                        }
                     }
                 }
             }
@@ -349,59 +396,61 @@ public final class Sm4Impl: @unchecked Sendable {
     }
 
     /// 解密，不处理填充。只有长度不合法时返回 nil（长度是公开的）。
-    private static func decryptCBC(_ cipher: [UInt8], roundKeys: [UInt32], iv: [UInt8]) -> [UInt8]? {
+    private static func decryptCBC(_ cipher: [UInt8], decryptKeys: [UInt32], iv: [UInt8]) -> [UInt8]? {
         guard !cipher.isEmpty, cipher.count % 16 == 0 else {
             return nil
         }
         var data = cipher
-        let total = data.count / 16
+        let blocks = data.count / 16
 
-        roundKeys.withUnsafeBufferPointer { keys in
-            iv.withUnsafeBufferPointer { ivBytes in
-                data.withUnsafeMutableBufferPointer { buffer in
-                    guard let keyBase = keys.baseAddress, let ivBase = ivBytes.baseAddress,
-                        let base = buffer.baseAddress
-                    else {
-                        return
-                    }
-                    // 前一个密文分组的4个字
-                    var p0 = loadBE(ivBase)
-                    var p1 = loadBE(ivBase + 4)
-                    var p2 = loadBE(ivBase + 8)
-                    var p3 = loadBE(ivBase + 12)
-                    var index = 0
-                    while index < total {
-                        // 每次解密两个分组；最后只剩一个时另一半输入为 0，结果被丢弃
-                        let first = UnsafePointer(base + index * 16)
-                        let hasSecond = index + 1 < total
-                        let second = first + 16
-                        let (c0, c1, c2, c3) = (
-                            loadBE(first), loadBE(first + 4), loadBE(first + 8), loadBE(first + 12)
-                        )
-                        let d0 = hasSecond ? loadBE(second) : 0
-                        let d1 = hasSecond ? loadBE(second + 4) : 0
-                        let d2 = hasSecond ? loadBE(second + 8) : 0
-                        let d3 = hasSecond ? loadBE(second + 12) : 0
-                        let (o0, o1, o2, o3) = decryptPairs(
-                            UInt64(c0) &<< 32 | UInt64(d0), UInt64(c1) &<< 32 | UInt64(d1),
-                            UInt64(c2) &<< 32 | UInt64(d2), UInt64(c3) &<< 32 | UInt64(d3),
-                            roundKeys: keyBase
-                        )
-                        let target = base + index * 16
-                        storeBE(UInt32(truncatingIfNeeded: o0 &>> 32) ^ p0, target)
-                        storeBE(UInt32(truncatingIfNeeded: o1 &>> 32) ^ p1, target + 4)
-                        storeBE(UInt32(truncatingIfNeeded: o2 &>> 32) ^ p2, target + 8)
-                        storeBE(UInt32(truncatingIfNeeded: o3 &>> 32) ^ p3, target + 12)
-                        (p0, p1, p2, p3) = (c0, c1, c2, c3)
-                        if hasSecond {
-                            let next = target + 16
-                            storeBE(UInt32(truncatingIfNeeded: o0) ^ p0, next)
-                            storeBE(UInt32(truncatingIfNeeded: o1) ^ p1, next + 4)
-                            storeBE(UInt32(truncatingIfNeeded: o2) ^ p2, next + 8)
-                            storeBE(UInt32(truncatingIfNeeded: o3) ^ p3, next + 12)
-                            (p0, p1, p2, p3) = (d0, d1, d2, d3)
+        decryptKeys.withUnsafeBufferPointer { keys in
+            sm4RoundTables.withUnsafeBufferPointer { tables in
+                iv.withUnsafeBufferPointer { ivBytes in
+                    data.withUnsafeMutableBufferPointer { buffer in
+                        guard let rk = keys.baseAddress, let table = tables.baseAddress,
+                            let ivBase = ivBytes.baseAddress, var block = buffer.baseAddress
+                        else {
+                            return
                         }
-                        index += 2
+                        // 前一个密文分组的4个字
+                        var p0 = loadBE(ivBase)
+                        var p1 = loadBE(ivBase + 4)
+                        var p2 = loadBE(ivBase + 8)
+                        var p3 = loadBE(ivBase + 12)
+                        var remaining = blocks
+                        while remaining >= 2 {
+                            let c = (
+                                loadBE(UnsafePointer(block)), loadBE(UnsafePointer(block + 4)),
+                                loadBE(UnsafePointer(block + 8)), loadBE(UnsafePointer(block + 12))
+                            )
+                            let d = (
+                                loadBE(UnsafePointer(block + 16)), loadBE(UnsafePointer(block + 20)),
+                                loadBE(UnsafePointer(block + 24)), loadBE(UnsafePointer(block + 28))
+                            )
+                            let (o, q) = cryptWords2(c, d, roundKeys: rk, table: table)
+                            storeBE(o.0 ^ p0, block)
+                            storeBE(o.1 ^ p1, block + 4)
+                            storeBE(o.2 ^ p2, block + 8)
+                            storeBE(o.3 ^ p3, block + 12)
+                            storeBE(q.0 ^ c.0, block + 16)
+                            storeBE(q.1 ^ c.1, block + 20)
+                            storeBE(q.2 ^ c.2, block + 24)
+                            storeBE(q.3 ^ c.3, block + 28)
+                            (p0, p1, p2, p3) = d
+                            block += 32
+                            remaining -= 2
+                        }
+                        if remaining == 1 {
+                            let c0 = loadBE(UnsafePointer(block))
+                            let c1 = loadBE(UnsafePointer(block + 4))
+                            let c2 = loadBE(UnsafePointer(block + 8))
+                            let c3 = loadBE(UnsafePointer(block + 12))
+                            let (o0, o1, o2, o3) = cryptWords(c0, c1, c2, c3, roundKeys: rk, table: table)
+                            storeBE(o0 ^ p0, block)
+                            storeBE(o1 ^ p1, block + 4)
+                            storeBE(o2 ^ p2, block + 8)
+                            storeBE(o3 ^ p3, block + 12)
+                        }
                     }
                 }
             }

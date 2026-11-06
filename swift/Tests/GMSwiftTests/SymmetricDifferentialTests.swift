@@ -105,22 +105,55 @@ final class SymmetricDifferentialTests: XCTestCase {
         }
     }
 
-    func testSM4SBoxCircuitMatchesStandardOnAllInputs() {
-        for value in 0..<256 {
-            let byte = UInt64(value)
-            let expected = UInt64(sbox[value])
-            // 每个字节位置都试一次，其余字节输入 0，S(0) = 0xD6
-            for position in 0..<8 {
-                let shift = UInt64(position * 8)
-                let filler = 0xD6D6_D6D6_D6D6_D6D6 & ~(UInt64(0xFF) << shift)
-                XCTAssertEqual(sm4SubstituteBytes(byte << shift), expected << shift | filler)
-                if position < 4 {
-                    let narrow = UInt32(byte << shift)
-                    XCTAssertEqual(sm4SubstituteBytes(narrow), UInt32(truncatingIfNeeded: expected << shift | filler))
+    func testSM4SBoxTableMatchesStandardOnAllInputs() {
+        XCTAssertEqual(sm4SBox.count, 256)
+        XCTAssertEqual(sm4SBox, sbox)
+        // 与 S 盒的代数定义 S(x) = A(I(A(x) ^ C)) ^ C 比对：I 是 GF(2^8)（模 x^8+x^7+x^6+x^5+x^4+x^2+1）上的求逆，
+        // A 是首行为 0xD3 的循环矩阵，C = 0xD3
+        func multiply(_ x: Int, _ y: Int) -> Int {
+            var (a, b, result) = (x, y, 0)
+            while b != 0 {
+                if b & 1 != 0 {
+                    result ^= a
                 }
+                a = (a << 1) ^ ((a & 0x80) != 0 ? 0x1F5 : 0)
+                b >>= 1
             }
-            // 同一个输入填满所有字节
-            XCTAssertEqual(sm4SubstituteBytes(byte &* 0x0101_0101_0101_0101), expected &* 0x0101_0101_0101_0101)
+            return result
+        }
+        func inverse(_ x: Int) -> Int {
+            guard x != 0 else {
+                return 0
+            }
+            var result = 1
+            for _ in 0..<254 {
+                result = multiply(result, x)
+            }
+            return result
+        }
+        func affine(_ x: Int) -> Int {
+            var out = 0
+            for i in 0..<8 {
+                let row = ((0xD3 >> i) | (0xD3 << (8 - i))) & 0xFF
+                out = (out << 1) | ((row & x).nonzeroBitCount & 1)
+            }
+            return out
+        }
+        for value in 0..<256 {
+            XCTAssertEqual(Int(sm4SBox[value]), affine(inverse(affine(value) ^ 0xD3)) ^ 0xD3, "S(\(value))")
+        }
+    }
+
+    func testSM4TTablesMergeSBoxAndLinearTransforms() {
+        XCTAssertEqual(sm4RoundTables.count, 1024)
+        XCTAssertEqual(sm4KeyTables.count, 1024)
+        for position in 0..<4 {
+            for value in 0..<256 {
+                let b = UInt32(sbox[value]) << UInt32(24 - 8 * position)
+                let round = b ^ rotl(b, 2) ^ rotl(b, 10) ^ rotl(b, 18) ^ rotl(b, 24)
+                XCTAssertEqual(sm4RoundTables[256 * position + value], round)
+                XCTAssertEqual(sm4KeyTables[256 * position + value], b ^ rotl(b, 13) ^ rotl(b, 23))
+            }
         }
     }
 

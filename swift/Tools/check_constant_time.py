@@ -13,6 +13,10 @@ disassembles the objects, and fails if:
 
 It works on x86-64 (objdump) and arm64 (llvm-objdump, macOS). It checks branches and memory reads, which are what the
 optimizer has broken; it cannot see microarchitectural effects. Usage: Tools/check_constant_time.py [--no-build] [--size]  (--size builds with -Osize)
+
+SM4 is deliberately not checked: on this branch it uses secret-indexed T-table lookups for speed and is not
+cache-timing resistant, so there is no table-free property to verify. The constant-time SM4 (Boolean-circuit S-box)
+lives on the `security` branch. Everything listed below (SM2 field/point code, hex, PKCS#7 and UTF-8 checks) still is.
 """
 import glob
 import os
