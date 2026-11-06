@@ -11,6 +11,9 @@ Usage, for x86-64 or arm64, default profile and LTO alike (the bench binary cont
 Repeat with CARGO_PROFILE_BENCH_LTO=fat CARGO_PROFILE_BENCH_CODEGEN_UNITS=1. Exit status 0 means:
 - both table scans load all 16 entries with no branch anywhere in the scan, as a loop or unrolled;
 - the functions that must be branch-free have no conditional branch other than allowed ones.
+SM4's block cipher is not checked: on this branch it uses secret-indexed lookup tables and is not
+meant to be constant time (the `security` branch keeps the constant-time SM4 and its S-box check).
+Only SM4's padding check is still held to the rule.
 Branches elsewhere in the scalar multiplications are listed by `--list` for reading; they must
 only depend on public data (window index, scalar bit position, table building).
 
@@ -24,12 +27,11 @@ import sys
 COND = re.compile(r"^(j(?!mp)[a-z]+|b\.[a-z]{2}|cbn?z|tbn?z)\b")
 # Allowed conditional branches: public loop counters and lengths, by function.
 BRANCH_FREE = {
-    r"sbox::sbox_word": 0,
     r"field::reduce_wide_p": 0,
     r"order::redc": 0,
     r"Jacobian>?::double": 0,
     r"Jacobian>?::add_mixed_raw": 0,
-    r"sm4::pkcs7_unpadded_len": 1,  # the public length check
+    r"sm4::pkcs7_check": 1,  # the public length check
     r"modinv::invert": 2,  # the fixed 59- and 10-iteration counters
     r"hex::encode_scalar": 2,  # the loop over the public length
     r"hex::decode_scalar": 2,  # the loop over the public length

@@ -1,11 +1,17 @@
 //! SM4 国密算法实现 (CBC模式，PKCS#7填充)
 //! 参考Java版本实现: java/src/site/aicc/sm4/SM4.java
 //!
-//! Block code sits behind one dispatch point, chosen at run time: GFNI + AVX2 and AES-NI (+ AVX2)
-//! on x86-64, the AES instructions with NEON on AArch64, and a portable table implementation.
+//! # Table lookups: not cache-timing resistant
 //!
-//! No path, key schedule included, has a memory access or branch that depends on secret data. The
-//! portable code computes the S-box with a Boolean circuit, slower than a table on purpose.
+//! This is the high-performance variant. The key schedule, CBC encryption, single blocks and
+//! short decryptions use lookup tables indexed by secret data (four "T-tables" that fold the
+//! S-box into the linear layer), the classic approach of OpenSSL and BouncyCastle. Their timing
+//! can leak key and data bits through the CPU cache to an attacker who shares or observes it. The
+//! `security` branch of this repository has the constant-time SM4 (no secret-indexed table).
+//!
+//! CBC decryption is parallel; longer inputs run many blocks at once with GFNI + AVX2 or
+//! AES-NI + AVX2 on x86-64 and the AES instructions with NEON on AArch64, chosen at run time.
+//! The blocks that do not fill a batch go through the tables when that is cheaper.
 //!
 //! # CBC gives no integrity
 //!
@@ -23,7 +29,7 @@ use std::fmt;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
-mod sbox;
+mod tables;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -101,36 +107,30 @@ const fn l(b: u32) -> u32 {
 
 // 线性变换 L'
 #[inline(always)]
-pub(crate) const fn l_prime(b: u32) -> u32 {
+const fn l_prime(b: u32) -> u32 {
     b ^ b.rotate_left(13) ^ b.rotate_left(23)
 }
 
 #[inline(always)]
-fn t_soft(x: u32) -> u32 {
-    l(sbox::sbox_word(x))
-}
-
-#[inline(always)]
-pub(crate) fn load_be(block: &[u8]) -> [u32; 4] {
+fn load_be(block: &[u8]) -> [u32; 4] {
     let word = |i: usize| u32::from_be_bytes([block[i], block[i + 1], block[i + 2], block[i + 3]]);
     [word(0), word(4), word(8), word(12)]
 }
 
 #[inline(always)]
-pub(crate) fn store_be(block: &mut [u8], words: [u32; 4]) {
+fn store_be(block: &mut [u8], words: [u32; 4]) {
     for (bytes, word) in block.chunks_exact_mut(4).zip(words) {
         bytes.copy_from_slice(&word.to_be_bytes());
     }
 }
 
-/// Key schedule shared by all backends, given the round's non-linear layer `tau`.
-#[inline(always)]
-pub(crate) fn expand_key(key: &[u8; 16], mut tau: impl FnMut(u32) -> u32) -> [u32; 32] {
+/// The key schedule, through the L' tables.
+fn expand_key(key: &[u8; 16]) -> [u32; 32] {
     let mk = load_be(key);
     let mut k = [mk[0] ^ FK[0], mk[1] ^ FK[1], mk[2] ^ FK[2], mk[3] ^ FK[3]];
     let mut rk = [0u32; 32];
     for (i, out) in rk.iter_mut().enumerate() {
-        let next = k[0] ^ l_prime(tau(k[1] ^ k[2] ^ k[3] ^ CK[i]));
+        let next = k[0] ^ tables::lookup(&tables::K, k[1] ^ k[2] ^ k[3] ^ CK[i]);
         k = [k[1], k[2], k[3], next];
         *out = next;
     }
@@ -138,26 +138,95 @@ pub(crate) fn expand_key(key: &[u8; 16], mut tau: impl FnMut(u32) -> u32) -> [u3
     rk
 }
 
-#[inline(always)]
-fn crypt_block_soft(rk: &[u32; 32], block: &mut [u8]) {
-    let [mut a, mut b, mut c, mut d] = load_be(block);
-    for keys in rk.chunks_exact(4) {
-        a ^= t_soft(b ^ c ^ d ^ keys[0]);
-        b ^= t_soft(c ^ d ^ a ^ keys[1]);
-        c ^= t_soft(d ^ a ^ b ^ keys[2]);
-        d ^= t_soft(a ^ b ^ c ^ keys[3]);
-    }
-    store_be(block, [d, c, b, a]);
+/// Four rounds, the 32 of a block being eight of these. Spelled out rather than looped over the
+/// words so that the state stays in registers.
+macro_rules! four_rounds {
+    ($t:expr, $keys:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {
+        $a ^= $t($b ^ $c ^ $d ^ $keys[0]);
+        $b ^= $t($c ^ $d ^ $a ^ $keys[1]);
+        $c ^= $t($d ^ $a ^ $b ^ $keys[2]);
+        $d ^= $t($a ^ $b ^ $c ^ $keys[3]);
+    };
 }
 
-fn cbc_encrypt_soft(rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
-    let mut chain = *iv;
+/// The 32 rounds on one block's words, in output order.
+#[inline(always)]
+fn rounds(rk: &[u32; 32], [mut a, mut b, mut c, mut d]: [u32; 4]) -> [u32; 4] {
+    let t = |x: u32| tables::lookup(&tables::T, x);
+    // Unrolled: a loop here keeps LLVM from scheduling across rounds.
+    four_rounds!(t, rk[0..4], a, b, c, d);
+    four_rounds!(t, rk[4..8], a, b, c, d);
+    four_rounds!(t, rk[8..12], a, b, c, d);
+    four_rounds!(t, rk[12..16], a, b, c, d);
+    four_rounds!(t, rk[16..20], a, b, c, d);
+    four_rounds!(t, rk[20..24], a, b, c, d);
+    four_rounds!(t, rk[24..28], a, b, c, d);
+    four_rounds!(t, rk[28..32], a, b, c, d);
+    [d, c, b, a]
+}
+
+fn crypt_block(rk: &[u32; 32], block: &mut [u8; BLOCK_LEN]) {
+    let words = rounds(rk, load_be(block));
+    store_be(block, words);
+}
+
+/// Independent blocks with their rounds interleaved. One block's rounds are a chain of dependent
+/// loads, and the CPU can run several chains side by side.
+const TABLE_WAYS: usize = 4;
+
+fn crypt_ways(rk: &[u32; 32], blocks: &mut [u8; TABLE_WAYS * BLOCK_LEN]) {
+    let words: [[u32; 4]; TABLE_WAYS] =
+        core::array::from_fn(|way| load_be(&blocks[way * BLOCK_LEN..]));
+    let [mut a0, mut b0, mut c0, mut d0] = words[0];
+    let [mut a1, mut b1, mut c1, mut d1] = words[1];
+    let [mut a2, mut b2, mut c2, mut d2] = words[2];
+    let [mut a3, mut b3, mut c3, mut d3] = words[3];
+    let t = |x: u32| tables::lookup(&tables::T, x);
+    for keys in rk.chunks_exact(4) {
+        // Round by round across the ways, so that four independent chains are in flight.
+        a0 ^= t(b0 ^ c0 ^ d0 ^ keys[0]);
+        a1 ^= t(b1 ^ c1 ^ d1 ^ keys[0]);
+        a2 ^= t(b2 ^ c2 ^ d2 ^ keys[0]);
+        a3 ^= t(b3 ^ c3 ^ d3 ^ keys[0]);
+        b0 ^= t(c0 ^ d0 ^ a0 ^ keys[1]);
+        b1 ^= t(c1 ^ d1 ^ a1 ^ keys[1]);
+        b2 ^= t(c2 ^ d2 ^ a2 ^ keys[1]);
+        b3 ^= t(c3 ^ d3 ^ a3 ^ keys[1]);
+        c0 ^= t(d0 ^ a0 ^ b0 ^ keys[2]);
+        c1 ^= t(d1 ^ a1 ^ b1 ^ keys[2]);
+        c2 ^= t(d2 ^ a2 ^ b2 ^ keys[2]);
+        c3 ^= t(d3 ^ a3 ^ b3 ^ keys[2]);
+        d0 ^= t(a0 ^ b0 ^ c0 ^ keys[3]);
+        d1 ^= t(a1 ^ b1 ^ c1 ^ keys[3]);
+        d2 ^= t(a2 ^ b2 ^ c2 ^ keys[3]);
+        d3 ^= t(a3 ^ b3 ^ c3 ^ keys[3]);
+    }
+    let out = [
+        [d0, c0, b0, a0],
+        [d1, c1, b1, a1],
+        [d2, c2, b2, a2],
+        [d3, c3, b3, a3],
+    ];
+    for (block, words) in blocks.chunks_exact_mut(BLOCK_LEN).zip(out) {
+        store_be(block, words);
+    }
+}
+
+/// CBC encryption is serial, one block after the other. `buf` must be a whole number of blocks.
+fn cbc_encrypt(rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
+    let mut chain = load_be(iv);
     for block in buf.chunks_exact_mut(BLOCK_LEN) {
-        for (byte, prev) in block.iter_mut().zip(chain) {
-            *byte ^= prev;
-        }
-        crypt_block_soft(rk, block);
-        chain.copy_from_slice(block);
+        let plain = load_be(block);
+        chain = rounds(
+            rk,
+            [
+                plain[0] ^ chain[0],
+                plain[1] ^ chain[1],
+                plain[2] ^ chain[2],
+                plain[3] ^ chain[3],
+            ],
+        );
+        store_be(block, chain);
     }
 }
 
@@ -165,7 +234,7 @@ fn cbc_encrypt_soft(rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
 /// transforms the blocks of a chunk independently. Returns the rest, which is shorter than a
 /// chunk, and leaves `chain` at the last ciphertext block seen.
 #[inline]
-pub(crate) fn cbc_decrypt_chunks<'a, const BYTES: usize>(
+fn cbc_decrypt_chunks<'a, const BYTES: usize>(
     rk: &[u32; 32],
     chain: &mut [u8; 16],
     buf: &'a mut [u8],
@@ -189,9 +258,8 @@ pub(crate) fn cbc_decrypt_chunks<'a, const BYTES: usize>(
 }
 
 /// Same for a final partial batch: `buf` holds fewer than `BYTES / 16` blocks.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline]
-pub(crate) fn cbc_decrypt_tail<const BYTES: usize>(
+fn cbc_decrypt_tail<const BYTES: usize>(
     rk: &[u32; 32],
     chain: &[u8; 16],
     buf: &mut [u8],
@@ -212,13 +280,37 @@ pub(crate) fn cbc_decrypt_tail<const BYTES: usize>(
     buf.copy_from_slice(&plain[..buf.len()]);
 }
 
+// Rough costs, measured on an Intel i5-13500H and an Apple M2, in tenths of one block through the
+// tables: a group of `TABLE_WAYS` interleaved blocks, and one call of each hardware batch. They
+// decide whether the blocks left after the whole batches take the tables or a padded batch.
+const COST_ONE: usize = 10;
+#[cfg(target_arch = "aarch64")]
+const COST_WAYS: usize = 14;
+#[cfg(not(target_arch = "aarch64"))]
+const COST_WAYS: usize = 17;
+
+/// What `blocks` blocks cost through `cbc_decrypt_tables`.
+fn table_cost(blocks: usize) -> usize {
+    blocks / TABLE_WAYS * COST_WAYS + (blocks % TABLE_WAYS * COST_ONE).min(COST_WAYS)
+}
+
+/// CBC decryption of the whole of `buf` through the tables.
+fn cbc_decrypt_tables(rk: &[u32; 32], chain: &mut [u8; 16], buf: &mut [u8]) {
+    let rest = cbc_decrypt_chunks(rk, chain, buf, crypt_ways);
+    if rest.len() / BLOCK_LEN * COST_ONE > COST_WAYS {
+        // Two or three blocks left: one padded interleaved call is cheaper.
+        cbc_decrypt_tail(rk, chain, rest, crypt_ways);
+    } else {
+        let rest = cbc_decrypt_chunks(rk, chain, rest, crypt_block);
+        debug_assert!(rest.is_empty());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Backend {
-    Soft,
+    Tables,
     #[cfg(target_arch = "aarch64")]
     NeonAes,
-    #[cfg(target_arch = "x86_64")]
-    Aesni,
     #[cfg(target_arch = "x86_64")]
     AesniAvx2,
     #[cfg(target_arch = "x86_64")]
@@ -226,7 +318,7 @@ enum Backend {
 }
 
 impl Backend {
-    /// Fastest backend for this CPU; the feature macros cache their result.
+    /// Fastest CBC decryption for this CPU; the feature macros cache their result.
     #[inline]
     fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
@@ -239,9 +331,6 @@ impl Backend {
                     return Backend::AesniAvx2;
                 }
             }
-            if std::is_x86_feature_detected!("aes") && std::is_x86_feature_detected!("ssse3") {
-                return Backend::Aesni;
-            }
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -249,14 +338,14 @@ impl Backend {
                 return Backend::NeonAes;
             }
         }
-        Backend::Soft
+        Backend::Tables
     }
 
     /// Every backend this CPU can run, so tests cover the fallbacks too.
     #[cfg(test)]
     #[allow(unused_mut)] // no other backends on some targets
     fn all_available() -> Vec<Self> {
-        let mut all = vec![Backend::Soft];
+        let mut all = vec![Backend::Tables];
         #[cfg(target_arch = "aarch64")]
         {
             if std::arch::is_aarch64_feature_detected!("aes") {
@@ -265,9 +354,6 @@ impl Backend {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            if std::is_x86_feature_detected!("aes") && std::is_x86_feature_detected!("ssse3") {
-                all.push(Backend::Aesni);
-            }
             if std::is_x86_feature_detected!("avx2") {
                 if std::is_x86_feature_detected!("aes") {
                     all.push(Backend::AesniAvx2);
@@ -280,35 +366,6 @@ impl Backend {
         all
     }
 
-    fn key_schedule(self, key: &[u8; 16]) -> [u32; 32] {
-        match self {
-            Backend::Soft => expand_key(key, sbox::sbox_word),
-            // SAFETY: each variant is only constructed after detecting the features it needs.
-            #[cfg(target_arch = "aarch64")]
-            Backend::NeonAes => unsafe { aarch64::key_schedule(key) },
-            // SAFETY: each variant is only constructed after detecting the features it needs.
-            #[cfg(target_arch = "x86_64")]
-            Backend::Aesni | Backend::AesniAvx2 => unsafe { x86::aesni::key_schedule(key) },
-            #[cfg(target_arch = "x86_64")]
-            Backend::GfniAvx2 => unsafe { x86::gfni::key_schedule(key) },
-        }
-    }
-
-    /// `buf` must be a whole number of blocks.
-    fn cbc_encrypt(self, rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
-        match self {
-            Backend::Soft => cbc_encrypt_soft(rk, iv, buf),
-            // SAFETY: see `key_schedule`.
-            #[cfg(target_arch = "aarch64")]
-            Backend::NeonAes => unsafe { aarch64::cbc_encrypt(rk, iv, buf) },
-            // SAFETY: see `key_schedule`.
-            #[cfg(target_arch = "x86_64")]
-            Backend::Aesni | Backend::AesniAvx2 => unsafe { x86::aesni::cbc_encrypt(rk, iv, buf) },
-            #[cfg(target_arch = "x86_64")]
-            Backend::GfniAvx2 => unsafe { x86::gfni::cbc_encrypt(rk, iv, buf) },
-        }
-    }
-
     /// `rk` is the encryption schedule; `buf` must be a whole number of blocks.
     fn cbc_decrypt(self, rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
         let mut reversed = *rk;
@@ -316,60 +373,48 @@ impl Backend {
         let mut chain = *iv;
         // SAFETY (all unsafe calls): each variant is only constructed after detecting the
         // features its functions need.
-        match self {
-            Backend::Soft => {
-                let rest =
-                    cbc_decrypt_chunks::<BLOCK_LEN>(&reversed, &mut chain, buf, |keys, block| {
-                        crypt_block_soft(keys, block)
-                    });
-                debug_assert!(rest.is_empty());
-            }
+        let rest = match self {
+            Backend::Tables => buf,
             #[cfg(target_arch = "aarch64")]
             Backend::NeonAes => {
-                let rest = cbc_decrypt_chunks(&reversed, &mut chain, buf, |keys, batch| unsafe {
-                    aarch64::crypt_wide(keys, batch)
-                });
-                let rest = cbc_decrypt_chunks(&reversed, &mut chain, rest, |keys, batch| unsafe {
-                    aarch64::crypt4(keys, batch)
-                });
-                cbc_decrypt_tail(&reversed, &chain, rest, |keys, batch| unsafe {
-                    aarch64::crypt4(keys, batch)
-                });
-            }
-            #[cfg(target_arch = "x86_64")]
-            Backend::Aesni => {
-                let rest = cbc_decrypt_chunks(&reversed, &mut chain, buf, |keys, batch| unsafe {
-                    x86::aesni::crypt4(keys, batch)
-                });
-                cbc_decrypt_tail(&reversed, &chain, rest, |keys, batch| unsafe {
-                    x86::aesni::crypt4(keys, batch)
-                });
+                let crypt = |keys: &_, batch: &mut _| unsafe { aarch64::crypt_wide(keys, batch) };
+                let rest = cbc_decrypt_chunks(&reversed, &mut chain, buf, crypt);
+                if table_cost(rest.len() / BLOCK_LEN) > aarch64::COST_WIDE {
+                    cbc_decrypt_tail(&reversed, &chain, rest, crypt);
+                    return;
+                }
+                rest
             }
             #[cfg(target_arch = "x86_64")]
             Backend::AesniAvx2 => {
                 let rest = cbc_decrypt_chunks(&reversed, &mut chain, buf, |keys, batch| unsafe {
                     x86::aesni_avx2::crypt_wide(keys, batch)
                 });
-                let rest = cbc_decrypt_chunks(&reversed, &mut chain, rest, |keys, batch| unsafe {
-                    x86::aesni_avx2::crypt8(keys, batch)
-                });
-                cbc_decrypt_tail(&reversed, &chain, rest, |keys, batch| unsafe {
-                    x86::aesni_avx2::crypt8(keys, batch)
-                });
+                let crypt8 =
+                    |keys: &_, batch: &mut _| unsafe { x86::aesni_avx2::crypt8(keys, batch) };
+                let rest = cbc_decrypt_chunks(&reversed, &mut chain, rest, crypt8);
+                if table_cost(rest.len() / BLOCK_LEN) > x86::COST_AESNI8 {
+                    cbc_decrypt_tail(&reversed, &chain, rest, crypt8);
+                    return;
+                }
+                rest
             }
             #[cfg(target_arch = "x86_64")]
             Backend::GfniAvx2 => {
                 let rest = cbc_decrypt_chunks(&reversed, &mut chain, buf, |keys, batch| unsafe {
                     x86::gfni_avx2::crypt_wide(keys, batch)
                 });
-                let rest = cbc_decrypt_chunks(&reversed, &mut chain, rest, |keys, batch| unsafe {
-                    x86::gfni_avx2::crypt8(keys, batch)
-                });
-                cbc_decrypt_tail(&reversed, &chain, rest, |keys, batch| unsafe {
-                    x86::gfni_avx2::crypt8(keys, batch)
-                });
+                let crypt8 =
+                    |keys: &_, batch: &mut _| unsafe { x86::gfni_avx2::crypt8(keys, batch) };
+                let rest = cbc_decrypt_chunks(&reversed, &mut chain, rest, crypt8);
+                if table_cost(rest.len() / BLOCK_LEN) > x86::COST_GFNI8 {
+                    cbc_decrypt_tail(&reversed, &chain, rest, crypt8);
+                    return;
+                }
+                rest
             }
-        }
+        };
+        cbc_decrypt_tables(&reversed, &mut chain, rest);
     }
 }
 
@@ -404,7 +449,7 @@ impl SM4 {
     pub fn set_key(&mut self, key: &[u8], iv: &[u8]) -> Result<(), SM4Error> {
         let key: &[u8; 16] = key.try_into().map_err(|_| SM4Error::InvalidKeyLength)?;
         let iv: &[u8; 16] = iv.try_into().map_err(|_| SM4Error::InvalidIVLength)?;
-        self.rk = Backend::detect().key_schedule(key);
+        self.rk = expand_key(key);
         self.iv = *iv;
         self.keyed = true;
         Ok(())
@@ -418,7 +463,7 @@ impl SM4 {
             return Err(Box::new(SM4Error::InvalidKeyLength));
         }
         let buf = self
-            .encrypt_padded(plaintext.as_bytes(), Backend::detect())
+            .encrypt_padded(plaintext.as_bytes())
             .ok_or("Out of memory")?;
         Ok(hex::try_encode_lower(&buf).ok_or("Out of memory")?)
     }
@@ -468,14 +513,14 @@ impl SM4 {
     }
 
     /// PKCS#7 pad and CBC encrypt into a fresh buffer; `None` when out of memory.
-    fn encrypt_padded(&self, input: &[u8], backend: Backend) -> Option<Vec<u8>> {
+    fn encrypt_padded(&self, input: &[u8]) -> Option<Vec<u8>> {
         let pad_len = BLOCK_LEN - input.len() % BLOCK_LEN;
         let total = input.len().checked_add(pad_len)?;
         let mut buf = Vec::new();
         buf.try_reserve_exact(total).ok()?;
         buf.extend_from_slice(input);
         buf.resize(total, pad_len as u8);
-        backend.cbc_encrypt(&self.rk, &self.iv, &mut buf);
+        cbc_encrypt(&self.rk, &self.iv, &mut buf);
         Some(buf)
     }
 }
@@ -565,32 +610,68 @@ mod tests {
         out
     }
 
-    /// Single raw block on one backend, through its CBC entry point with a zero IV.
-    fn encrypt_raw(backend: Backend, rk: &[u32; 32], block: &mut [u8; 16]) {
-        backend.cbc_encrypt(rk, &[0; 16], block);
-    }
-
-    /// GB/T 32907-2016 example 1 and the 1,000,000 iteration example 2, on every backend.
+    /// GB/T 32907-2016 example 1 and the 1,000,000 iteration example 2, through the tables, and
+    /// the single-block decryption on every backend.
     #[test]
-    fn standard_vectors_on_every_backend() {
+    fn standard_vectors() {
         let key = unhex16("0123456789abcdeffedcba9876543210");
         let once = unhex16("681edf34d206965e86b3e94f536e4246");
         let million = unhex16("595298c7c6fd271f0402f804c33d3f66");
+        let rk = expand_key(&key);
+        assert_eq!((rk[0], rk[31]), (0xf121_86f9, 0x9124_a012));
+        let mut block = key;
+        crypt_block(&rk, &mut block);
+        assert_eq!(block, once);
+        let mut block = key;
+        for _ in 0..1_000_000 {
+            cbc_encrypt(&rk, &[0; 16], &mut block);
+        }
+        assert_eq!(block, million);
         for backend in Backend::all_available() {
-            let rk = backend.key_schedule(&key);
-            let mut block = key;
-            encrypt_raw(backend, &rk, &mut block);
-            assert_eq!(block, once, "{backend:?}");
-
             let mut single = once;
             backend.cbc_decrypt(&rk, &[0; 16], &mut single);
             assert_eq!(single, key, "{backend:?}");
+        }
+    }
 
-            let mut block = key;
-            for _ in 0..1_000_000 {
-                encrypt_raw(backend, &rk, &mut block);
+    /// The tables against the S-box of GB/T 32907, typed in again here: L and L' are invertible,
+    /// so this checks all 256 S-box entries as well as the tables.
+    #[test]
+    fn tables_match_the_standard_sbox() {
+        const STANDARD: [u8; 256] = [
+            0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb,
+            0x2c, 0x05, 0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26,
+            0x49, 0x86, 0x06, 0x99, 0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54,
+            0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62, 0xe4, 0xb3, 0x1c, 0xa9, 0xc9, 0x08, 0xe8, 0x95,
+            0x80, 0xdf, 0x94, 0xfa, 0x75, 0x8f, 0x3f, 0xa6, 0x47, 0x07, 0xa7, 0xfc, 0xf3, 0x73,
+            0x17, 0xba, 0x83, 0x59, 0x3c, 0x19, 0xe6, 0x85, 0x4f, 0xa8, 0x68, 0x6b, 0x81, 0xb2,
+            0x71, 0x64, 0xda, 0x8b, 0xf8, 0xeb, 0x0f, 0x4b, 0x70, 0x56, 0x9d, 0x35, 0x1e, 0x24,
+            0x0e, 0x5e, 0x63, 0x58, 0xd1, 0xa2, 0x25, 0x22, 0x7c, 0x3b, 0x01, 0x21, 0x78, 0x87,
+            0xd4, 0x00, 0x46, 0x57, 0x9f, 0xd3, 0x27, 0x52, 0x4c, 0x36, 0x02, 0xe7, 0xa0, 0xc4,
+            0xc8, 0x9e, 0xea, 0xbf, 0x8a, 0xd2, 0x40, 0xc7, 0x38, 0xb5, 0xa3, 0xf7, 0xf2, 0xce,
+            0xf9, 0x61, 0x15, 0xa1, 0xe0, 0xae, 0x5d, 0xa4, 0x9b, 0x34, 0x1a, 0x55, 0xad, 0x93,
+            0x32, 0x30, 0xf5, 0x8c, 0xb1, 0xe3, 0x1d, 0xf6, 0xe2, 0x2e, 0x82, 0x66, 0xca, 0x60,
+            0xc0, 0x29, 0x23, 0xab, 0x0d, 0x53, 0x4e, 0x6f, 0xd5, 0xdb, 0x37, 0x45, 0xde, 0xfd,
+            0x8e, 0x2f, 0x03, 0xff, 0x6a, 0x72, 0x6d, 0x6c, 0x5b, 0x51, 0x8d, 0x1b, 0xaf, 0x92,
+            0xbb, 0xdd, 0xbc, 0x7f, 0x11, 0xd9, 0x5c, 0x41, 0x1f, 0x10, 0x5a, 0xd8, 0x0a, 0xc1,
+            0x31, 0x88, 0xa5, 0xcd, 0x7b, 0xbd, 0x2d, 0x74, 0xd0, 0x12, 0xb8, 0xe5, 0xb4, 0xb0,
+            0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9, 0xf1, 0x09, 0xc5, 0x6e,
+            0xc6, 0x84, 0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e,
+            0xd7, 0xcb, 0x39, 0x48,
+        ];
+        assert_eq!(tables::SBOX, STANDARD);
+        for (x, &s) in STANDARD.iter().enumerate() {
+            for i in 0..4 {
+                let b = u32::from(s) << (8 * (3 - i));
+                assert_eq!(tables::T.0[i][x], l(b), "T{i}[{x:#x}]");
+                assert_eq!(tables::K.0[i][x], l_prime(b), "K{i}[{x:#x}]");
             }
-            assert_eq!(block, million, "{backend:?}");
+        }
+        // A whole word through the lookup, every byte position at once.
+        for x in pseudo_random(9, 4096).chunks_exact(4) {
+            let x = u32::from_be_bytes(x.try_into().unwrap());
+            let b = x.to_be_bytes().map(|byte| STANDARD[byte as usize]);
+            assert_eq!(tables::lookup(&tables::T, x), l(u32::from_be_bytes(b)));
         }
     }
 
@@ -606,22 +687,27 @@ mod tests {
             .collect()
     }
 
-    /// All backends agree with the portable code for every block count around the batch sizes.
+    /// Every decryption backend inverts the table encryption for every block count around the
+    /// batch sizes, through the whole batches, the padded ones and the table tails.
     #[test]
     fn backends_agree_on_all_lengths() {
         let key: [u8; 16] = pseudo_random(1, 16).try_into().unwrap();
         let iv: [u8; 16] = pseudo_random(2, 16).try_into().unwrap();
-        let reference_rk = Backend::Soft.key_schedule(&key);
-        for blocks in 0..70 {
+        let rk = expand_key(&key);
+        for blocks in 0..140 {
             let plain = pseudo_random(blocks as u32 + 3, blocks * 16);
-            let mut expected = plain.clone();
-            Backend::Soft.cbc_encrypt(&reference_rk, &iv, &mut expected);
+            let mut encrypted = plain.clone();
+            cbc_encrypt(&rk, &iv, &mut encrypted);
+            // Block by block, as the definition of CBC has it.
+            let mut chain = iv;
+            for (block, out) in plain.chunks_exact(16).zip(encrypted.chunks_exact(16)) {
+                let mut x: [u8; 16] = core::array::from_fn(|i| block[i] ^ chain[i]);
+                crypt_block(&rk, &mut x);
+                assert_eq!(x, out);
+                chain = x;
+            }
             for backend in Backend::all_available() {
-                let rk = backend.key_schedule(&key);
-                assert_eq!(rk, reference_rk, "{backend:?}");
-                let mut buf = plain.clone();
-                backend.cbc_encrypt(&rk, &iv, &mut buf);
-                assert_eq!(buf, expected, "{backend:?} encrypt {blocks}");
+                let mut buf = encrypted.clone();
                 backend.cbc_decrypt(&rk, &iv, &mut buf);
                 assert_eq!(buf, plain, "{backend:?} decrypt {blocks}");
             }
@@ -665,7 +751,7 @@ mod tests {
         // Not UTF-8, with its padding appended by hand.
         let mut block = vec![0xffu8; 12];
         block.extend_from_slice(&[4; 4]);
-        Backend::detect().cbc_encrypt(&sm4.rk, &iv, &mut block);
+        cbc_encrypt(&sm4.rk, &iv, &mut block);
         let text = hex::encode_lower(&block);
         assert_eq!(sm4.decrypt_bytes(&text).unwrap(), vec![0xffu8; 12]);
         assert_eq!(
@@ -691,10 +777,9 @@ mod tests {
         let (key, iv) = ([3u8; 16], [5u8; 16]);
         let mut sm4 = SM4::new();
         sm4.set_key(&key, &iv).unwrap();
-        let backend = Backend::detect();
         let encrypt_raw_block = |block: &[u8; 16]| {
             let mut buf = *block;
-            backend.cbc_encrypt(&sm4.rk, &iv, &mut buf);
+            cbc_encrypt(&sm4.rk, &iv, &mut buf);
             hex::encode_lower(&buf)
         };
 
@@ -738,14 +823,5 @@ mod tests {
             outcomes.iter().all(|m| m == "Invalid padding"),
             "{outcomes:?}"
         );
-    }
-
-    #[test]
-    fn soft_round_function_matches_definition() {
-        for x in pseudo_random(9, 4096).chunks_exact(4) {
-            let x = u32::from_be_bytes(x.try_into().unwrap());
-            let b = x.to_be_bytes().map(|byte| sbox::SBOX[byte as usize]);
-            assert_eq!(t_soft(x), l(u32::from_be_bytes(b)));
-        }
     }
 }

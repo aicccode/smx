@@ -1,21 +1,25 @@
-//! SM4 on AArch64: the S-box through the AES instructions, words in NEON lanes.
+//! SM4 CBC decryption on AArch64, 32 blocks at a time: the S-box through the AES instructions,
+//! words in NEON lanes. Narrower batches measured slower than the lookup tables of the parent
+//! module, which handle everything else.
 //!
 //! `AESE` with a zero key is SubBytes and ShiftRows, the same as x86's `aesenclast`, so the
-//! tables in the parent module apply unchanged. No memory access depends on data. Only runs after
-//! run-time detection of the `aes` feature. The dedicated SM4 instructions are left out: their
-//! intrinsics are not stable and the development hardware (Apple M2) does not have them.
+//! nibble tables of the affine maps in the parent module apply unchanged. No memory access
+//! depends on data. Only runs after run-time detection of the `aes` feature. The dedicated SM4
+//! instructions are left out: their intrinsics are not stable and the development hardware
+//! (Apple M2) does not have them.
 // Intrinsics became safe inside matching `target_feature` functions only in newer compilers;
 // this keeps a single spelling that compiles on all of them.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use super::{
-    BLOCK_LEN, INV_SHIFT_ROWS, POST_HI, POST_LO, PRE_HI, PRE_LO, expand_key, load_be, store_be,
-};
+use super::{BLOCK_LEN, INV_SHIFT_ROWS, POST_HI, POST_LO, PRE_HI, PRE_LO};
 use core::arch::aarch64::*;
 
-/// Sets of four blocks in the widest bulk primitive.
+/// Sets of four blocks in the bulk primitive.
 const WIDE_SETS: usize = 8;
 pub(super) const WIDE_BYTES: usize = WIDE_SETS * 64;
+/// What one call of `crypt_wide` costs, in tenths of one block through the tables (measured on
+/// an Apple M2), to decide whether a short tail takes the tables or a padded batch.
+pub(super) const COST_WIDE: usize = 45;
 
 // In-lane byte shuffles for 32-bit rotations.
 const ROL8: [u8; 16] = [3, 0, 1, 2, 7, 4, 5, 6, 11, 8, 9, 10, 15, 12, 13, 14];
@@ -122,61 +126,14 @@ unsafe fn crypt<const SETS: usize>(rk: &[u32; 32], blocks: *mut u8) {
     }
 }
 
-/// Four blocks: batches too short for the wider version.
-#[target_feature(enable = "neon,aes")]
-pub(super) unsafe fn crypt4(rk: &[u32; 32], blocks: &mut [u8; 64]) {
-    crypt::<1>(rk, blocks.as_mut_ptr());
-}
-
 #[target_feature(enable = "neon,aes")]
 pub(super) unsafe fn crypt_wide(rk: &[u32; 32], blocks: &mut [u8; WIDE_BYTES]) {
     crypt::<WIDE_SETS>(rk, blocks.as_mut_ptr());
 }
 
-/// CBC encryption is inherently serial: one block repeated across the lanes of each register.
-#[target_feature(enable = "neon,aes")]
-pub(super) unsafe fn cbc_encrypt(rk: &[u32; 32], iv: &[u8; 16], buf: &mut [u8]) {
-    let mut chain = load_be(iv);
-    for block in buf.chunks_exact_mut(BLOCK_LEN) {
-        let plain = load_be(block);
-        let mut a = vdupq_n_u32(plain[0] ^ chain[0]);
-        let mut b = vdupq_n_u32(plain[1] ^ chain[1]);
-        let mut c = vdupq_n_u32(plain[2] ^ chain[2]);
-        let mut d = vdupq_n_u32(plain[3] ^ chain[3]);
-        macro_rules! round {
-            ($x0:ident, $x1:ident, $x2:ident, $x3:ident, $key:expr) => {
-                let input = veorq_u32(veorq_u32($x1, $x2), $x3);
-                $x0 = veorq_u32($x0, t(veorq_u32(input, vdupq_n_u32($key))));
-            };
-        }
-        for keys in rk.chunks_exact(4) {
-            round!(a, b, c, d, keys[0]);
-            round!(b, c, d, a, keys[1]);
-            round!(c, d, a, b, keys[2]);
-            round!(d, a, b, c, keys[3]);
-        }
-        chain = [
-            vgetq_lane_u32::<0>(d),
-            vgetq_lane_u32::<0>(c),
-            vgetq_lane_u32::<0>(b),
-            vgetq_lane_u32::<0>(a),
-        ];
-        store_be(block, chain);
-    }
-}
-
-/// Key schedule with the data-independent S-box.
-#[target_feature(enable = "neon,aes")]
-pub(super) unsafe fn key_schedule(key: &[u8; 16]) -> [u32; 32] {
-    expand_key(key, |x| {
-        let s = sbox(vreinterpretq_u8_u32(vdupq_n_u32(x)));
-        vgetq_lane_u32::<0>(vreinterpretq_u32_u8(s))
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::sbox::SBOX;
+    use super::super::tables::SBOX;
     use super::*;
 
     #[target_feature(enable = "neon,aes")]
