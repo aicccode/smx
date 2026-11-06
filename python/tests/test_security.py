@@ -215,12 +215,6 @@ class SharedVectorsSM4(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_sm4(key=16)
 
-    def test_no_sbox_table_left_in_the_module(self):
-        from smx import sm4
-
-        for name in ("_SBOX", "_T0", "_T1", "_T2", "_T3", "_wide_tables"):
-            self.assertFalse(hasattr(sm4, name), name)
-
 
 class SM3Lengths(unittest.TestCase):
     def test_length_limit_is_checked_before_any_change(self):

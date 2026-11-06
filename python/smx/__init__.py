@@ -8,8 +8,10 @@ keys were used recently. To turn them off, call ``smx.set_key_cache_enabled(Fals
 set the environment variable ``SMX_DISABLE_KEY_CACHE=1`` before import. Disabling also
 drops everything already cached. ``smx.clear_key_caches()`` empties them at any time.
 
-Timing: Python integers offer no constant-time guarantee; see :mod:`smx._ec`. For the
-limits of SM4-CBC, including the absence of integrity, see :mod:`smx.sm4`.
+Timing: Python integers offer no constant-time guarantee; see :mod:`smx._ec`. SM4 here
+uses table lookups and is not cache-timing resistant; the ``security`` branch of the
+repository has the variant without them. For the limits of SM4-CBC, including the
+absence of integrity, see :mod:`smx.sm4`.
 """
 
 from .hexutil import bytes_to_hex, hex_to_bytes

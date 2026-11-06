@@ -11,11 +11,13 @@ Security notes for callers:
   Call ``set_key`` with a fresh random IV for each message, and send the IV along.
 - :meth:`SM4.encrypt_block` and :meth:`SM4.decrypt_block` are raw ECB building blocks.
 
-The S-box is a Boolean circuit (see :mod:`smx._sm4_core`), so no table is indexed by
-key or data. That removes the cache-timing channel of table lookups, at a large cost
-for serial work: key schedule and CBC encryption. CBC decryption runs many blocks
-through each gate at once and stays fast. CPython integers still take value-dependent
-time at a very fine scale, so this is not a constant-time guarantee.
+**This SM4 uses table lookups and is not cache-timing resistant.** The key schedule,
+CBC encryption, single blocks and short decryptions index T-tables (the S-box merged
+with the linear transform) by key- and data-dependent bytes, as OpenSSL and
+BouncyCastle do. An attacker who can observe cache timing on the same machine may
+learn the key. Long CBC decryptions run many blocks in parallel through the Boolean
+S-box circuit of :mod:`smx._sm4_core` instead, because that is faster there. The
+``security`` branch of this repository has the variant without secret-indexed tables.
 """
 
 from __future__ import annotations
@@ -30,10 +32,36 @@ _MASK32 = 0xFFFFFFFF
 _BLOCK_SIZE = 16
 _KEY_SIZE = 16
 _BATCH_BLOCKS = 2048  # measured: larger batches gain little beyond this
+# Measured on x86_64 and Apple M2: from this many blocks, decrypting in parallel lanes
+# beats the byte tables, and the 16-bit tables once those have been built.
+_LANES_MIN_BLOCKS = 32
+_LANES_MIN_BLOCKS_WIDE = 48
+# Payload size from which building the 16-bit tables pays for itself.
+_WIDE_TABLE_THRESHOLD = 32 * 1024
 _BYTE_ONES = 0x01010101
 # Added before multiplying, so that every round key has the same number of CPython
 # digits. Multiplying a round key directly costs more for larger keys.
 _ROUND_KEY_OFFSET = 1 << 32
+
+# GB/T 32907-2016 S-box.
+_SBOX = bytes.fromhex(
+    "d690e9fecce13db716b614c228fb2c05"
+    "2b679a762abe04c3aa44132649860699"
+    "9c4250f491ef987a33540b43edcfac62"
+    "e4b31ca9c908e89580df94fa758f3fa6"
+    "4707a7fcf37317ba83593c19e6854fa8"
+    "686b81b27164da8bf8eb0f4b70569d35"
+    "1e240e5e6358d1a225227c3b01217887"
+    "d40046579fd327524c3602e7a0c4c89e"
+    "eabf8ad240c738b5a3f7f2cef96115a1"
+    "e0ae5da49b341a55ad933230f58cb1e3"
+    "1df6e22e8266ca60c02923ab0d534e6f"
+    "d5db3745defd8e2f03ff6a726d6c5b51"
+    "8d1baf92bbddbc7f11d95c411f105ad8"
+    "0ac13188a5cd7bbd2d74d012b8e5b4b0"
+    "8969974a0c96777e65b9f109c56ec684"
+    "18f07dec3adc4d2079ee5f3ed7cb3948"
+)
 
 _FK = (0xA3B1BAC6, 0x56AA3350, 0x677D9197, 0xB27022DC)
 
@@ -54,7 +82,50 @@ _pack_block = Struct(">4I").pack
 _DECRYPT_ERROR = "decryption failed"
 
 
+def _rotl(x: int, n: int) -> int:
+    return (x << n | x >> (32 - n)) & _MASK32
+
+
+def _byte_tables(linear) -> tuple[tuple[int, ...], ...]:
+    """T_i[x] = linear(S(x)) for x in byte i of the word (byte 0 is the highest)."""
+    low = tuple(linear(s) for s in _SBOX)
+    return (
+        tuple(_rotl(v, 24) for v in low),
+        tuple(_rotl(v, 16) for v in low),
+        tuple(_rotl(v, 8) for v in low),
+        low,
+    )
+
+
+# Round function tables, L(B) = B ^ B<<<2 ^ B<<<10 ^ B<<<18 ^ B<<<24.
+_T0, _T1, _T2, _T3 = _byte_tables(
+    lambda b: b ^ _rotl(b, 2) ^ _rotl(b, 10) ^ _rotl(b, 18) ^ _rotl(b, 24)
+)
+# Key schedule tables, L'(B) = B ^ B<<<13 ^ B<<<23.
+_KEY_T0, _KEY_T1, _KEY_T2, _KEY_T3 = _byte_tables(
+    lambda b: b ^ _rotl(b, 13) ^ _rotl(b, 23)
+)
+
+_wide_tables: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+
+
+def _get_wide_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Build the 16-bit tables (about 5 MB, 5 to 10 ms) at the first bulk operation.
+
+    ``high[x]`` covers the upper two bytes of a word and ``low[x]`` the lower two,
+    so one round takes two lookups instead of four.
+    """
+    global _wide_tables
+    tables = _wide_tables
+    if tables is None:
+        high = tuple(a ^ b for a in _T0 for b in _T1)
+        low = tuple(a ^ b for a in _T2 for b in _T3)
+        tables = _wide_tables = (high, low)
+    return tables
+
+
 def _expand_key(key: bytes) -> tuple[int, ...]:
+    t0, t1, t2, t3 = _KEY_T0, _KEY_T1, _KEY_T2, _KEY_T3
     a, b, c, d = _unpack_block(key)
     a ^= _FK[0]
     b ^= _FK[1]
@@ -62,14 +133,14 @@ def _expand_key(key: bytes) -> tuple[int, ...]:
     d ^= _FK[3]
     keys: list[int] = []
     for ck0, ck1, ck2, ck3 in zip(*[iter(_CK)] * 4):
-        y = sub_bytes(b ^ c ^ d ^ ck0, _BYTE_ONES)
-        a ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
-        y = sub_bytes(c ^ d ^ a ^ ck1, _BYTE_ONES)
-        b ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
-        y = sub_bytes(d ^ a ^ b ^ ck2, _BYTE_ONES)
-        c ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
-        y = sub_bytes(a ^ b ^ c ^ ck3, _BYTE_ONES)
-        d ^= y ^ (y << 13 & 0xFFFFE000 | y >> 19) ^ (y << 23 & 0xFF800000 | y >> 9)
+        x = b ^ c ^ d ^ ck0
+        a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = c ^ d ^ a ^ ck1
+        b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = d ^ a ^ b ^ ck2
+        c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = a ^ b ^ c ^ ck3
+        d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
         keys += (a, b, c, d)
     return tuple(keys)
 
@@ -80,41 +151,84 @@ def _group_round_keys(keys) -> tuple[tuple[int, int, int, int], ...]:
 
 def _crypt_one(a, b, c, d, round_keys) -> tuple[int, int, int, int]:
     """Run one block given as four words and return the output words."""
-    ones = _BYTE_ONES
+    t0, t1, t2, t3 = _T0, _T1, _T2, _T3
     for k0, k1, k2, k3 in round_keys:
-        y = sub_bytes(b ^ c ^ d ^ k0, ones)
-        a ^= (
-            y
-            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
-            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
-            ^ (y << 18 & 0xFFFC0000 | y >> 14)
-            ^ (y << 24 & 0xFF000000 | y >> 8)
-        )
-        y = sub_bytes(c ^ d ^ a ^ k1, ones)
-        b ^= (
-            y
-            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
-            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
-            ^ (y << 18 & 0xFFFC0000 | y >> 14)
-            ^ (y << 24 & 0xFF000000 | y >> 8)
-        )
-        y = sub_bytes(d ^ a ^ b ^ k2, ones)
-        c ^= (
-            y
-            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
-            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
-            ^ (y << 18 & 0xFFFC0000 | y >> 14)
-            ^ (y << 24 & 0xFF000000 | y >> 8)
-        )
-        y = sub_bytes(a ^ b ^ c ^ k3, ones)
-        d ^= (
-            y
-            ^ (y << 2 & 0xFFFFFFFC | y >> 30)
-            ^ (y << 10 & 0xFFFFFC00 | y >> 22)
-            ^ (y << 18 & 0xFFFC0000 | y >> 14)
-            ^ (y << 24 & 0xFF000000 | y >> 8)
-        )
+        x = b ^ c ^ d ^ k0
+        a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = c ^ d ^ a ^ k1
+        b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = d ^ a ^ b ^ k2
+        c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        x = a ^ b ^ c ^ k3
+        d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
     return d, c, b, a
+
+
+def _crypt_words(words, round_keys, chain) -> list[int]:
+    """Run the blocks in ``words`` through the byte tables.
+
+    With ``chain`` (the IV as four words) this is CBC encryption, otherwise ECB.
+    """
+    t0, t1, t2, t3 = _T0, _T1, _T2, _T3
+    output: list[int] = []
+    p0, p1, p2, p3 = chain or (0, 0, 0, 0)
+    for i in range(0, len(words), 4):
+        a = words[i] ^ p0
+        b = words[i + 1] ^ p1
+        c = words[i + 2] ^ p2
+        d = words[i + 3] ^ p3
+        for k0, k1, k2, k3 in round_keys:
+            x = b ^ c ^ d ^ k0
+            a ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+            x = c ^ d ^ a ^ k1
+            b ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+            x = d ^ a ^ b ^ k2
+            c ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+            x = a ^ b ^ c ^ k3
+            d ^= t0[x >> 24] ^ t1[x >> 16 & 255] ^ t2[x >> 8 & 255] ^ t3[x & 255]
+        output += (d, c, b, a)
+        if chain:
+            p0, p1, p2, p3 = d, c, b, a
+    return output
+
+
+def _crypt_words_wide(words, round_keys, chain) -> list[int]:
+    """Same as :func:`_crypt_words` with the 16-bit tables."""
+    high, low = _get_wide_tables()
+    output: list[int] = []
+    p0, p1, p2, p3 = chain or (0, 0, 0, 0)
+    for i in range(0, len(words), 4):
+        a = words[i] ^ p0
+        b = words[i + 1] ^ p1
+        c = words[i + 2] ^ p2
+        d = words[i + 3] ^ p3
+        for k0, k1, k2, k3 in round_keys:
+            x = b ^ c ^ d ^ k0
+            a ^= high[x >> 16] ^ low[x & 0xFFFF]
+            x = c ^ d ^ a ^ k1
+            b ^= high[x >> 16] ^ low[x & 0xFFFF]
+            x = d ^ a ^ b ^ k2
+            c ^= high[x >> 16] ^ low[x & 0xFFFF]
+            x = a ^ b ^ c ^ k3
+            d ^= high[x >> 16] ^ low[x & 0xFFFF]
+        output += (d, c, b, a)
+        if chain:
+            p0, p1, p2, p3 = d, c, b, a
+    return output
+
+
+def _crypt_bytes(data: bytes, round_keys, chain) -> bytes:
+    """Run whole blocks through the tables, CBC-chained when ``chain`` is given.
+
+    The 16-bit tables are used once they exist or the data is large enough to pay
+    for building them.
+    """
+    words = Struct(f">{len(data) // 4}I").unpack(data)
+    if _wide_tables is not None or len(data) >= _WIDE_TABLE_THRESHOLD:
+        output = _crypt_words_wide(words, round_keys, chain)
+    else:
+        output = _crypt_words(words, round_keys, chain)
+    return Struct(f">{len(output)}I").pack(*output)
 
 
 @lru_cache(maxsize=8)
@@ -191,15 +305,23 @@ def _crypt_lanes(data: bytes, lanes: int, round_keys) -> bytes:
 
 
 def _decrypt_blocks(data: bytes, round_keys) -> bytes:
-    """Decrypt whole blocks without chaining, in parallel batches."""
+    """Decrypt whole blocks without chaining.
+
+    A few blocks go through the tables, more through the parallel lanes in batches.
+    A short final batch goes through the tables too.
+    """
     total = len(data) // _BLOCK_SIZE
-    if total == 1:
-        return _pack_block(*_crypt_one(*_unpack_block(data), round_keys))
+    minimum = _LANES_MIN_BLOCKS if _wide_tables is None else _LANES_MIN_BLOCKS_WIDE
+    if total < minimum:
+        return _crypt_bytes(data, round_keys, None)
     parts = []
     for start in range(0, total, _BATCH_BLOCKS):
         lanes = min(_BATCH_BLOCKS, total - start)
         chunk = data[start * _BLOCK_SIZE : (start + lanes) * _BLOCK_SIZE]
-        parts.append(_crypt_lanes(chunk, lanes, round_keys))
+        if lanes < minimum:
+            parts.append(_crypt_bytes(chunk, round_keys, None))
+        else:
+            parts.append(_crypt_lanes(chunk, lanes, round_keys))
     return b"".join(parts)
 
 
@@ -312,19 +434,7 @@ class SM4:
         if encoded is None:
             raise ValueError("plaintext is not valid text")
         padded = pkcs7_pad(encoded)
-        p0, p1, p2, p3 = _unpack_block(iv)
-        words = Struct(f">{len(padded) // 4}I").unpack(padded)
-        output = []
-        for offset in range(0, len(words), 4):
-            p0, p1, p2, p3 = _crypt_one(
-                words[offset] ^ p0,
-                words[offset + 1] ^ p1,
-                words[offset + 2] ^ p2,
-                words[offset + 3] ^ p3,
-                keys,
-            )
-            output += (p0, p1, p2, p3)
-        return bytes_to_hex(Struct(f">{len(output)}I").pack(*output))
+        return bytes_to_hex(_crypt_bytes(padded, keys, _unpack_block(iv)))
 
     def _decrypt_all(self, ciphertext: str) -> bytes | None:
         """Return all decrypted bytes, padding included, or None if malformed."""

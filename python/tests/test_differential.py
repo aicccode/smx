@@ -487,17 +487,120 @@ class SM4Differential(unittest.TestCase):
     def test_parallel_blocks_match_single_blocks(self):
         cipher = self.make(b"0123456789abcdef", bytes(16))
         keys = cipher._keys[1]
-        for lanes in (1, 2, 3, 31, 32, 33, 64, 513):
+        sizes = [1, 2, 3, 31, 32, 33, 64, 513]
+        for threshold in (
+            sm4_module._LANES_MIN_BLOCKS,
+            sm4_module._LANES_MIN_BLOCKS_WIDE,
+        ):
+            sizes += (threshold - 1, threshold, threshold + 1)
+        for lanes in sizes:
             data = bytes(RNG.getrandbits(8) for _ in range(16 * lanes))
             if lanes == 3:
                 data = bytes(16) + b"\xff" * 16 + data[32:]
             expected = b"".join(
                 cipher.decrypt_block(data[i : i + 16]) for i in range(0, len(data), 16)
             )
-            self.assertEqual(sm4_module._decrypt_blocks(data, keys), expected, lanes)
+            for wide in (None, sm4_module._get_wide_tables()):
+                with mock.patch.object(sm4_module, "_wide_tables", wide):
+                    got = sm4_module._decrypt_blocks(data, keys)
+                self.assertEqual(got, expected, (lanes, wide is None))
             self.assertEqual(
                 sm4_module._crypt_lanes(data, lanes, keys), expected, lanes
             )
+
+    def test_sbox_table_matches_the_standard_and_the_formula(self):
+        # GB/T 32907-2016 table, and S(x) = A(I(A(x) ^ C)) ^ C with the inverse I
+        # in GF(2^8) mod x^8+x^7+x^6+x^5+x^4+x^2+1, A circular with row 0xD3, C=0xD3.
+        def mul(a, b):
+            result = 0
+            while b:
+                result ^= a if b & 1 else 0
+                a = (a << 1) ^ (0x1F5 if a & 0x80 else 0)
+                b >>= 1
+            return result
+
+        def affine(x):
+            out = 0
+            for i in range(8):
+                row = (0xD3 >> i | 0xD3 << (8 - i)) & 0xFF
+                out = out << 1 | bin(row & x).count("1") & 1
+            return out
+
+        def inverse(a):
+            result = 1
+            for _ in range(254):
+                result = mul(result, a)
+            return result if a else 0
+
+        self.assertEqual(len(sm4_module._SBOX), 256)
+        for value in range(256):
+            formula = affine(inverse(affine(value) ^ 0xD3)) ^ 0xD3
+            self.assertEqual(sm4_module._SBOX[value], ref.SBOX[value], value)
+            self.assertEqual(sm4_module._SBOX[value], formula, value)
+
+    def test_t_tables_merge_the_sbox_and_the_linear_transforms(self):
+        def rotl(x, n):
+            return (x << n | x >> (32 - n)) & 0xFFFFFFFF
+
+        tables = (sm4_module._T0, sm4_module._T1, sm4_module._T2, sm4_module._T3)
+        key_tables = (
+            sm4_module._KEY_T0,
+            sm4_module._KEY_T1,
+            sm4_module._KEY_T2,
+            sm4_module._KEY_T3,
+        )
+        for position in range(4):
+            for value in range(256):
+                b = ref.SBOX[value] << (24 - 8 * position)
+                linear = b ^ rotl(b, 2) ^ rotl(b, 10) ^ rotl(b, 18) ^ rotl(b, 24)
+                self.assertEqual(tables[position][value], linear)
+                self.assertEqual(
+                    key_tables[position][value], b ^ rotl(b, 13) ^ rotl(b, 23)
+                )
+
+    def test_both_table_widths_match_the_reference(self):
+        key = b"0123456789abcdef"
+        cipher = self.make(key, bytes(16))
+        round_keys = cipher._keys[0]
+        ref_keys = ref.sm4_round_keys(key)
+        iv = bytes(RNG.getrandbits(8) for _ in range(16))
+        data = bytes(RNG.getrandbits(8) for _ in range(16 * 37))
+        words = tuple(
+            int.from_bytes(data[i : i + 4], "big") for i in range(0, len(data), 4)
+        )
+        ecb = b"".join(
+            ref.sm4_block(data[i : i + 16], ref_keys) for i in range(0, len(data), 16)
+        )
+        cbc = self.reference_cbc_encrypt(key, iv, data)
+        chain = tuple(int.from_bytes(iv[i : i + 4], "big") for i in range(0, 16, 4))
+        for crypt in (sm4_module._crypt_words, sm4_module._crypt_words_wide):
+            for expected, link in ((ecb, None), (cbc, chain)):
+                output = crypt(words, round_keys, link)
+                got = b"".join(word.to_bytes(4, "big") for word in output)
+                self.assertEqual(got, expected, (crypt.__name__, link))
+
+    def test_wide_tables_are_used_for_bulk_and_kept(self):
+        key = b"0123456789abcdef"
+        iv = b"fedcba9876543210"
+        cipher = self.make(key, iv)
+        size = sm4_module._WIDE_TABLE_THRESHOLD
+        with mock.patch.object(sm4_module, "_wide_tables", None):
+            small = "s" * 100
+            self.assertEqual(
+                cipher.encrypt(small),
+                self.reference_cbc_encrypt(
+                    key, iv, sm4_module.pkcs7_pad(small.encode())
+                ).hex(),
+            )
+            self.assertIsNone(sm4_module._wide_tables)
+            text = "w" * size
+            ciphertext = cipher.encrypt(text)
+            self.assertIsNotNone(sm4_module._wide_tables)
+            expected = self.reference_cbc_encrypt(
+                key, iv, sm4_module.pkcs7_pad(text.encode())
+            )
+            self.assertEqual(ciphertext, expected.hex())
+            self.assertEqual(cipher.decrypt(ciphertext), text)
 
     def test_circuit_matches_the_standard_sbox_on_all_inputs(self):
         for value in range(256):
