@@ -12,9 +12,11 @@
 //
 // # Security limits
 //
-// SM4 here is CBC with no integrity; see the SM4 type. Secret-dependent branches and
-// memory accesses are avoided by construction and checked in the compiled output, but
-// the Go compiler gives no constant-time guarantee. Secrets are overwritten on a
+// SM4 here is CBC with no integrity; see the SM4 type. On this branch SM4 is built for
+// speed and uses secret-indexed table lookups, so it is not cache-timing resistant; the
+// security branch of this repository has a constant-time SM4. Elsewhere,
+// secret-dependent branches and memory accesses are avoided by construction, but the Go
+// compiler gives no constant-time guarantee. Secrets are overwritten on a
 // best-effort basis only: the runtime may copy stacks, and strings cannot be erased.
 //
 // Secret types redact themselves in fmt and encoding/json. fmt cannot call a method on a

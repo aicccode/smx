@@ -334,7 +334,8 @@ func TestSM4NoKey(t *testing.T) {
 	s.SetKey(make([]byte, 16), make([]byte, 16)) // must not crash
 }
 
-// sm4StandardSBox is the table from GB/T 32907. It exists only to check the circuit.
+// sm4StandardSBox is the table from GB/T 32907, kept apart from the library copy so a
+// typo in either one shows up.
 var sm4StandardSBox = [256]byte{
 	0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
 	0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
@@ -354,67 +355,50 @@ var sm4StandardSBox = [256]byte{
 	0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
 }
 
-func TestSM4CircuitAllInputs(t *testing.T) {
-	for x := 0; x < 256; x++ {
-		// In every byte position of the word, and with the other positions different.
-		for pos := uint(0); pos < 4; pos++ {
-			in := uint32(x)<<(8*pos) | uint32(0x5A)<<(8*((pos+1)%4))
-			got := sm4Tau(in)
-			if byte(got>>(8*pos)) != sm4StandardSBox[x] {
-				t.Fatalf("S(%#x) at byte %d = %#x, want %#x", x, pos, byte(got>>(8*pos)), sm4StandardSBox[x])
-			}
-			if byte(got>>(8*((pos+1)%4))) != sm4StandardSBox[0x5A] {
-				t.Fatalf("neighbor of S(%#x) at byte %d corrupted", x, pos)
-			}
-		}
+// The S-box and the combined round and key-schedule tables must match the standard
+// for every input in every byte position.
+func TestSM4TablesAllInputs(t *testing.T) {
+	if sm4SBox != sm4StandardSBox {
+		t.Fatal("S-box differs from GB/T 32907")
 	}
-	// All 64 lanes of the full-width circuit.
+	rotl := func(x uint32, n uint) uint32 { return x<<n | x>>(32-n) }
 	for x := 0; x < 256; x++ {
-		var in [8]uint64
-		for bit := 0; bit < 8; bit++ {
-			if x>>bit&1 == 1 {
-				in[bit] = ^uint64(0)
-			}
-		}
-		y0, y1, y2, y3, y4, y5, y6, y7 := sm4SBoxCircuit(in[0], in[1], in[2], in[3], in[4], in[5], in[6], in[7])
-		for lane := uint(0); lane < 64; lane++ {
-			var got byte
-			for bit, y := range [8]uint64{y0, y1, y2, y3, y4, y5, y6, y7} {
-				got |= byte(y>>lane&1) << bit
-			}
-			if got != sm4StandardSBox[x] {
-				t.Fatalf("lane %d: S(%#x) = %#x", lane, x, got)
+		for pos := uint(0); pos < 4; pos++ {
+			b := uint32(sm4StandardSBox[x]) << (24 - 8*pos)
+			wantT := b ^ rotl(b, 2) ^ rotl(b, 10) ^ rotl(b, 18) ^ rotl(b, 24)
+			wantK := b ^ rotl(b, 13) ^ rotl(b, 23)
+			if sm4Tab.t[pos][x] != wantT || sm4Tab.k[pos][x] != wantK {
+				t.Fatalf("table entry %d at byte %d is wrong", x, pos)
 			}
 		}
 	}
 }
 
-// The batch must match the single-block rounds in every block position, and CBC
-// decryption must match for every length around the batch thresholds.
-func TestSM4BatchMatchesSingle(t *testing.T) {
+// CBC decryption must match a plain one-block-at-a-time reference for every length
+// around the interleaved group widths and the vector thresholds, and round-trip.
+func TestSM4DecryptMatchesSingleBlocks(t *testing.T) {
 	s := NewSM4()
 	s.SetKey(benchData(16), benchData(16))
-	var batch [sm4BatchBlocks * sm4BlockSize]byte
-	copy(batch[:], benchData(len(batch)))
-	want := batch
-	for off := 0; off < len(want); off += 16 {
-		w := want[off : off+16]
-		x0, x1, x2, x3 := sm4EncryptWords(&s.keys.rk, be32(w), be32(w[4:]), be32(w[8:]), be32(w[12:]))
-		put32(w, x0)
-		put32(w[4:], x1)
-		put32(w[8:], x2)
-		put32(w[12:], x3)
-	}
-	sm4CryptBatch(&s.keys.rk, &batch)
-	if batch != want {
-		t.Fatal("batch differs from single-block rounds")
-	}
 	for blocks := 1; blocks <= 70; blocks++ {
-		plain := benchData(blocks * 16)
-		ct := append([]byte(nil), plain...)
-		sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, ct)
-		sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, ct)
-		if string(ct) != string(plain) {
+		ct := benchData(blocks * 16)
+		want := make([]byte, len(ct))
+		prev := s.keys.iv[:]
+		for off := 0; off < len(ct); off += 16 {
+			c := ct[off : off+16]
+			x0, x1, x2, x3 := sm4EncryptWords(&s.keys.drk, be32(c), be32(c[4:]), be32(c[8:]), be32(c[12:]))
+			put32(want[off:], x0^be32(prev))
+			put32(want[off+4:], x1^be32(prev[4:]))
+			put32(want[off+8:], x2^be32(prev[8:]))
+			put32(want[off+12:], x3^be32(prev[12:]))
+			prev = c
+		}
+		got := append([]byte(nil), ct...)
+		sm4CBCDecrypt(&s.keys.drk, &s.keys.iv, got)
+		if string(got) != string(want) {
+			t.Fatalf("%d blocks: decryption differs from the reference", blocks)
+		}
+		sm4CBCEncrypt(&s.keys.rk, &s.keys.iv, got)
+		if string(got) != string(ct) {
 			t.Fatalf("%d blocks: round trip failed", blocks)
 		}
 	}

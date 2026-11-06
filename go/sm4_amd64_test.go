@@ -8,35 +8,32 @@ import (
 	"testing"
 )
 
-// withSM4Paths runs f once for each code path this CPU supports, with the portable
-// path always included.
+// withSM4Paths runs f once for each decryption path this CPU supports, with the
+// table-only path always included.
 func withSM4Paths(t *testing.T, f func(t *testing.T)) {
 	t.Helper()
-	savedAVX, savedVAES, savedGFNI := sm4UseAVX, sm4UseVAES, sm4UseGFNI
-	defer func() { sm4UseAVX, sm4UseVAES, sm4UseGFNI = savedAVX, savedVAES, savedGFNI }()
+	savedVAES, savedGFNI := sm4UseVAES, sm4UseGFNI
+	defer func() { sm4UseVAES, sm4UseGFNI = savedVAES, savedGFNI }()
 
 	type path struct {
-		name            string
-		avx, vaes, gfni bool
+		name       string
+		vaes, gfni bool
 	}
-	paths := []path{{name: "generic"}}
-	if savedAVX {
-		paths = append(paths, path{name: "avx", avx: true})
-	}
+	paths := []path{{name: "table"}}
 	if savedVAES {
-		paths = append(paths, path{name: "vaes", avx: true, vaes: true})
+		paths = append(paths, path{name: "vaes", vaes: true})
 	}
 	if savedGFNI {
-		paths = append(paths, path{name: "gfni", avx: true, gfni: true})
+		paths = append(paths, path{name: "gfni", gfni: true})
 	}
 	for _, p := range paths {
-		sm4UseAVX, sm4UseVAES, sm4UseGFNI = p.avx, p.vaes, p.gfni
+		sm4UseVAES, sm4UseGFNI = p.vaes, p.gfni
 		t.Run(p.name, f)
 	}
 }
 
 func TestSM4PathsAllVectors(t *testing.T) {
-	t.Logf("cpu: avx+aes=%v vaes=%v gfni=%v", sm4UseAVX, sm4UseVAES, sm4UseGFNI)
+	t.Logf("cpu: vaes=%v gfni=%v", sm4UseVAES, sm4UseGFNI)
 	withSM4Paths(t, func(t *testing.T) {
 		TestSM4CapturedVectors(t)
 		TestSM4DecryptErrors(t)
@@ -46,8 +43,8 @@ func TestSM4PathsAllVectors(t *testing.T) {
 	})
 }
 
-// All paths must agree with the portable code on every length, including every
-// remainder after the 8-block and 4-block loops, and every key.
+// All decryption paths must agree with the table rounds on every length, including every
+// remainder after the 8-block loop, and every key.
 func TestSM4PathsDifferential(t *testing.T) {
 	rng := rand.New(rand.NewSource(31))
 	for keyIndex := 0; keyIndex < 30; keyIndex++ {
@@ -61,18 +58,11 @@ func TestSM4PathsDifferential(t *testing.T) {
 			plain := make([]byte, blocks*16)
 			rng.Read(plain)
 
-			wantEnc := append([]byte(nil), plain...)
-			sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, wantEnc)
 			wantDec := append([]byte(nil), plain...)
-			sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, wantDec)
+			sm4CBCDecryptTable(&s.keys.drk, &s.keys.iv, wantDec)
 
 			withSM4Paths(t, func(t *testing.T) {
 				got := append([]byte(nil), plain...)
-				sm4CBCEncrypt(&s.keys.rk, &s.keys.iv, got)
-				if !bytes.Equal(got, wantEnc) {
-					t.Fatalf("encrypt: %d blocks differ", blocks)
-				}
-				got = append([]byte(nil), plain...)
 				sm4CBCDecrypt(&s.keys.drk, &s.keys.iv, got)
 				if !bytes.Equal(got, wantDec) {
 					t.Fatalf("decrypt: %d blocks differ", blocks)
@@ -124,14 +114,10 @@ func benchSM4Routine(b *testing.B, blocks int, routine func(rk *[32]uint32, dst,
 }
 
 func BenchmarkSM4Crypt(b *testing.B) {
-	if sm4UseAVX {
-		b.Run("4AVX", func(b *testing.B) { benchSM4Routine(b, 4, sm4Crypt4AVX) })
-	}
 	if sm4UseVAES {
 		b.Run("8VAES", func(b *testing.B) { benchSM4Routine(b, 8, sm4Crypt8VAES) })
 	}
 	if sm4UseGFNI {
-		b.Run("4GFNI", func(b *testing.B) { benchSM4Routine(b, 4, sm4Crypt4GFNI) })
 		b.Run("8GFNI", func(b *testing.B) { benchSM4Routine(b, 8, sm4Crypt8GFNI) })
 	}
 }

@@ -2,9 +2,11 @@
 
 #include "textflag.h"
 
-// SM4 in parallel using the AES or GFNI instructions. The S-box is an affine transform of
-// the AES S-box, so SubBytes does the non-linear work, and there are no secret-indexed
-// memory accesses: this code is constant time with respect to the key and the data.
+// SM4 on eight blocks in parallel using the VAES or GFNI instructions, for CBC decryption
+// of runs of blocks, where it beats the table rounds of sm4.go. The S-box is an affine
+// transform of the AES S-box, so SubBytes does the non-linear work. These routines make
+// no secret-indexed memory access, but the rest of SM4 on this branch uses tables, so
+// SM4 as a whole is not constant time here.
 // S(x) = post(AES_SubBytes(pre(x))), with pre and post linear plus a constant, each
 // done by two 4-bit lookups in a vector register. The constants are the ones published
 // in the Linux kernel's sm4-aesni-avx-asm_64.S; the tests check them through the
@@ -26,7 +28,8 @@ DATA sm4PostHi<>+0(SB)/8, $0xAE7201DD73AFDC00
 DATA sm4PostHi<>+8(SB)/8, $0x11CDBE62CC1063BF
 GLOBL sm4PostHi<>(SB), RODATA|NOPTR, $16
 
-// Inverse ShiftRows, on its own and combined with rotations left by 8, 16 and 24 bits.
+// Inverse ShiftRows, on its own and combined with rotations left by 8, 16 and 24 bits
+// (the last one, sm4InvShiftRowRol24Y, is 32 bytes wide and defined below).
 DATA sm4InvShiftRow<>+0(SB)/8, $0x0B0E0104070A0D00
 DATA sm4InvShiftRow<>+8(SB)/8, $0x0306090C0F020508
 GLOBL sm4InvShiftRow<>(SB), RODATA|NOPTR, $16
@@ -38,10 +41,6 @@ GLOBL sm4InvShiftRowRol8<>(SB), RODATA|NOPTR, $16
 DATA sm4InvShiftRowRol16<>+0(SB)/8, $0x01040B0E0D00070A
 DATA sm4InvShiftRowRol16<>+8(SB)/8, $0x090C030605080F02
 GLOBL sm4InvShiftRowRol16<>(SB), RODATA|NOPTR, $16
-
-DATA sm4InvShiftRowRol24<>+0(SB)/8, $0x040B0E0100070A0D
-DATA sm4InvShiftRowRol24<>+8(SB)/8, $0x0C030609080F0205
-GLOBL sm4InvShiftRowRol24<>(SB), RODATA|NOPTR, $16
 
 DATA sm4LowNibble<>+0(SB)/8, $0x0F0F0F0F0F0F0F0F
 DATA sm4LowNibble<>+8(SB)/8, $0x0F0F0F0F0F0F0F0F
@@ -96,62 +95,8 @@ GLOBL sm4ByteSwap32<>(SB), RODATA|NOPTR, $16
 	VPXOR t0, s0, s0;            \
 	VPXOR t1, s0, s0
 
-#define ROUNDX_MEM(off, s0, s1, s2, s3) \
-	ROUND(VBROADCASTSS, off(AX), s0, s1, s2, s3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, sm4InvShiftRowRol24<>(SB))
-
 #define ROUNDY_MEM(off, s0, s1, s2, s3) \
 	ROUND(VPBROADCASTD, off(AX), s0, s1, s2, s3, Y4, Y5, Y6, Y7, Y8, Y9, Y10, Y11, Y12, Y13, Y14, sm4InvShiftRowRol24Y<>(SB))
-
-// func sm4Crypt4AVX(rk *[32]uint32, dst, src *byte)
-// Runs the SM4 rounds over four 16-byte blocks; dst and src may be equal.
-TEXT ·sm4Crypt4AVX(SB), NOSPLIT, $0-24
-	MOVQ rk+0(FP), AX
-	MOVQ dst+8(FP), DI
-	MOVQ src+16(FP), SI
-
-	VMOVDQU sm4LowNibble<>(SB), X7
-	VMOVDQU sm4PreLo<>(SB), X8
-	VMOVDQU sm4PreHi<>(SB), X9
-	VMOVDQU sm4PostLo<>(SB), X10
-	VMOVDQU sm4PostHi<>(SB), X11
-	VMOVDQU sm4InvShiftRow<>(SB), X12
-	VMOVDQU sm4InvShiftRowRol8<>(SB), X13
-	VMOVDQU sm4InvShiftRowRol16<>(SB), X14
-	VMOVDQU sm4ByteSwap32<>(SB), X6
-
-	VMOVDQU 0(SI), X0
-	VMOVDQU 16(SI), X1
-	VMOVDQU 32(SI), X2
-	VMOVDQU 48(SI), X3
-	VPSHUFB X6, X0, X0
-	VPSHUFB X6, X1, X1
-	VPSHUFB X6, X2, X2
-	VPSHUFB X6, X3, X3
-	TRANSPOSE(X0, X1, X2, X3, X4, X5, X6)
-
-	MOVQ $8, CX
-
-loop4:
-	ROUNDX_MEM(0, X0, X1, X2, X3)
-	ROUNDX_MEM(4, X1, X2, X3, X0)
-	ROUNDX_MEM(8, X2, X3, X0, X1)
-	ROUNDX_MEM(12, X3, X0, X1, X2)
-	ADDQ $16, AX
-	DECQ CX
-	JNZ  loop4
-
-	// The output order is reversed: X3, X2, X1, X0.
-	TRANSPOSE(X3, X2, X1, X0, X4, X5, X6)
-	VMOVDQU sm4ByteSwap32<>(SB), X6
-	VPSHUFB X6, X3, X3
-	VPSHUFB X6, X2, X2
-	VPSHUFB X6, X1, X1
-	VPSHUFB X6, X0, X0
-	VMOVDQU X3, 0(DI)
-	VMOVDQU X2, 16(DI)
-	VMOVDQU X1, 32(DI)
-	VMOVDQU X0, 48(DI)
-	RET
 
 DATA sm4InvShiftRowRol24Y<>+0(SB)/8, $0x040B0E0100070A0D
 DATA sm4InvShiftRowRol24Y<>+8(SB)/8, $0x0C030609080F0205
@@ -251,56 +196,8 @@ GLOBL sm4Rol24<>(SB), RODATA|NOPTR, $16
 	VPXOR t0, s0, s0;                    \
 	VPXOR t1, s0, s0
 
-#define ROUND_GFNI_X(off, s0, s1, s2, s3) \
-	ROUND_GFNI(VBROADCASTSS, off(AX), s0, s1, s2, s3, X4, X5, X6, X7, X8, X9, X10, X11)
-
 #define ROUND_GFNI_Y(off, s0, s1, s2, s3) \
 	ROUND_GFNI(VPBROADCASTD, off(AX), s0, s1, s2, s3, Y4, Y5, Y6, Y7, Y8, Y9, Y10, Y11)
-
-// func sm4Crypt4GFNI(rk *[32]uint32, dst, src *byte)
-TEXT ·sm4Crypt4GFNI(SB), NOSPLIT, $0-24
-	MOVQ rk+0(FP), AX
-	MOVQ dst+8(FP), DI
-	MOVQ src+16(FP), SI
-
-	VMOVDQU sm4GFNIPre<>(SB), X7
-	VMOVDQU sm4GFNIPost<>(SB), X8
-	VMOVDQU sm4Rol8<>(SB), X9
-	VMOVDQU sm4Rol16<>(SB), X10
-	VMOVDQU sm4Rol24<>(SB), X11
-	VMOVDQU sm4ByteSwap32<>(SB), X12
-
-	VMOVDQU 0(SI), X0
-	VMOVDQU 16(SI), X1
-	VMOVDQU 32(SI), X2
-	VMOVDQU 48(SI), X3
-	VPSHUFB X12, X0, X0
-	VPSHUFB X12, X1, X1
-	VPSHUFB X12, X2, X2
-	VPSHUFB X12, X3, X3
-	TRANSPOSE(X0, X1, X2, X3, X4, X5, X6)
-
-	MOVQ $8, CX
-
-loop4gfni:
-	ROUND_GFNI_X(0, X0, X1, X2, X3)
-	ROUND_GFNI_X(4, X1, X2, X3, X0)
-	ROUND_GFNI_X(8, X2, X3, X0, X1)
-	ROUND_GFNI_X(12, X3, X0, X1, X2)
-	ADDQ $16, AX
-	DECQ CX
-	JNZ  loop4gfni
-
-	TRANSPOSE(X3, X2, X1, X0, X4, X5, X6)
-	VPSHUFB X12, X3, X3
-	VPSHUFB X12, X2, X2
-	VPSHUFB X12, X1, X1
-	VPSHUFB X12, X0, X0
-	VMOVDQU X3, 0(DI)
-	VMOVDQU X2, 16(DI)
-	VMOVDQU X1, 32(DI)
-	VMOVDQU X0, 48(DI)
-	RET
 
 // func sm4Crypt8GFNI(rk *[32]uint32, dst, src *byte)
 TEXT ·sm4Crypt8GFNI(SB), NOSPLIT, $0-24

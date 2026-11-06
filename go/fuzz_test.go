@@ -228,17 +228,17 @@ func FuzzSM4(f *testing.F) {
 		if encErr != nil || err != nil || got != plain {
 			t.Fatalf("round trip: %v %v", encErr, err)
 		}
-		// All paths agree.
+		// The table-only path agrees with the dispatching one.
 		raw, _ := hex.DecodeString(ct)
 		same := append([]byte(nil), raw...)
-		sm4CBCDecryptGeneric(&s.keys.drk, &s.keys.iv, same)
+		sm4CBCDecryptTable(&s.keys.drk, &s.keys.iv, same)
 		if string(same[:len(plain)]) != plain {
-			t.Fatal("portable decryption differs")
+			t.Fatal("table decryption differs")
 		}
 		back := append([]byte(nil), same...)
-		sm4CBCEncryptGeneric(&s.keys.rk, &s.keys.iv, back)
+		sm4CBCEncrypt(&s.keys.rk, &s.keys.iv, back)
 		if string(back) != string(raw) {
-			t.Fatal("portable encryption differs")
+			t.Fatal("encryption differs")
 		}
 	})
 }

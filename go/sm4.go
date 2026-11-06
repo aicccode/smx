@@ -45,6 +45,10 @@ var (
 // are visible. Call SetKey with a fresh random IV for each message, and never reuse a
 // key and IV pair for different messages.
 //
+// SECURITY: this SM4 uses secret-indexed table lookups (see sm4SBox) and is not
+// cache-timing resistant. Use the security branch of this repository where an attacker
+// may share the CPU or its caches.
+//
 // After SetKey, Encrypt and Decrypt only read the instance, so they may run concurrently.
 // SetKey must not run concurrently with them.
 //
@@ -109,135 +113,96 @@ func (s SM4) Format(f fmt.State, _ rune) {
 	_, _ = io.WriteString(f, "SM4{redacted}")
 }
 
-// sm4Tau applies the S-box to the four bytes of a. It spreads each input bit to the low
-// bit of its byte, so the circuit computes four S-boxes side by side.
-func sm4Tau(a uint32) uint32 {
-	const low = 0x01010101
-	v := uint64(a)
-	y0, y1, y2, y3, y4, y5, y6, y7 := sm4SBoxCircuit(v&low, (v>>1)&low, (v>>2)&low, (v>>3)&low,
-		(v>>4)&low, (v>>5)&low, (v>>6)&low, (v>>7)&low)
-	return uint32(y0&low | (y1&low)<<1 | (y2&low)<<2 | (y3&low)<<3 |
-		(y4&low)<<4 | (y5&low)<<5 | (y6&low)<<6 | (y7&low)<<7)
+// sm4SBox is the S-box from GB/T 32907.
+//
+// SECURITY: on this branch SM4 indexes tables with secret bytes, as OpenSSL and
+// BouncyCastle do. That is fast but not cache-timing resistant: code sharing the CPU
+// cache can learn key and data bits. The security branch of this repository keeps the
+// constant-time SM4 (hardware AES/GFNI paths and a Boolean-circuit S-box only).
+var sm4SBox = [256]byte{
+	0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
+	0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
+	0x9c, 0x42, 0x50, 0xf4, 0x91, 0xef, 0x98, 0x7a, 0x33, 0x54, 0x0b, 0x43, 0xed, 0xcf, 0xac, 0x62,
+	0xe4, 0xb3, 0x1c, 0xa9, 0xc9, 0x08, 0xe8, 0x95, 0x80, 0xdf, 0x94, 0xfa, 0x75, 0x8f, 0x3f, 0xa6,
+	0x47, 0x07, 0xa7, 0xfc, 0xf3, 0x73, 0x17, 0xba, 0x83, 0x59, 0x3c, 0x19, 0xe6, 0x85, 0x4f, 0xa8,
+	0x68, 0x6b, 0x81, 0xb2, 0x71, 0x64, 0xda, 0x8b, 0xf8, 0xeb, 0x0f, 0x4b, 0x70, 0x56, 0x9d, 0x35,
+	0x1e, 0x24, 0x0e, 0x5e, 0x63, 0x58, 0xd1, 0xa2, 0x25, 0x22, 0x7c, 0x3b, 0x01, 0x21, 0x78, 0x87,
+	0xd4, 0x00, 0x46, 0x57, 0x9f, 0xd3, 0x27, 0x52, 0x4c, 0x36, 0x02, 0xe7, 0xa0, 0xc4, 0xc8, 0x9e,
+	0xea, 0xbf, 0x8a, 0xd2, 0x40, 0xc7, 0x38, 0xb5, 0xa3, 0xf7, 0xf2, 0xce, 0xf9, 0x61, 0x15, 0xa1,
+	0xe0, 0xae, 0x5d, 0xa4, 0x9b, 0x34, 0x1a, 0x55, 0xad, 0x93, 0x32, 0x30, 0xf5, 0x8c, 0xb1, 0xe3,
+	0x1d, 0xf6, 0xe2, 0x2e, 0x82, 0x66, 0xca, 0x60, 0xc0, 0x29, 0x23, 0xab, 0x0d, 0x53, 0x4e, 0x6f,
+	0xd5, 0xdb, 0x37, 0x45, 0xde, 0xfd, 0x8e, 0x2f, 0x03, 0xff, 0x6a, 0x72, 0x6d, 0x6c, 0x5b, 0x51,
+	0x8d, 0x1b, 0xaf, 0x92, 0xbb, 0xdd, 0xbc, 0x7f, 0x11, 0xd9, 0x5c, 0x41, 0x1f, 0x10, 0x5a, 0xd8,
+	0x0a, 0xc1, 0x31, 0x88, 0xa5, 0xcd, 0x7b, 0xbd, 0x2d, 0x74, 0xd0, 0x12, 0xb8, 0xe5, 0xb4, 0xb0,
+	0x89, 0x69, 0x97, 0x4a, 0x0c, 0x96, 0x77, 0x7e, 0x65, 0xb9, 0xf1, 0x09, 0xc5, 0x6e, 0xc6, 0x84,
+	0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
 }
 
-// expandKey computes the round keys. It uses the circuit on every path, so the key
-// schedule makes no secret-indexed memory access.
+// sm4Tables holds the S-box combined with the linear transforms. t[i][x] is L applied to
+// S(x) placed in byte i of the word, counting from the most significant, so one round
+// is four lookups and three XORs. k does the same with the key schedule's L'.
+type sm4Tables struct {
+	t [4][256]uint32
+	k [4][256]uint32
+}
+
+var sm4Tab = sm4MakeTables()
+
+func sm4MakeTables() *sm4Tables {
+	tab := new(sm4Tables)
+	for x := 0; x < 256; x++ {
+		for i := 0; i < 4; i++ {
+			b := uint32(sm4SBox[x]) << (24 - 8*uint(i))
+			tab.t[i][x] = b ^ bits.RotateLeft32(b, 2) ^ bits.RotateLeft32(b, 10) ^
+				bits.RotateLeft32(b, 18) ^ bits.RotateLeft32(b, 24)
+			tab.k[i][x] = b ^ bits.RotateLeft32(b, 13) ^ bits.RotateLeft32(b, 23)
+		}
+	}
+	return tab
+}
+
+// expand computes the encryption round keys and their reverse for decryption.
 func (s *sm4Keys) expand(key []byte) {
 	k0 := binary.BigEndian.Uint32(key[0:]) ^ sm4FK[0]
 	k1 := binary.BigEndian.Uint32(key[4:]) ^ sm4FK[1]
 	k2 := binary.BigEndian.Uint32(key[8:]) ^ sm4FK[2]
 	k3 := binary.BigEndian.Uint32(key[12:]) ^ sm4FK[3]
 
+	k := &sm4Tab.k
+	tp := func(x uint32) uint32 {
+		return k[0][x>>24] ^ k[1][byte(x>>16)] ^ k[2][byte(x>>8)] ^ k[3][byte(x)]
+	}
 	for i := 0; i < 32; i += 4 {
-		k0 ^= sm4TPrime(k1 ^ k2 ^ k3 ^ sm4CK[i])
-		k1 ^= sm4TPrime(k2 ^ k3 ^ k0 ^ sm4CK[i+1])
-		k2 ^= sm4TPrime(k3 ^ k0 ^ k1 ^ sm4CK[i+2])
-		k3 ^= sm4TPrime(k0 ^ k1 ^ k2 ^ sm4CK[i+3])
+		k0 ^= tp(k1 ^ k2 ^ k3 ^ sm4CK[i])
+		k1 ^= tp(k2 ^ k3 ^ k0 ^ sm4CK[i+1])
+		k2 ^= tp(k3 ^ k0 ^ k1 ^ sm4CK[i+2])
+		k3 ^= tp(k0 ^ k1 ^ k2 ^ sm4CK[i+3])
 		s.rk[i], s.rk[i+1], s.rk[i+2], s.rk[i+3] = k0, k1, k2, k3
 		s.drk[31-i], s.drk[30-i], s.drk[29-i], s.drk[28-i] = k0, k1, k2, k3
 	}
 }
 
-// sm4TPrime is the key schedule's transform: the S-box followed by L'.
-func sm4TPrime(a uint32) uint32 {
-	b := sm4Tau(a)
-	return b ^ bits.RotateLeft32(b, 13) ^ bits.RotateLeft32(b, 23)
-}
-
-// sm4RoundT is the round transform T: the S-box followed by L.
-func sm4RoundT(x uint32) uint32 {
-	b := sm4Tau(x)
-	return b ^ bits.RotateLeft32(b, 2) ^ bits.RotateLeft32(b, 10) ^
-		bits.RotateLeft32(b, 18) ^ bits.RotateLeft32(b, 24)
-}
+//go:generate go run sm4_decrypt_gen.go
 
 // sm4EncryptWords runs the 32 rounds over one block held in four words.
 func sm4EncryptWords(rk *[32]uint32, x0, x1, x2, x3 uint32) (uint32, uint32, uint32, uint32) {
+	t := &sm4Tab.t
 	for i := 0; i < 32; i += 4 {
-		x0 ^= sm4RoundT(x1 ^ x2 ^ x3 ^ rk[i])
-		x1 ^= sm4RoundT(x2 ^ x3 ^ x0 ^ rk[i+1])
-		x2 ^= sm4RoundT(x3 ^ x0 ^ x1 ^ rk[i+2])
-		x3 ^= sm4RoundT(x0 ^ x1 ^ x2 ^ rk[i+3])
+		x := x1 ^ x2 ^ x3 ^ rk[i]
+		x0 ^= t[0][x>>24] ^ t[1][byte(x>>16)] ^ t[2][byte(x>>8)] ^ t[3][byte(x)]
+		x = x2 ^ x3 ^ x0 ^ rk[i+1]
+		x1 ^= t[0][x>>24] ^ t[1][byte(x>>16)] ^ t[2][byte(x>>8)] ^ t[3][byte(x)]
+		x = x3 ^ x0 ^ x1 ^ rk[i+2]
+		x2 ^= t[0][x>>24] ^ t[1][byte(x>>16)] ^ t[2][byte(x>>8)] ^ t[3][byte(x)]
+		x = x0 ^ x1 ^ x2 ^ rk[i+3]
+		x3 ^= t[0][x>>24] ^ t[1][byte(x>>16)] ^ t[2][byte(x>>8)] ^ t[3][byte(x)]
 	}
 	return x3, x2, x1, x0
 }
 
-const sm4BatchBlocks = 16
-
-// sm4Swap exchanges the bits selected by mask in b with those shifted by n in a.
-func sm4Swap(a, b, mask uint64, n uint) (uint64, uint64) {
-	t := ((a >> n) ^ b) & mask
-	return a ^ t<<n, b ^ t
-}
-
-// sm4Transpose8 transposes the 8x8 bit matrix formed by the same byte of each word,
-// for all eight byte positions at once. It is its own inverse.
-func sm4Transpose8(x *[8]uint64) {
-	const (
-		m4 = 0x0F0F0F0F0F0F0F0F
-		m2 = 0x3333333333333333
-		m1 = 0x5555555555555555
-	)
-	x[0], x[4] = sm4Swap(x[0], x[4], m4, 4)
-	x[1], x[5] = sm4Swap(x[1], x[5], m4, 4)
-	x[2], x[6] = sm4Swap(x[2], x[6], m4, 4)
-	x[3], x[7] = sm4Swap(x[3], x[7], m4, 4)
-	x[0], x[2] = sm4Swap(x[0], x[2], m2, 2)
-	x[1], x[3] = sm4Swap(x[1], x[3], m2, 2)
-	x[4], x[6] = sm4Swap(x[4], x[6], m2, 2)
-	x[5], x[7] = sm4Swap(x[5], x[7], m2, 2)
-	x[0], x[1] = sm4Swap(x[0], x[1], m1, 1)
-	x[2], x[3] = sm4Swap(x[2], x[3], m1, 1)
-	x[4], x[5] = sm4Swap(x[4], x[5], m1, 1)
-	x[6], x[7] = sm4Swap(x[6], x[7], m1, 1)
-}
-
-// rotl32x2 rotates both 32-bit lanes of v left by n.
-func rotl32x2(v uint64, n uint) uint64 {
-	lowLanes := uint64(0xFFFFFFFF>>(32-n)) * 0x0000000100000001
-	return (v<<n)&^lowLanes | (v>>(32-n))&lowLanes
-}
-
-// sm4CryptBatch runs the rounds over sm4BatchBlocks blocks of buf in place. Each uint64
-// holds a word of two blocks, so one circuit evaluation does 64 S-boxes.
-func sm4CryptBatch(rk *[32]uint32, buf *[sm4BatchBlocks * sm4BlockSize]byte) {
-	var state [4][8]uint64
-	for b := 0; b < sm4BatchBlocks; b++ {
-		for w := 0; w < 4; w++ {
-			v := uint64(binary.BigEndian.Uint32(buf[b*16+w*4:]))
-			state[w][b/2] |= v << (32 * uint(b&1))
-		}
-	}
-
-	var slices [8]uint64
-	for r := 0; r < 32; r++ {
-		key := uint64(rk[r]) * 0x0000000100000001
-		s0, s1, s2, s3 := &state[r&3], &state[(r+1)&3], &state[(r+2)&3], &state[(r+3)&3]
-		for k := range slices {
-			slices[k] = s1[k] ^ s2[k] ^ s3[k] ^ key
-		}
-		sm4Transpose8(&slices)
-		slices[0], slices[1], slices[2], slices[3], slices[4], slices[5], slices[6], slices[7] =
-			sm4SBoxCircuit(slices[0], slices[1], slices[2], slices[3], slices[4], slices[5], slices[6], slices[7])
-		sm4Transpose8(&slices)
-		for k, b := range slices {
-			s0[k] ^= b ^ rotl32x2(b, 2) ^ rotl32x2(b, 10) ^ rotl32x2(b, 18) ^ rotl32x2(b, 24)
-		}
-	}
-
-	for b := 0; b < sm4BatchBlocks; b++ {
-		for w := 0; w < 4; w++ {
-			v := uint32(state[3-w][b/2] >> (32 * uint(b&1)))
-			binary.BigEndian.PutUint32(buf[b*16+w*4:], v)
-		}
-	}
-	state = [4][8]uint64{}
-	slices = [8]uint64{}
-}
-
-// sm4CBCEncryptGeneric encrypts whole blocks of buf in place with the portable code,
-// which has no secret-dependent memory access or branch.
-func sm4CBCEncryptGeneric(rk *[32]uint32, iv *[16]byte, buf []byte) {
+// sm4CBCEncrypt encrypts whole blocks of buf in place. CBC encryption is serial, and
+// one table-driven block at a time beats the hardware paths here on every CPU measured.
+func sm4CBCEncrypt(rk *[32]uint32, iv *[16]byte, buf []byte) {
 	c0 := binary.BigEndian.Uint32(iv[0:])
 	c1 := binary.BigEndian.Uint32(iv[4:])
 	c2 := binary.BigEndian.Uint32(iv[8:])
@@ -252,50 +217,6 @@ func sm4CBCEncryptGeneric(rk *[32]uint32, iv *[16]byte, buf []byte) {
 		binary.BigEndian.PutUint32(buf[4:], c1)
 		binary.BigEndian.PutUint32(buf[8:], c2)
 		binary.BigEndian.PutUint32(buf[12:], c3)
-	}
-}
-
-// sm4CBCDecryptGeneric decrypts whole blocks of buf in place with the portable code,
-// which has no secret-dependent memory access or branch. Runs of blocks go through the
-// bitsliced batch; the batch is not worth its cost below about five blocks.
-func sm4CBCDecryptGeneric(drk *[32]uint32, iv *[16]byte, buf []byte) {
-	const batchBytes = sm4BatchBlocks * sm4BlockSize
-	var batch, saved [batchBytes]byte
-	var prev [sm4BlockSize]byte
-	copy(prev[:], iv[:])
-
-	for len(buf) >= 5*sm4BlockSize {
-		n := copy(batch[:], buf)
-		clear(batch[n:])
-		copy(saved[:], batch[:])
-		sm4CryptBatch(drk, &batch)
-		for i := range prev {
-			batch[i] ^= prev[i]
-		}
-		for i := sm4BlockSize; i < n; i++ {
-			batch[i] ^= saved[i-sm4BlockSize]
-		}
-		copy(prev[:], saved[n-sm4BlockSize:n])
-		copy(buf, batch[:n])
-		buf = buf[n:]
-	}
-	wipeBytes(batch[:])
-
-	p0 := binary.BigEndian.Uint32(prev[0:])
-	p1 := binary.BigEndian.Uint32(prev[4:])
-	p2 := binary.BigEndian.Uint32(prev[8:])
-	p3 := binary.BigEndian.Uint32(prev[12:])
-	for ; len(buf) >= sm4BlockSize; buf = buf[sm4BlockSize:] {
-		c0 := binary.BigEndian.Uint32(buf[0:])
-		c1 := binary.BigEndian.Uint32(buf[4:])
-		c2 := binary.BigEndian.Uint32(buf[8:])
-		c3 := binary.BigEndian.Uint32(buf[12:])
-		x0, x1, x2, x3 := sm4EncryptWords(drk, c0, c1, c2, c3)
-		binary.BigEndian.PutUint32(buf[0:], x0^p0)
-		binary.BigEndian.PutUint32(buf[4:], x1^p1)
-		binary.BigEndian.PutUint32(buf[8:], x2^p2)
-		binary.BigEndian.PutUint32(buf[12:], x3^p3)
-		p0, p1, p2, p3 = c0, c1, c2, c3
 	}
 }
 
