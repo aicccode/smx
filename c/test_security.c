@@ -2,7 +2,7 @@
  * Security behaviour: the shared vectors in testvectors/security-vectors.json, generated
  * independently of this library, plus the limits and refusals of each entry point.
  *
- * Includes sm4.c itself to reach the S-box internals, so link without sm4.o.
+ * Includes sm4.c itself to reach the S-box tables, so link without sm4.o.
  * The vector path can be given as argv[1]; the 1 GiB SM3 vector takes a few seconds.
  */
 #include "sm4.c"
@@ -455,7 +455,7 @@ static void test_sm3_limits(void) {
 
 /* ---- SM4 ---- */
 
-/* The S-box from GB/T 32907, independent of the circuit and of the affine constants. */
+/* The S-box from GB/T 32907, typed in separately from the tables in sm4.c. */
 static const uint8_t SM4_SBOX[256] = {
     0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
     0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
@@ -475,32 +475,31 @@ static const uint8_t SM4_SBOX[256] = {
     0x18, 0xf0, 0x7d, 0xec, 0x3a, 0xdc, 0x4d, 0x20, 0x79, 0xee, 0x5f, 0x3e, 0xd7, 0xcb, 0x39, 0x48,
 };
 
-static uint32_t expected_sbox_word(uint32_t w) {
-    return ((uint32_t)SM4_SBOX[w >> 24] << 24) | ((uint32_t)SM4_SBOX[(w >> 16) & 255] << 16) |
-           ((uint32_t)SM4_SBOX[(w >> 8) & 255] << 8) | SM4_SBOX[w & 255];
+static uint32_t rotl(uint32_t x, int n) {
+    return (x << n) | (x >> (32 - n));
 }
 
-static void test_sbox_implementations(void) {
-    uint32_t v;
-    int ok_circuit = 1, ok_active = 1;
-    /* all 256 values in each of the 4 byte positions, and unrelated bytes alongside */
-    for (v = 0; v < 256; v++) {
-        int shift;
-        for (shift = 0; shift < 32; shift += 8) {
-            uint32_t w = v << shift;
-            uint32_t w2 = w | ((v * 0x01010101u + 0x5A3C9617u) & ~((uint32_t)0xFF << shift));
-            if (sm4_sbox_circuit(w) != expected_sbox_word(w) ||
-                sm4_sbox_circuit(w2) != expected_sbox_word(w2)) {
-                ok_circuit = 0;
+/*
+ * The tables against the standard: every T-table and key-schedule table entry against L or L'
+ * of the S-box entry above. L and L' are invertible, so this checks all 256 S-box entries.
+ */
+static void test_sm4_tables(void) {
+    const uint32_t *const t[4] = {sm4_t0, sm4_t1, sm4_t2, sm4_t3};
+    const uint32_t *const k[4] = {sm4_k0, sm4_k1, sm4_k2, sm4_k3};
+    int x, i, ok_t = 1, ok_k = 1;
+    for (x = 0; x < 256; x++) {
+        for (i = 0; i < 4; i++) {
+            uint32_t b = (uint32_t)SM4_SBOX[x] << (24 - 8 * i);
+            if (t[i][x] != (b ^ rotl(b, 2) ^ rotl(b, 10) ^ rotl(b, 18) ^ rotl(b, 24))) {
+                ok_t = 0;
             }
-            if (sm4_sbox_word(w) != expected_sbox_word(w) ||
-                sm4_sbox_word(w2) != expected_sbox_word(w2)) {
-                ok_active = 0;
+            if (k[i][x] != (b ^ rotl(b, 13) ^ rotl(b, 23))) {
+                ok_k = 0;
             }
         }
     }
-    CHECK("the circuit is the S-box on all 256 inputs", ok_circuit);
-    CHECK("the active word S-box is the S-box", ok_active);
+    CHECK("the T-tables are L(S(x)) for all 256 S-box entries of GB/T 32907", ok_t);
+    CHECK("the key schedule tables are L'(S(x)) for all 256 entries", ok_k);
 }
 
 static void hex_of(const char *hex, uint8_t *out, size_t len) {
@@ -1044,7 +1043,7 @@ int main(int argc, char **argv) {
     printf("key exchange refusals\n");
     test_key_exchange_rejections();
     printf("SM4\n");
-    test_sbox_implementations();
+    test_sm4_tables();
     test_shared_sm4(sm4_section);
     test_sm4_misuse();
     printf("misuse and strict encodings\n");

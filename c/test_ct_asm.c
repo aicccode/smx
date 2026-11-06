@@ -2,6 +2,9 @@
  * Compiled by tools/check_ct_asm.py, never run for its result: each ct_* function holds
  * code that handles secrets, reached through a pointer table so that nothing is folded
  * into constants. The script then reads the machine code for forbidden branches.
+ *
+ * SM4's block cipher is left out: on this branch it uses secret-indexed tables and is not
+ * meant to be constant time (the `security` branch has that version). Its padding check stays.
  */
 #include "sm2_ec.h"
 #include "sm2_support_ct.h"
@@ -93,28 +96,6 @@ CT void ct_hex_encode_block(const uint8_t *d, char *o) {
     hex_encode_block(d, o, 39);
 }
 #endif
-CT uint32_t ct_sbox_circuit(uint32_t x) {
-    return sm4_sbox_circuit(x);
-}
-CT void ct_sm4_scalar(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    sm4_scalar_blocks(rk, in, out);
-}
-#ifdef SMX_SM4_X86
-CT void ct_sm4_gfni(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    sm4_gfni_blocks(rk, in, out);
-}
-CT void ct_sm4_aesni256(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    sm4_aesni256_blocks(rk, in, out);
-}
-CT void ct_sm4_aesni128(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    sm4_aesni128_blocks(rk, in, out);
-}
-#endif
-#ifdef SMX_SM4_NEON
-CT void ct_sm4_neon(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    sm4_neon_blocks(rk, in, out);
-}
-#endif
 CT int ct_bytes_equal(const uint8_t *a, const uint8_t *b) {
     return bytes_equal(a, b, 32);
 }
@@ -134,7 +115,6 @@ void (*volatile ct_keep[])(void) = {
     (void (*)(void))ct_mod_sub,      (void (*)(void))ct_compare,
     (void (*)(void))ct_pkcs7,        (void (*)(void))ct_hex_digit,
     (void (*)(void))ct_hex_nibble,   (void (*)(void))ct_hex_nibble_lower,
-    (void (*)(void))ct_sbox_circuit, (void (*)(void))ct_sm4_scalar,
     (void (*)(void))ct_bytes_equal,
 };
 

@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds test_ct_trace.c for each compiler and flag set and fails if any trace depends on the
 # data. Control flow only: see test_ct_trace.c. Exits 0 with a note where it cannot run.
+# SM4 on this branch uses secret-indexed tables, so its memory accesses depend on secrets by
+# design; this check never looked at addresses and still requires its control flow, padding
+# check included, to be the same for every input.
 # CT_TRACE_JOBS sets the number of parallel runs; each takes about a minute.
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -17,7 +20,7 @@ esac
 
 BASE="-std=gnu99 -w -g -no-pie -Wl,-z,now"
 SOURCES="test_ct_trace.c bigint256.c sm3.c"
-VARIANTS=("" "-DSMX_NO_INT128 -DSMX_NO_SIMD" "-DSMX_SM4_MAX_TIER=1" "-DSMX_SM4_MAX_TIER=2")
+VARIANTS=("" "-DSMX_NO_INT128 -DSMX_NO_SIMD" "-DSMX_SM4_MAX_TIER=0" "-DSMX_SM4_MAX_TIER=2")
 n=0
 : >"$OUT/list"
 for cc in gcc clang; do

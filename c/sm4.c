@@ -5,18 +5,23 @@
 /*
  * SM4 in CBC mode with PKCS7 padding.
  *
- * Block implementations, picked once at load time from what the CPU reports:
- *   tier 3  GFNI + AVX2      8 blocks at a time
- *   tier 2  AES-NI + AVX2    8 blocks at a time
- *   tier 1  AES-NI + SSSE3   4 blocks at a time; on arm64, NEON + AES instructions
- *   tier 0  portable C       1 block at a time, Boolean-circuit S-box
+ * This is the high-performance variant: the key schedule, CBC encryption, single blocks
+ * and short CBC decryptions use lookup tables indexed by secret data (four 1 KiB "T-tables"
+ * that fold the S-box into the linear layer, and four more for the key schedule), the
+ * classic approach of OpenSSL and BouncyCastle. Their timing can leak key and data bits
+ * through the cache, so this SM4 is NOT cache-timing resistant. The `security` branch of
+ * this repository has the constant-time SM4 (Boolean-circuit S-box, no secret-indexed
+ * table anywhere).
  *
- * No tier has a table indexed by secret data and none branches on secret data, the
- * key schedule included. The only lookups are vector shuffles and fixed tables of
- * affine constants, which are constant time on the instructions used here.
- *
- * CBC decryption is parallel and uses the full width. CBC encryption is inherently
- * serial and runs one block through the vector S-box.
+ * Longer CBC decryptions, which are parallel, run many blocks at once where the CPU has
+ * the instructions, picked once at load time:
+ *   tier 3  GFNI + AVX2           8 blocks at a time
+ *   tier 2  AES-NI + AVX2         8 blocks at a time
+ *   tier 1  arm64 NEON + AES     32 blocks at a time (x86 has no tier 1: AES-NI with only
+ *                                 128-bit vectors measured slower than the tables)
+ *   tier 0  tables, four blocks interleaved
+ * The blocks left over after the whole batches go through the tables when that is cheaper
+ * than a padded batch. A single block always does.
  *
  * Define SMX_NO_SIMD to build only tier 0, or SMX_SM4_MAX_TIER to cap the tier;
  * `make check-fallbacks` runs the tests against every tier.
@@ -26,21 +31,19 @@
 #define SMX_SM4_MAX_TIER 3
 #endif
 
-#if defined(__x86_64__) && !defined(SMX_NO_SIMD) &&                                                \
+#if defined(__x86_64__) && !defined(SMX_NO_SIMD) && SMX_SM4_MAX_TIER >= 2 &&                       \
     (defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 8))
 #define SMX_SM4_X86 1
 #include <cpuid.h>
 #include <immintrin.h>
 #endif
 
-/* Compile-time only: arm64 builds without these flags fall back to the circuit. */
+/* Compile-time only: arm64 builds without these flags use the tables alone. */
 #if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_AES) &&                   \
     defined(__LITTLE_ENDIAN__) && !defined(SMX_NO_SIMD) && SMX_SM4_MAX_TIER >= 1
 #define SMX_SM4_NEON 1
 #include <arm_neon.h>
 #endif
-
-#include "sm4_sbox_circuit.inc"
 
 static const uint32_t sm4_fk[4] = {0xa3b1bac6, 0x56aa3350, 0x677d9197, 0xb27022dc};
 
@@ -52,77 +55,189 @@ static const uint32_t sm4_ck[32] = {
 };
 
 #define ROL32(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
-#define ROR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 
-/* ---- portable path ---- */
-
-static inline uint32_t sm4_scalar_t(uint32_t x) {
-    uint32_t b = sm4_sbox_circuit(x);
-    return b ^ ROL32(b, 2) ^ ROL32(b, 10) ^ ROL32(b, 18) ^ ROL32(b, 24);
+/*
+ * Erases secrets. With GCC and clang this is memset, kept by an empty asm that may read
+ * the memory, which is as reliable as smx_wipe and much faster than its byte loop.
+ */
+static inline void sm4_wipe(void *p, size_t n) {
+#if defined(__GNUC__)
+    memset(p, 0, n);
+    __asm__ __volatile__("" : : "r"(p) : "memory");
+#else
+    smx_wipe(p, n);
+#endif
 }
 
-static inline void sm4_scalar_rounds(const uint32_t rk[32], uint32_t x[4]) {
-    uint32_t a = x[0], b = x[1], c = x[2], d = x[3], t;
-    int i;
+/* ---- tables ---- */
+
+/* The S-box of GB/T 32907, as a list so that every table below is built from it. */
+/* clang-format off */
+#define SM4_SBOX_LIST(X)                                            \
+    X(0xd6) X(0x90) X(0xe9) X(0xfe) X(0xcc) X(0xe1) X(0x3d) X(0xb7) \
+    X(0x16) X(0xb6) X(0x14) X(0xc2) X(0x28) X(0xfb) X(0x2c) X(0x05) \
+    X(0x2b) X(0x67) X(0x9a) X(0x76) X(0x2a) X(0xbe) X(0x04) X(0xc3) \
+    X(0xaa) X(0x44) X(0x13) X(0x26) X(0x49) X(0x86) X(0x06) X(0x99) \
+    X(0x9c) X(0x42) X(0x50) X(0xf4) X(0x91) X(0xef) X(0x98) X(0x7a) \
+    X(0x33) X(0x54) X(0x0b) X(0x43) X(0xed) X(0xcf) X(0xac) X(0x62) \
+    X(0xe4) X(0xb3) X(0x1c) X(0xa9) X(0xc9) X(0x08) X(0xe8) X(0x95) \
+    X(0x80) X(0xdf) X(0x94) X(0xfa) X(0x75) X(0x8f) X(0x3f) X(0xa6) \
+    X(0x47) X(0x07) X(0xa7) X(0xfc) X(0xf3) X(0x73) X(0x17) X(0xba) \
+    X(0x83) X(0x59) X(0x3c) X(0x19) X(0xe6) X(0x85) X(0x4f) X(0xa8) \
+    X(0x68) X(0x6b) X(0x81) X(0xb2) X(0x71) X(0x64) X(0xda) X(0x8b) \
+    X(0xf8) X(0xeb) X(0x0f) X(0x4b) X(0x70) X(0x56) X(0x9d) X(0x35) \
+    X(0x1e) X(0x24) X(0x0e) X(0x5e) X(0x63) X(0x58) X(0xd1) X(0xa2) \
+    X(0x25) X(0x22) X(0x7c) X(0x3b) X(0x01) X(0x21) X(0x78) X(0x87) \
+    X(0xd4) X(0x00) X(0x46) X(0x57) X(0x9f) X(0xd3) X(0x27) X(0x52) \
+    X(0x4c) X(0x36) X(0x02) X(0xe7) X(0xa0) X(0xc4) X(0xc8) X(0x9e) \
+    X(0xea) X(0xbf) X(0x8a) X(0xd2) X(0x40) X(0xc7) X(0x38) X(0xb5) \
+    X(0xa3) X(0xf7) X(0xf2) X(0xce) X(0xf9) X(0x61) X(0x15) X(0xa1) \
+    X(0xe0) X(0xae) X(0x5d) X(0xa4) X(0x9b) X(0x34) X(0x1a) X(0x55) \
+    X(0xad) X(0x93) X(0x32) X(0x30) X(0xf5) X(0x8c) X(0xb1) X(0xe3) \
+    X(0x1d) X(0xf6) X(0xe2) X(0x2e) X(0x82) X(0x66) X(0xca) X(0x60) \
+    X(0xc0) X(0x29) X(0x23) X(0xab) X(0x0d) X(0x53) X(0x4e) X(0x6f) \
+    X(0xd5) X(0xdb) X(0x37) X(0x45) X(0xde) X(0xfd) X(0x8e) X(0x2f) \
+    X(0x03) X(0xff) X(0x6a) X(0x72) X(0x6d) X(0x6c) X(0x5b) X(0x51) \
+    X(0x8d) X(0x1b) X(0xaf) X(0x92) X(0xbb) X(0xdd) X(0xbc) X(0x7f) \
+    X(0x11) X(0xd9) X(0x5c) X(0x41) X(0x1f) X(0x10) X(0x5a) X(0xd8) \
+    X(0x0a) X(0xc1) X(0x31) X(0x88) X(0xa5) X(0xcd) X(0x7b) X(0xbd) \
+    X(0x2d) X(0x74) X(0xd0) X(0x12) X(0xb8) X(0xe5) X(0xb4) X(0xb0) \
+    X(0x89) X(0x69) X(0x97) X(0x4a) X(0x0c) X(0x96) X(0x77) X(0x7e) \
+    X(0x65) X(0xb9) X(0xf1) X(0x09) X(0xc5) X(0x6e) X(0xc6) X(0x84) \
+    X(0x18) X(0xf0) X(0x7d) X(0xec) X(0x3a) X(0xdc) X(0x4d) X(0x20) \
+    X(0x79) X(0xee) X(0x5f) X(0x3e) X(0xd7) X(0xcb) X(0x39) X(0x48)
+/* clang-format on */
+
+#define SM4_L(b) ((b) ^ ROL32((b), 2) ^ ROL32((b), 10) ^ ROL32((b), 18) ^ ROL32((b), 24))
+#define SM4_T0_ENTRY(s) SM4_L((uint32_t)(s) << 24),
+#define SM4_T1_ENTRY(s) SM4_L((uint32_t)(s) << 16),
+#define SM4_T2_ENTRY(s) SM4_L((uint32_t)(s) << 8),
+#define SM4_T3_ENTRY(s) SM4_L((uint32_t)(s)),
+#define SM4_LK(b) ((b) ^ ROL32((b), 13) ^ ROL32((b), 23))
+#define SM4_K0_ENTRY(s) SM4_LK((uint32_t)(s) << 24),
+#define SM4_K1_ENTRY(s) SM4_LK((uint32_t)(s) << 16),
+#define SM4_K2_ENTRY(s) SM4_LK((uint32_t)(s) << 8),
+#define SM4_K3_ENTRY(s) SM4_LK((uint32_t)(s)),
+
+#if defined(__GNUC__)
+#define SM4_ALIGNED __attribute__((aligned(64)))
+#else
+#define SM4_ALIGNED
+#endif
+
+/* T_i[x] = L(S(x) << 8 (3 - i)): one round is four lookups and three XORs. */
+static const uint32_t sm4_t0[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_T0_ENTRY)};
+static const uint32_t sm4_t1[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_T1_ENTRY)};
+static const uint32_t sm4_t2[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_T2_ENTRY)};
+static const uint32_t sm4_t3[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_T3_ENTRY)};
+/* K_i[x] = L'(S(x) << 8 (3 - i)), the same for the key schedule's linear map */
+static const uint32_t sm4_k0[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_K0_ENTRY)};
+static const uint32_t sm4_k1[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_K1_ENTRY)};
+static const uint32_t sm4_k2[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_K2_ENTRY)};
+static const uint32_t sm4_k3[256] SM4_ALIGNED = {SM4_SBOX_LIST(SM4_K3_ENTRY)};
+
+/* ---- table path ---- */
+
+#define SM4_TT(x)                                                                                  \
+    (sm4_t0[(x) >> 24] ^ sm4_t1[((x) >> 16) & 0xFF] ^ sm4_t2[((x) >> 8) & 0xFF] ^                  \
+     sm4_t3[(x) & 0xFF])
+#define SM4_TROUND(A, B, C, D, K)                                                                  \
+    do {                                                                                           \
+        uint32_t t_ = (B) ^ (C) ^ (D) ^ (K);                                                       \
+        (A) ^= SM4_TT(t_);                                                                         \
+    } while (0)
+#define SM4_TROUNDS4(A, B, C, D, RK, I)                                                            \
+    SM4_TROUND(A, B, C, D, (RK)[(I)]);                                                             \
+    SM4_TROUND(B, C, D, A, (RK)[(I) + 1]);                                                         \
+    SM4_TROUND(C, D, A, B, (RK)[(I) + 2]);                                                         \
+    SM4_TROUND(D, A, B, C, (RK)[(I) + 3])
+/* All 32 rounds, unrolled; the output is (D, C, B, A). */
+#define SM4_TROUNDS32(A, B, C, D, RK)                                                              \
+    SM4_TROUNDS4(A, B, C, D, RK, 0);                                                               \
+    SM4_TROUNDS4(A, B, C, D, RK, 4);                                                               \
+    SM4_TROUNDS4(A, B, C, D, RK, 8);                                                               \
+    SM4_TROUNDS4(A, B, C, D, RK, 12);                                                              \
+    SM4_TROUNDS4(A, B, C, D, RK, 16);                                                              \
+    SM4_TROUNDS4(A, B, C, D, RK, 20);                                                              \
+    SM4_TROUNDS4(A, B, C, D, RK, 24);                                                              \
+    SM4_TROUNDS4(A, B, C, D, RK, 28)
+
+/* One block. */
+static void sm4_table_block(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
+    uint32_t a = smx_load_be32(in), b = smx_load_be32(in + 4);
+    uint32_t c = smx_load_be32(in + 8), d = smx_load_be32(in + 12);
+    SM4_TROUNDS32(a, b, c, d, rk);
+    smx_store_be32(out, d);
+    smx_store_be32(out + 4, c);
+    smx_store_be32(out + 8, b);
+    smx_store_be32(out + 12, a);
+}
+
+/*
+ * SM4_TABLE_WAYS independent blocks with their rounds interleaved: one block's rounds are a
+ * chain of dependent loads, and the CPU can run several chains side by side.
+ */
+#ifndef SM4_TABLE_WAYS
+#define SM4_TABLE_WAYS 4
+#endif
+
+#define SM4_TABLE_WAYS_ROUND(A, B, C, D, K)                                                        \
+    for (j = 0; j < SM4_TABLE_WAYS; j++) {                                                         \
+        SM4_TROUND(A[j], B[j], C[j], D[j], K);                                                     \
+    }
+
+static void sm4_table_blocks(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
+    uint32_t a[SM4_TABLE_WAYS], b[SM4_TABLE_WAYS], c[SM4_TABLE_WAYS], d[SM4_TABLE_WAYS];
+    int i, j;
+    for (j = 0; j < SM4_TABLE_WAYS; j++) {
+        a[j] = smx_load_be32(in + j * 16);
+        b[j] = smx_load_be32(in + j * 16 + 4);
+        c[j] = smx_load_be32(in + j * 16 + 8);
+        d[j] = smx_load_be32(in + j * 16 + 12);
+    }
     for (i = 0; i < 32; i += 4) {
-        t = b ^ c ^ d ^ rk[i];
-        a ^= sm4_scalar_t(t);
-        t = c ^ d ^ a ^ rk[i + 1];
-        b ^= sm4_scalar_t(t);
-        t = d ^ a ^ b ^ rk[i + 2];
-        c ^= sm4_scalar_t(t);
-        t = a ^ b ^ c ^ rk[i + 3];
-        d ^= sm4_scalar_t(t);
+        SM4_TABLE_WAYS_ROUND(a, b, c, d, rk[i])
+        SM4_TABLE_WAYS_ROUND(b, c, d, a, rk[i + 1])
+        SM4_TABLE_WAYS_ROUND(c, d, a, b, rk[i + 2])
+        SM4_TABLE_WAYS_ROUND(d, a, b, c, rk[i + 3])
     }
-    /* the final reversal */
-    x[0] = d;
-    x[1] = c;
-    x[2] = b;
-    x[3] = a;
-}
-
-SMX_MAYBE_UNUSED static void sm4_scalar_blocks(const uint32_t rk[32], const uint8_t *in,
-                                               uint8_t *out) {
-    uint32_t x[4];
-    int i;
-    for (i = 0; i < 4; i++) {
-        x[i] = smx_load_be32(in + i * 4);
-    }
-    sm4_scalar_rounds(rk, x);
-    for (i = 0; i < 4; i++) {
-        smx_store_be32(out + i * 4, x[i]);
+    for (j = 0; j < SM4_TABLE_WAYS; j++) {
+        smx_store_be32(out + j * 16, d[j]);
+        smx_store_be32(out + j * 16 + 4, c[j]);
+        smx_store_be32(out + j * 16 + 8, b[j]);
+        smx_store_be32(out + j * 16 + 12, a[j]);
     }
 }
 
-SMX_MAYBE_UNUSED static void sm4_scalar_cbc_encrypt(const uint32_t rk[32], uint32_t iv[4],
-                                                    const uint8_t *in, size_t blocks, char *hex) {
-    uint32_t x[4];
+/* CBC encryption is serial, one block after the other. */
+static void sm4_table_cbc_encrypt(const uint32_t rk[32], uint32_t iv[4], const uint8_t *in,
+                                  size_t blocks, char *hex) {
+    uint32_t a = iv[0], b = iv[1], c = iv[2], d = iv[3], t;
     uint8_t ct[16];
-    int i;
-    x[0] = iv[0];
-    x[1] = iv[1];
-    x[2] = iv[2];
-    x[3] = iv[3];
     for (; blocks > 0; blocks--, in += 16, hex += 32) {
-        for (i = 0; i < 4; i++) {
-            x[i] ^= smx_load_be32(in + i * 4);
-        }
-        sm4_scalar_rounds(rk, x);
-        for (i = 0; i < 4; i++) {
-            smx_store_be32(ct + i * 4, x[i]);
-        }
+        a ^= smx_load_be32(in);
+        b ^= smx_load_be32(in + 4);
+        c ^= smx_load_be32(in + 8);
+        d ^= smx_load_be32(in + 12);
+        SM4_TROUNDS32(a, b, c, d, rk);
+        /* the final reversal */
+        t = a;
+        a = d;
+        d = t;
+        t = b;
+        b = c;
+        c = t;
+        smx_store_be32(ct, a);
+        smx_store_be32(ct + 4, b);
+        smx_store_be32(ct + 8, c);
+        smx_store_be32(ct + 12, d);
         smx_hex_encode(ct, 16, hex, 'a');
     }
-    iv[0] = x[0];
-    iv[1] = x[1];
-    iv[2] = x[2];
-    iv[3] = x[3];
-    smx_wipe(x, sizeof(x));
-    smx_wipe(ct, sizeof(ct));
-}
-
-SMX_MAYBE_UNUSED static uint32_t sm4_scalar_sbox_word(uint32_t x) {
-    return sm4_sbox_circuit(x);
+    iv[0] = a;
+    iv[1] = b;
+    iv[2] = c;
+    iv[3] = d;
+    sm4_wipe(ct, sizeof(ct));
 }
 
 /* ---- x86 paths ---- */
@@ -130,7 +245,6 @@ SMX_MAYBE_UNUSED static uint32_t sm4_scalar_sbox_word(uint32_t x) {
 #ifdef SMX_SM4_X86
 
 /* "unused": a lower SMX_SM4_MAX_TIER leaves the faster implementations unreferenced */
-#define TARGET_AESNI128 __attribute__((target("ssse3,aes"), unused))
 #define TARGET_AESNI256 __attribute__((target("avx2,aes"), unused))
 #define TARGET_GFNI __attribute__((target("avx2,gfni"), unused))
 
@@ -164,32 +278,9 @@ SMX_MAYBE_UNUSED static uint32_t sm4_scalar_sbox_word(uint32_t x) {
             0xCD, 0x11)
 
 /*
- * The linear layer: x ^ rol(x, 24) ^ rol(x ^ rol(x, 8) ^ rol(x, 16), 2). A macro
- * because functions with different target attributes cannot inline one another.
+ * The linear layer, x ^ rol(x, 24) ^ rol(x ^ rol(x, 8) ^ rol(x, 16), 2), shared by the two
+ * tiers through a macro because functions with different targets cannot inline one another.
  */
-#define SM4_L_128_BODY                                                                             \
-    const __m128i r8 = _mm_set_epi8(ROL8_SHUFFLE), r16 = _mm_set_epi8(ROL16_SHUFFLE);              \
-    const __m128i r24 = _mm_set_epi8(ROL24_SHUFFLE);                                               \
-    __m128i y =                                                                                    \
-        _mm_xor_si128(_mm_xor_si128(x, _mm_shuffle_epi8(x, r8)), _mm_shuffle_epi8(x, r16));        \
-    __m128i z = _mm_or_si128(_mm_slli_epi32(y, 2), _mm_srli_epi32(y, 30));                         \
-    return _mm_xor_si128(_mm_xor_si128(x, _mm_shuffle_epi8(x, r24)), z);
-
-TARGET_AESNI128 static inline __m128i sm4_aesni_sbox_128(__m128i x) {
-    const __m128i low = _mm_set1_epi8(0x0F);
-    __m128i hi = _mm_and_si128(_mm_srli_epi32(x, 4), low);
-    __m128i lo = _mm_and_si128(x, low);
-    x = _mm_xor_si128(_mm_shuffle_epi8(_mm_set_epi8(PRE_LO), lo),
-                      _mm_shuffle_epi8(_mm_set_epi8(PRE_HI), hi));
-    x = _mm_aesenclast_si128(x, _mm_setzero_si128());
-    x = _mm_shuffle_epi8(x, _mm_set_epi8(INV_SHIFT_ROWS));
-    hi = _mm_and_si128(_mm_srli_epi32(x, 4), low);
-    lo = _mm_and_si128(x, low);
-    return _mm_xor_si128(_mm_shuffle_epi8(_mm_set_epi8(POST_LO), lo),
-                         _mm_shuffle_epi8(_mm_set_epi8(POST_HI), hi));
-}
-
-/* 256-bit linear layer; shared by the two AVX2 tiers through a macro for the target. */
 #define SM4_L_256_BODY                                                                             \
     const __m256i r8 = _mm256_broadcastsi128_si256(_mm_set_epi8(ROL8_SHUFFLE));                    \
     const __m256i r16 = _mm256_broadcastsi128_si256(_mm_set_epi8(ROL16_SHUFFLE));                  \
@@ -232,9 +323,6 @@ TARGET_AESNI256 static inline __m256i sm4_aesni_tau_256(__m256i x) {
 }
 
 /* One round over all lanes: A ^= tau(B ^ C ^ D ^ rk). */
-#define SM4_ROUND_128(TAU, A, B, C, D, RK)                                                         \
-    A = _mm_xor_si128(                                                                             \
-        A, TAU(_mm_xor_si128(_mm_xor_si128(_mm_xor_si128(B, C), D), _mm_set1_epi32((int)(RK)))))
 #define SM4_ROUND_256(TAU, A, B, C, D, RK)                                                         \
     A = _mm256_xor_si256(A, TAU(_mm256_xor_si256(_mm256_xor_si256(_mm256_xor_si256(B, C), D),      \
                                                  _mm256_set1_epi32((int)(RK)))))
@@ -280,110 +368,9 @@ TARGET_AESNI256 static inline __m256i sm4_aesni_tau_256(__m256i x) {
 TARGET_GFNI static void sm4_gfni_blocks(const uint32_t rk[32], const uint8_t *in,
                                         uint8_t *out){SM4_CRYPT8_BODY(sm4_gfni_tau_256)}
 
-TARGET_AESNI256 static void sm4_aesni256_blocks(const uint32_t rk[32], const uint8_t *in,
-                                                uint8_t *out){SM4_CRYPT8_BODY(sm4_aesni_tau_256)}
-
-/* ---- 4 lanes, SSSE3 + AES-NI ---- */
-
-TARGET_AESNI128 static inline __m128i sm4_aesni_tau_128(__m128i x) {
-    x = sm4_aesni_sbox_128(x);
-    {
-        SM4_L_128_BODY
-    }
-}
-
-TARGET_GFNI static inline __m128i sm4_gfni_tau_128(__m128i x) {
-    x = _mm_gf2p8affine_epi64_epi8(x, _mm_set1_epi64x(GFNI_PRE), GFNI_PRE_C);
-    x = _mm_gf2p8affineinv_epi64_epi8(x, _mm_set1_epi64x(GFNI_POST), GFNI_POST_C);
-    {
-        SM4_L_128_BODY
-    }
-}
-
-TARGET_AESNI128 static void sm4_aesni128_blocks(const uint32_t rk[32], const uint8_t *in,
-                                                uint8_t *out) {
-    const __m128i bswap = _mm_set_epi8(BSWAP32_SHUFFLE);
-    __m128i r0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)in), bswap);
-    __m128i r1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(in + 16)), bswap);
-    __m128i r2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(in + 32)), bswap);
-    __m128i r3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(in + 48)), bswap);
-    __m128i t0 = _mm_unpacklo_epi32(r0, r1), t1 = _mm_unpackhi_epi32(r0, r1);
-    __m128i t2 = _mm_unpacklo_epi32(r2, r3), t3 = _mm_unpackhi_epi32(r2, r3);
-    __m128i a = _mm_unpacklo_epi64(t0, t2), b = _mm_unpackhi_epi64(t0, t2);
-    __m128i c = _mm_unpacklo_epi64(t1, t3), d = _mm_unpackhi_epi64(t1, t3);
-    int i;
-    for (i = 0; i < 32; i += 4) {
-        SM4_ROUND_128(sm4_aesni_tau_128, a, b, c, d, rk[i]);
-        SM4_ROUND_128(sm4_aesni_tau_128, b, c, d, a, rk[i + 1]);
-        SM4_ROUND_128(sm4_aesni_tau_128, c, d, a, b, rk[i + 2]);
-        SM4_ROUND_128(sm4_aesni_tau_128, d, a, b, c, rk[i + 3]);
-    }
-    t0 = _mm_unpacklo_epi32(d, c);
-    t1 = _mm_unpackhi_epi32(d, c);
-    t2 = _mm_unpacklo_epi32(b, a);
-    t3 = _mm_unpackhi_epi32(b, a);
-    _mm_storeu_si128((__m128i *)(void *)out, _mm_shuffle_epi8(_mm_unpacklo_epi64(t0, t2), bswap));
-    _mm_storeu_si128((__m128i *)(void *)(out + 16),
-                     _mm_shuffle_epi8(_mm_unpackhi_epi64(t0, t2), bswap));
-    _mm_storeu_si128((__m128i *)(void *)(out + 32),
-                     _mm_shuffle_epi8(_mm_unpacklo_epi64(t1, t3), bswap));
-    _mm_storeu_si128((__m128i *)(void *)(out + 48),
-                     _mm_shuffle_epi8(_mm_unpackhi_epi64(t1, t3), bswap));
-}
-
-/* ---- one lane, for serial CBC encryption ---- */
-
-#define SM4_CBC_ENCRYPT_BODY(TAU)                                                                  \
-    __m128i a = _mm_cvtsi32_si128((int)iv[0]), b = _mm_cvtsi32_si128((int)iv[1]);                  \
-    __m128i c = _mm_cvtsi32_si128((int)iv[2]), d = _mm_cvtsi32_si128((int)iv[3]);                  \
-    uint8_t ct[16];                                                                                \
-    for (; blocks > 0; blocks--, in += 16, hex += 32) {                                            \
-        __m128i x0, x1, x2, x3;                                                                    \
-        int i;                                                                                     \
-        x0 = _mm_xor_si128(a, _mm_cvtsi32_si128((int)smx_load_be32(in)));                          \
-        x1 = _mm_xor_si128(b, _mm_cvtsi32_si128((int)smx_load_be32(in + 4)));                      \
-        x2 = _mm_xor_si128(c, _mm_cvtsi32_si128((int)smx_load_be32(in + 8)));                      \
-        x3 = _mm_xor_si128(d, _mm_cvtsi32_si128((int)smx_load_be32(in + 12)));                     \
-        for (i = 0; i < 32; i += 4) {                                                              \
-            SM4_ROUND_128(TAU, x0, x1, x2, x3, rk[i]);                                             \
-            SM4_ROUND_128(TAU, x1, x2, x3, x0, rk[i + 1]);                                         \
-            SM4_ROUND_128(TAU, x2, x3, x0, x1, rk[i + 2]);                                         \
-            SM4_ROUND_128(TAU, x3, x0, x1, x2, rk[i + 3]);                                         \
-        }                                                                                          \
-        a = x3;                                                                                    \
-        b = x2;                                                                                    \
-        c = x1;                                                                                    \
-        d = x0;                                                                                    \
-        smx_store_be32(ct, (uint32_t)_mm_cvtsi128_si32(a));                                        \
-        smx_store_be32(ct + 4, (uint32_t)_mm_cvtsi128_si32(b));                                    \
-        smx_store_be32(ct + 8, (uint32_t)_mm_cvtsi128_si32(c));                                    \
-        smx_store_be32(ct + 12, (uint32_t)_mm_cvtsi128_si32(d));                                   \
-        smx_hex_encode(ct, 16, hex, 'a');                                                          \
-    }                                                                                              \
-    iv[0] = (uint32_t)_mm_cvtsi128_si32(a);                                                        \
-    iv[1] = (uint32_t)_mm_cvtsi128_si32(b);                                                        \
-    iv[2] = (uint32_t)_mm_cvtsi128_si32(c);                                                        \
-    iv[3] = (uint32_t)_mm_cvtsi128_si32(d);
-
-TARGET_GFNI static void sm4_gfni_cbc_encrypt(const uint32_t rk[32], uint32_t iv[4],
-                                             const uint8_t *in, size_t blocks,
-                                             char *hex){SM4_CBC_ENCRYPT_BODY(sm4_gfni_tau_128)}
-
-TARGET_AESNI128
-    static void sm4_aesni_cbc_encrypt(const uint32_t rk[32], uint32_t iv[4], const uint8_t *in,
-                                      size_t blocks,
-                                      char *hex){SM4_CBC_ENCRYPT_BODY(sm4_aesni_tau_128)}
-
-/* S-box on one word, for the key schedule. */
-TARGET_GFNI static uint32_t sm4_gfni_sbox_word(uint32_t w) {
-    __m128i x = _mm_cvtsi32_si128((int)w);
-    x = _mm_gf2p8affine_epi64_epi8(x, _mm_set1_epi64x(GFNI_PRE), GFNI_PRE_C);
-    x = _mm_gf2p8affineinv_epi64_epi8(x, _mm_set1_epi64x(GFNI_POST), GFNI_POST_C);
-    return (uint32_t)_mm_cvtsi128_si32(x);
-}
-
-TARGET_AESNI128 static uint32_t sm4_aesni_sbox_word(uint32_t w) {
-    return (uint32_t)_mm_cvtsi128_si32(sm4_aesni_sbox_128(_mm_cvtsi32_si128((int)w)));
+TARGET_AESNI256
+    static void sm4_aesni256_blocks(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
+    SM4_CRYPT8_BODY(sm4_aesni_tau_256)
 }
 
 #endif /* SMX_SM4_X86 */
@@ -427,65 +414,46 @@ static inline uint32x4_t sm4_neon_t(uint32x4_t in) {
 #define SM4_NEON_ROUND(A, B, C, D, RK)                                                             \
     A = veorq_u32(A, sm4_neon_t(veorq_u32(veorq_u32(veorq_u32(B, C), D), vdupq_n_u32(RK))))
 
+/*
+ * SM4_NEON_SETS groups of four blocks side by side: one group's rounds are a dependency chain
+ * that leaves most of the vector units idle.
+ */
+#ifndef SM4_NEON_SETS
+#define SM4_NEON_SETS 8
+#endif
+
 static void sm4_neon_blocks(const uint32_t rk[32], const uint8_t *in, uint8_t *out) {
-    uint32x4x4_t v = vld4q_u32((const uint32_t *)(const void *)in);
-    uint32x4_t a = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[0])));
-    uint32x4_t b = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[1])));
-    uint32x4_t c = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[2])));
-    uint32x4_t d = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[3])));
-    int i;
+    uint32x4_t a[SM4_NEON_SETS], b[SM4_NEON_SETS], c[SM4_NEON_SETS], d[SM4_NEON_SETS];
+    int i, j;
+    for (j = 0; j < SM4_NEON_SETS; j++) {
+        uint32x4x4_t v = vld4q_u32((const uint32_t *)(const void *)(in + j * 64));
+        a[j] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[0])));
+        b[j] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[1])));
+        c[j] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[2])));
+        d[j] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(v.val[3])));
+    }
     for (i = 0; i < 32; i += 4) {
-        SM4_NEON_ROUND(a, b, c, d, rk[i]);
-        SM4_NEON_ROUND(b, c, d, a, rk[i + 1]);
-        SM4_NEON_ROUND(c, d, a, b, rk[i + 2]);
-        SM4_NEON_ROUND(d, a, b, c, rk[i + 3]);
-    }
-    v.val[0] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(d)));
-    v.val[1] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(c)));
-    v.val[2] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(b)));
-    v.val[3] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(a)));
-    vst4q_u32((uint32_t *)(void *)out, v);
-}
-
-static void sm4_neon_cbc_encrypt(const uint32_t rk[32], uint32_t iv[4], const uint8_t *in,
-                                 size_t blocks, char *hex) {
-    uint32x4_t a = vsetq_lane_u32(iv[0], vdupq_n_u32(0), 0);
-    uint32x4_t b = vsetq_lane_u32(iv[1], vdupq_n_u32(0), 0);
-    uint32x4_t c = vsetq_lane_u32(iv[2], vdupq_n_u32(0), 0);
-    uint32x4_t d = vsetq_lane_u32(iv[3], vdupq_n_u32(0), 0);
-    uint8_t ct[16];
-    for (; blocks > 0; blocks--, in += 16, hex += 32) {
-        uint32x4_t x0 = veorq_u32(a, vsetq_lane_u32(smx_load_be32(in), vdupq_n_u32(0), 0));
-        uint32x4_t x1 = veorq_u32(b, vsetq_lane_u32(smx_load_be32(in + 4), vdupq_n_u32(0), 0));
-        uint32x4_t x2 = veorq_u32(c, vsetq_lane_u32(smx_load_be32(in + 8), vdupq_n_u32(0), 0));
-        uint32x4_t x3 = veorq_u32(d, vsetq_lane_u32(smx_load_be32(in + 12), vdupq_n_u32(0), 0));
-        int i;
-        for (i = 0; i < 32; i += 4) {
-            SM4_NEON_ROUND(x0, x1, x2, x3, rk[i]);
-            SM4_NEON_ROUND(x1, x2, x3, x0, rk[i + 1]);
-            SM4_NEON_ROUND(x2, x3, x0, x1, rk[i + 2]);
-            SM4_NEON_ROUND(x3, x0, x1, x2, rk[i + 3]);
+        for (j = 0; j < SM4_NEON_SETS; j++) {
+            SM4_NEON_ROUND(a[j], b[j], c[j], d[j], rk[i]);
         }
-        a = x3;
-        b = x2;
-        c = x1;
-        d = x0;
-        smx_store_be32(ct, vgetq_lane_u32(a, 0));
-        smx_store_be32(ct + 4, vgetq_lane_u32(b, 0));
-        smx_store_be32(ct + 8, vgetq_lane_u32(c, 0));
-        smx_store_be32(ct + 12, vgetq_lane_u32(d, 0));
-        smx_hex_encode(ct, 16, hex, 'a');
+        for (j = 0; j < SM4_NEON_SETS; j++) {
+            SM4_NEON_ROUND(b[j], c[j], d[j], a[j], rk[i + 1]);
+        }
+        for (j = 0; j < SM4_NEON_SETS; j++) {
+            SM4_NEON_ROUND(c[j], d[j], a[j], b[j], rk[i + 2]);
+        }
+        for (j = 0; j < SM4_NEON_SETS; j++) {
+            SM4_NEON_ROUND(d[j], a[j], b[j], c[j], rk[i + 3]);
+        }
     }
-    iv[0] = vgetq_lane_u32(a, 0);
-    iv[1] = vgetq_lane_u32(b, 0);
-    iv[2] = vgetq_lane_u32(c, 0);
-    iv[3] = vgetq_lane_u32(d, 0);
-    smx_wipe(ct, sizeof(ct));
-}
-
-static uint32_t sm4_neon_sbox_word(uint32_t w) {
-    uint8x16_t x = vreinterpretq_u8_u32(vsetq_lane_u32(w, vdupq_n_u32(0), 0));
-    return vgetq_lane_u32(vreinterpretq_u32_u8(sm4_neon_sbox(x)), 0);
+    for (j = 0; j < SM4_NEON_SETS; j++) {
+        uint32x4x4_t v;
+        v.val[0] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(d[j])));
+        v.val[1] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(c[j])));
+        v.val[2] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(b[j])));
+        v.val[3] = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(a[j])));
+        vst4q_u32((uint32_t *)(void *)(out + j * 64), v);
+    }
 }
 
 #endif /* SMX_SM4_NEON */
@@ -493,23 +461,43 @@ static uint32_t sm4_neon_sbox_word(uint32_t w) {
 /* ---- dispatch ---- */
 
 typedef void (*Sm4BlocksFn)(const uint32_t rk[32], const uint8_t *in, uint8_t *out);
-typedef void (*Sm4CbcEncryptFn)(const uint32_t rk[32], uint32_t iv[4], const uint8_t *in,
-                                size_t blocks, char *hex);
-typedef uint32_t (*Sm4SboxWordFn)(uint32_t w);
 
-#define SM4_MAX_LANES 8
+#define SM4_MAX_LANES 32
+typedef char sm4_table_ways_fit[SM4_TABLE_WAYS <= SM4_MAX_LANES ? 1 : -1];
 
-/* Written only before main() runs, so it needs no synchronization. */
-#ifdef SMX_SM4_NEON
-static const Sm4BlocksFn sm4_blocks = sm4_neon_blocks;
-static const Sm4CbcEncryptFn sm4_cbc_encrypt_blocks = sm4_neon_cbc_encrypt;
-static const Sm4SboxWordFn sm4_sbox_word = sm4_neon_sbox_word;
-static const size_t sm4_lanes = 4;
+/*
+ * Rough costs, measured on an Intel i5-13500H and an Apple M2, in tenths of one block through
+ * the tables: a group of SM4_TABLE_WAYS interleaved table blocks, and one (possibly padded)
+ * call of each multi-block primitive. They decide how the blocks that do not fill a whole
+ * batch are handled.
+ */
+#define SM4_COST_ONE 10
+#if defined(__aarch64__)
+#define SM4_COST_WAYS 14
 #else
-static Sm4BlocksFn sm4_blocks = sm4_scalar_blocks;
-static Sm4CbcEncryptFn sm4_cbc_encrypt_blocks = sm4_scalar_cbc_encrypt;
-static Sm4SboxWordFn sm4_sbox_word = sm4_scalar_sbox_word;
-static size_t sm4_lanes = 1;
+#define SM4_COST_WAYS 17
+#endif
+#define SM4_COST_GFNI 18
+#define SM4_COST_AESNI256 32
+#define SM4_COST_NEON 45
+
+static size_t sm4_table_cost(size_t blocks) {
+    return blocks / SM4_TABLE_WAYS * SM4_COST_WAYS + blocks % SM4_TABLE_WAYS * SM4_COST_ONE;
+}
+
+/*
+ * The multi-block primitive for CBC decryption, its width, and its cost. Written only before
+ * main() runs, so it needs no synchronization.
+ */
+#ifdef SMX_SM4_NEON
+typedef char sm4_neon_lanes_fit[4 * SM4_NEON_SETS <= SM4_MAX_LANES ? 1 : -1];
+static const Sm4BlocksFn sm4_blocks = sm4_neon_blocks;
+static const size_t sm4_lanes = 4 * SM4_NEON_SETS;
+static const size_t sm4_batch_cost = SM4_COST_NEON * SM4_NEON_SETS / 8;
+#else
+static Sm4BlocksFn sm4_blocks = sm4_table_blocks;
+static size_t sm4_lanes = SM4_TABLE_WAYS;
+static size_t sm4_batch_cost = SM4_COST_WAYS;
 #endif
 
 #ifdef SMX_SM4_X86
@@ -540,30 +528,16 @@ __attribute__((constructor)) static void sm4_detect_cpu(void) {
 #if SMX_SM4_MAX_TIER >= 3
     if (avx2 && gfni) {
         sm4_blocks = sm4_gfni_blocks;
-        sm4_cbc_encrypt_blocks = sm4_gfni_cbc_encrypt;
-        sm4_sbox_word = sm4_gfni_sbox_word;
         sm4_lanes = 8;
+        sm4_batch_cost = SM4_COST_GFNI;
         return;
     }
 #endif
-#if SMX_SM4_MAX_TIER >= 2
     if (avx2 && aes && ssse3) {
         sm4_blocks = sm4_aesni256_blocks;
-        sm4_cbc_encrypt_blocks = sm4_aesni_cbc_encrypt;
-        sm4_sbox_word = sm4_aesni_sbox_word;
         sm4_lanes = 8;
-        return;
+        sm4_batch_cost = SM4_COST_AESNI256;
     }
-#endif
-#if SMX_SM4_MAX_TIER >= 1
-    if (aes && ssse3) {
-        sm4_blocks = sm4_aesni128_blocks;
-        sm4_cbc_encrypt_blocks = sm4_aesni_cbc_encrypt;
-        sm4_sbox_word = sm4_aesni_sbox_word;
-        sm4_lanes = 4;
-        return;
-    }
-#endif
 }
 #endif
 
@@ -572,6 +546,10 @@ __attribute__((constructor)) static void sm4_detect_cpu(void) {
 /* Marks a context as holding a valid key; anything else is refused. */
 #define SM4_KEY_SET 0x534D3421u
 
+static inline uint32_t sm4_key_t(uint32_t x) {
+    return sm4_k0[x >> 24] ^ sm4_k1[(x >> 16) & 0xFF] ^ sm4_k2[(x >> 8) & 0xFF] ^ sm4_k3[x & 0xFF];
+}
+
 static void sm4_expand_key(SM4 *ctx, const uint8_t key[16]) {
     uint32_t k0 = smx_load_be32(key) ^ sm4_fk[0];
     uint32_t k1 = smx_load_be32(key + 4) ^ sm4_fk[1];
@@ -579,26 +557,27 @@ static void sm4_expand_key(SM4 *ctx, const uint8_t key[16]) {
     uint32_t k3 = smx_load_be32(key + 12) ^ sm4_fk[3];
     int i;
 
-    for (i = 0; i < 32; i++) {
-        uint32_t b = sm4_sbox_word(k1 ^ k2 ^ k3 ^ sm4_ck[i]);
-        uint32_t next = k0 ^ b ^ ROL32(b, 13) ^ ROL32(b, 23);
-        ctx->rk[i] = next;
-        k0 = k1;
-        k1 = k2;
-        k2 = k3;
-        k3 = next;
+    for (i = 0; i < 32; i += 4) {
+        k0 ^= sm4_key_t(k1 ^ k2 ^ k3 ^ sm4_ck[i]);
+        k1 ^= sm4_key_t(k2 ^ k3 ^ k0 ^ sm4_ck[i + 1]);
+        k2 ^= sm4_key_t(k3 ^ k0 ^ k1 ^ sm4_ck[i + 2]);
+        k3 ^= sm4_key_t(k0 ^ k1 ^ k2 ^ sm4_ck[i + 3]);
+        ctx->rk[i] = k0;
+        ctx->rk[i + 1] = k1;
+        ctx->rk[i + 2] = k2;
+        ctx->rk[i + 3] = k3;
     }
-    smx_wipe(&k0, sizeof(k0));
-    smx_wipe(&k1, sizeof(k1));
-    smx_wipe(&k2, sizeof(k2));
-    smx_wipe(&k3, sizeof(k3));
+    sm4_wipe(&k0, sizeof(k0));
+    sm4_wipe(&k1, sizeof(k1));
+    sm4_wipe(&k2, sizeof(k2));
+    sm4_wipe(&k3, sizeof(k3));
 }
 
 /* ---- public API ---- */
 
 void sm4_init(SM4 *ctx) {
     if (ctx != NULL) {
-        smx_wipe(ctx, sizeof(SM4));
+        sm4_wipe(ctx, sizeof(SM4));
     }
 }
 
@@ -614,15 +593,15 @@ void sm4_set_key(SM4 *ctx, const uint8_t *key, size_t key_len, const uint8_t *iv
         memmove(key_copy, key, 16);
         memmove(iv_copy, iv, 16);
     }
-    smx_wipe(ctx, sizeof(SM4));
+    sm4_wipe(ctx, sizeof(SM4));
     if (!valid) {
         return; /* the context stays unset, and encrypt and decrypt return NULL */
     }
     sm4_expand_key(ctx, key_copy);
     memcpy(ctx->iv, iv_copy, 16);
     ctx->key_state = SM4_KEY_SET;
-    smx_wipe(key_copy, sizeof(key_copy));
-    smx_wipe(iv_copy, sizeof(iv_copy));
+    sm4_wipe(key_copy, sizeof(key_copy));
+    sm4_wipe(iv_copy, sizeof(iv_copy));
 }
 
 char *sm4_encrypt_bytes(SM4 *ctx, const uint8_t *data, size_t input_len) {
@@ -651,15 +630,15 @@ char *sm4_encrypt_bytes(SM4 *ctx, const uint8_t *data, size_t input_len) {
     }
     /* whole blocks come straight from the caller's buffer; only the last is padded */
     if (full_blocks > 0) {
-        sm4_cbc_encrypt_blocks(ctx->rk, iv, data, full_blocks, hex);
+        sm4_table_cbc_encrypt(ctx->rk, iv, data, full_blocks, hex);
     }
     memset(last, (int)(16 - tail), 16);
     if (tail > 0) {
         memcpy(last, data + full_blocks * 16, tail);
     }
-    sm4_cbc_encrypt_blocks(ctx->rk, iv, last, 1, hex + full_blocks * 32);
+    sm4_table_cbc_encrypt(ctx->rk, iv, last, 1, hex + full_blocks * 32);
     hex[total * 2] = '\0';
-    smx_wipe(last, sizeof(last));
+    sm4_wipe(last, sizeof(last));
     return hex;
 }
 
@@ -700,10 +679,25 @@ static void sm4_cbc_decrypt_in_place(const SM4 *ctx, uint8_t *buf, size_t blocks
         size_t j;
         if (count == lanes) {
             sm4_blocks(rk, buf + start * 16, tmp);
-        } else {
+        } else if (sm4_table_cost(count) > sm4_batch_cost) {
             memset(partial, 0, sizeof(partial));
             memcpy(partial, buf + start * 16, count * 16);
             sm4_blocks(rk, partial, tmp);
+        } else {
+            /* too few blocks to pay for a whole batch */
+            for (j = 0; j + SM4_TABLE_WAYS <= count; j += SM4_TABLE_WAYS) {
+                sm4_table_blocks(rk, buf + (start + j) * 16, tmp + j * 16);
+            }
+            if ((count - j) * SM4_COST_ONE > SM4_COST_WAYS) {
+                /* two or three left: one padded interleaved call is cheaper */
+                memset(partial, 0, SM4_TABLE_WAYS * 16);
+                memcpy(partial, buf + (start + j) * 16, (count - j) * 16);
+                sm4_table_blocks(rk, partial, tmp + j * 16);
+            } else {
+                for (; j < count; j++) {
+                    sm4_table_block(rk, buf + (start + j) * 16, tmp + j * 16);
+                }
+            }
         }
         for (j = count; j > 0; j--) {
             size_t index = start + j - 1;
@@ -712,9 +706,9 @@ static void sm4_cbc_decrypt_in_place(const SM4 *ctx, uint8_t *buf, size_t blocks
         }
         blocks = start;
     }
-    smx_wipe(rk, sizeof(rk));
-    smx_wipe(tmp, sizeof(tmp));
-    smx_wipe(partial, sizeof(partial));
+    sm4_wipe(rk, sizeof(rk));
+    sm4_wipe(tmp, sizeof(tmp));
+    sm4_wipe(partial, sizeof(partial));
 }
 
 /*

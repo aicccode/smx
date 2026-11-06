@@ -6,7 +6,8 @@
  * It catches what reading the source cannot, and what a static check of branch shapes can
  * miss: at commit 751d51f clang -O3 made the masked table scan in ec_mul_g skip entries, by a
  * backward branch that looked like a loop counter. It covers control flow only. Memory
- * addresses are the job of test_ct.c (MemorySanitizer) and tools/check_ct_asm.py.
+ * addresses are the job of test_ct.c (MemorySanitizer) and tools/check_ct_asm.py. SM4 on this
+ * branch indexes tables with secret data, so only its control flow is held constant here.
  *
  * Built by tools/check_ct_trace.sh, for Linux on x86-64 only: elsewhere it reports that it
  * did not run. malloc is replaced by a bump allocator so the heap adds no variation of its own.

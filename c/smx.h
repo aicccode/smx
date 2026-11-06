@@ -86,6 +86,10 @@ void sm3_finish(SM3 *ctx);
  * WARNING: the IV in the context is used as is for every message, so encrypting two
  * messages with the same context leaks whether they share a prefix. Set a fresh random
  * IV for each message with sm4_set_key, or write ctx->iv directly.
+ *
+ * WARNING: this SM4 uses lookup tables indexed by key and data bytes for speed, so it is
+ * not resistant to cache-timing attacks by code sharing the CPU. The `security` branch
+ * of this repository has a constant-time SM4.
  */
 
 typedef struct {

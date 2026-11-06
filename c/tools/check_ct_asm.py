@@ -16,6 +16,10 @@ function, and whatever it calls in the same binary:
 This is a shape test and cannot follow data. tools/check_ct_trace.sh is the check that actually
 compares execution, on the platforms where it can run; this one also runs on arm64.
 
+SM4's block cipher is not checked: on this branch it uses secret-indexed lookup tables and is not
+meant to be constant time (the `security` branch keeps the constant-time SM4 and its checks). SM2,
+the hex codecs and SM4's PKCS#7 check are still held to these rules.
+
 The scans must also read the whole table, so ct_comb_select and ct_var_select must contain a
 loop, or enough loads to cover every entry when fully unrolled.
 

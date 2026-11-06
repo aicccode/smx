@@ -7,7 +7,9 @@
  *   make check-ct     (needs clang)
  *
  * Passing means no secret-dependent branch or address on the paths exercised here.
- * Includes the implementation files so it can reach the static SM4 functions.
+ * SM4's block cipher is not among them: on this branch it uses secret-indexed tables (the
+ * `security` branch has the constant-time SM4). Its PKCS#7 check still is. Includes the
+ * implementation files so it can reach the static SM4 functions.
  */
 #include "sm2_ec.h"
 #include "sm2.c"
@@ -90,34 +92,10 @@ static void test_hex(void) {
     }
 }
 
-static void test_sm4(void) {
-    uint32_t rk[32], iv[4] = {1, 2, 3, 4};
-    uint8_t in[SM4_MAX_LANES * 16], out[SM4_MAX_LANES * 16], key[16];
-    char hex[33];
-    SM4 ctx;
+/* The SM4 padding check reads every byte the same way, whatever it holds. */
+static void test_sm4_padding(void) {
     size_t plain_len;
     uint8_t padded[32];
-    int i;
-
-    for (i = 0; i < 32; i++) {
-        rk[i] = (uint32_t)i * 0x01010101u;
-    }
-    memset(in, 0x5A, sizeof(in));
-    SECRET(rk, sizeof(rk));
-    SECRET(in, sizeof(in));
-    sm4_blocks(rk, in, out);
-    SECRET(iv, sizeof(iv));
-    sm4_cbc_encrypt_blocks(rk, iv, in, 1, hex);
-
-    /* the key schedule, and both directions from a poisoned key */
-    memset(key, 0x33, sizeof(key));
-    SECRET(key, sizeof(key));
-    sm4_init(&ctx);
-    sm4_set_key(&ctx, key, 16, in, 16);
-    PUBLIC(&ctx.key_state, sizeof(ctx.key_state));
-    sm4_cbc_decrypt_in_place(&ctx, out, 3);
-
-    /* padding checks read every byte the same way, whatever it holds */
     memset(padded, 0x04, sizeof(padded));
     SECRET(padded, sizeof(padded));
     (void)pkcs7_check(padded, sizeof(padded), &plain_len);
@@ -181,7 +159,7 @@ int main(void) {
     test_scalar_mult();
     test_field_and_order();
     test_hex();
-    test_sm4();
+    test_sm4_padding();
     test_full_operations();
     printf("constant-time check passed\n");
     return 0;

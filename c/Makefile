@@ -3,7 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O3 -std=c99
 
 SRCS = bigint256.c sm3.c sm4.c sm2.c
-HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc sm4_sbox_circuit.inc \
+HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc \
 	sm2_point.inc sm2_support.inc sm2_key_exchange.inc sm2_support_ct.h
 OBJS = $(SRCS:.c=.o)
 
@@ -21,7 +21,7 @@ test_kat: test_kat.c test_kat_vectors.h $(OBJS)
 test_internal: test_internal.c $(HDRS) $(OBJS)
 	$(CC) $(CFLAGS) -o $@ test_internal.c $(OBJS)
 
-# Includes sm4.c itself, to reach the S-box internals.
+# Includes sm4.c itself, to reach the SM4 tables.
 test_security: test_security.c $(HDRS) bigint256.o sm3.o sm2.o sm4.c
 	$(CC) $(CFLAGS) -o $@ test_security.c bigint256.o sm3.o sm2.o
 
@@ -65,18 +65,17 @@ check-sanitizers:
 
 # Secret-dependent branches and addresses: the compiled code's branch shapes
 # (tools/check_ct_asm.py), a single-stepped instruction trace compared between secret inputs
-# (tools/check_ct_trace.sh; control flow only), then MemorySanitizer. Capped at
-# SM4 tier 2 because clang's MSan rejects the GFNI intrinsics outright. Tier 3 shares
-# all of its structure with tier 2 and differs only in the S-box instructions.
+# (tools/check_ct_trace.sh; control flow only), then MemorySanitizer. SM4 on this branch uses
+# secret-indexed tables, so only its PKCS#7 check is held to the address rule here; the trace
+# still covers SM4's control flow. The constant-time SM4 is on the `security` branch. Capped
+# at SM4 tier 2 because clang's MSan rejects the GFNI intrinsics outright.
 check-ct:
 	python3 tools/check_ct_asm.py
 	tools/check_ct_trace.sh
-	@for tier in 2 1 0; do \
-		clang -std=gnu99 -O2 -g -DSMX_CT_TEST -DSMX_SM4_MAX_TIER=$$tier -fsanitize=memory \
-			-fno-sanitize-memory-param-retval -fno-sanitize-recover=all \
-			-o /tmp/smx_ct test_ct.c bigint256.c sm3.c && \
-		MSAN_OPTIONS=intercept_strlen=0 /tmp/smx_ct || exit 1; \
-	done
+	clang -std=gnu99 -O2 -g -DSMX_CT_TEST -DSMX_SM4_MAX_TIER=2 -fsanitize=memory \
+		-fno-sanitize-memory-param-retval -fno-sanitize-recover=all \
+		-o /tmp/smx_ct test_ct.c bigint256.c sm3.c && \
+	MSAN_OPTIONS=intercept_strlen=0 /tmp/smx_ct
 
 # clang libFuzzer with ASan and UBSan, one target over every public entry point.
 fuzz: fuzz_all
