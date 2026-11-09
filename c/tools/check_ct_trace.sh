@@ -4,7 +4,8 @@
 # SM4 on this branch uses secret-indexed tables, so its memory accesses depend on secrets by
 # design; this check never looked at addresses and still requires its control flow, padding
 # check included, to be the same for every input.
-# CT_TRACE_JOBS sets the number of parallel runs; each takes about a minute.
+# CT_TRACE_JOBS sets the number of parallel runs; each takes about a minute, and the two default
+# -O2 builds, which also trace the SM9 G2, pairing and GT operations, several more.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 OUT=$(mktemp -d)
@@ -45,6 +46,8 @@ JOBS=${CT_TRACE_JOBS:-4}
 # shellcheck disable=SC2016
 xargs -a "$OUT/list" -d '\n' -P "$JOBS" -I{} bash -c '
     bin=${1%%$(printf "\t")*}; label=${1#*$(printf "\t")}
+    # the slow SM9 G2, pairing and GT traces: once per compiler, in the default -O2 build
+    case "$label" in *" -O2 ") export CT_TRACE_SM9=1 ;; esac
     "$bin" "$label" >"$bin.out" 2>&1; echo $? >"$bin.rc"
 ' _ {}
 

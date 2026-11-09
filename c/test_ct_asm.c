@@ -8,6 +8,7 @@
  */
 #include "sm2_ec.h"
 #include "sm2_support_ct.h"
+#include "sm9_pairing.h"
 #include "bigint256.c"
 #include "sm4.c"
 
@@ -100,6 +101,93 @@ CT int ct_bytes_equal(const uint8_t *a, const uint8_t *b) {
     return bytes_equal(a, b, 32);
 }
 
+/* SM9: the field tower, the point formulas, the table scans and the scalar recoding */
+CT void ct_fq_mul(fq_t *r, const fq_t *a, const fq_t *b) {
+    fq_mul(r, a, b);
+}
+CT void ct_fq_add(fq_t *r, const fq_t *a, const fq_t *b) {
+    fq_add(r, a, b);
+}
+CT void ct_fq_sub(fq_t *r, const fq_t *a, const fq_t *b) {
+    fq_sub(r, a, b);
+}
+CT void ct_fq_inv(fq_t *r, const fq_t *a) {
+    fq_inv(r, a);
+}
+CT uint64_t ct_fq_from_bytes(fq_t *r, const uint8_t in[32]) {
+    return fq_from_bytes(r, in);
+}
+CT void ct_fq2_mul(fq2_t *r, const fq2_t *a, const fq2_t *b) {
+    fq2_mul(r, a, b);
+}
+CT void ct_fq2_sqr(fq2_t *r, const fq2_t *a) {
+    fq2_sqr(r, a);
+}
+CT void ct_fq2_inv(fq2_t *r, const fq2_t *a) {
+    fq2_inv(r, a);
+}
+CT void ct_fq12_mul(fq12_t *r, const fq12_t *a, const fq12_t *b) {
+    fq12_mul(r, a, b);
+}
+CT void ct_fq12_sqr(fq12_t *r, const fq12_t *a) {
+    fq12_sqr(r, a);
+}
+CT void ct_fq12_cyclo_sqr(fq12_t *r, const fq12_t *a) {
+    fq12_cyclo_sqr(r, a);
+}
+CT void ct_fq12_mul_line(fq12_t *f, const fq2_t *a, const fq2_t *b, const fq2_t *c) {
+    fq12_mul_line(f, a, b, c);
+}
+CT void ct_fq12_inv(fq12_t *r, const fq12_t *a) {
+    fq12_inv(r, a);
+}
+CT void ct_sm9_dbl_step(g2_t *t, fq12_t *f, const sm9_line_point *p) {
+    sm9_dbl_step(t, f, p);
+}
+CT void ct_sm9_add_step(g2_t *t, fq12_t *f, const fq2_t *x, const fq2_t *y,
+                        const sm9_line_point *p) {
+    sm9_add_step(t, f, x, y, p);
+}
+CT void ct_g1_dbl(g1_t *r, const g1_t *a) {
+    g1_dbl(r, a);
+}
+CT uint64_t ct_g1_add(g1_t *r, const g1_t *a, const g1_t *b) {
+    return g1_add(r, a, b);
+}
+CT void ct_g1_complete(g1_t *r, const g1_t *a, const g1_t *b) {
+    g1_add_complete(r, a, b);
+}
+CT void ct_g2_dbl(g2_t *r, const g2_t *a) {
+    g2_dbl(r, a);
+}
+CT uint64_t ct_g2_add(g2_t *r, const g2_t *a, const g2_t *b) {
+    return g2_add(r, a, b);
+}
+CT void ct_g2_complete(g2_t *r, const g2_t *a, const g2_t *b) {
+    g2_add_complete(r, a, b);
+}
+CT void ct_g1_select(g1_t *s, const g1_t *t, unsigned m) {
+    g1_select(s, t, m);
+}
+CT void ct_g2_select(g2_t *s, const g2_t *t, unsigned m) {
+    g2_select(s, t, m);
+}
+CT void ct_gt_select(fq12_t *s, const fq12_t *t, unsigned d) {
+    sm9_gt_select(s, t, d);
+}
+CT unsigned ct_sm9_booth(const uint64_t k[4], uint64_t *n) {
+    return sm9_booth_digit(k, 7, n);
+}
+CT uint64_t ct_g1_from_bytes(g1_t *r, const uint8_t in[65]) {
+    return g1_from_bytes(r, in);
+}
+CT void ct_sm9n_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    sm9n_mul(r, a, b);
+}
+CT void ct_sm9n_inv(uint64_t r[4], const uint64_t a[4]) {
+    sm9n_inv(r, a);
+}
+
 /* Referenced from main, so that link-time optimization has to keep them all. */
 void (*volatile ct_keep[])(void) = {
     (void (*)(void))ct_comb_select,  (void (*)(void))ct_var_select,
@@ -115,7 +203,21 @@ void (*volatile ct_keep[])(void) = {
     (void (*)(void))ct_mod_sub,      (void (*)(void))ct_compare,
     (void (*)(void))ct_pkcs7,        (void (*)(void))ct_hex_digit,
     (void (*)(void))ct_hex_nibble,   (void (*)(void))ct_hex_nibble_lower,
-    (void (*)(void))ct_bytes_equal,
+    (void (*)(void))ct_bytes_equal,  (void (*)(void))ct_fq_mul,
+    (void (*)(void))ct_fq_add,       (void (*)(void))ct_fq_sub,
+    (void (*)(void))ct_fq_inv,       (void (*)(void))ct_fq_from_bytes,
+    (void (*)(void))ct_fq2_mul,      (void (*)(void))ct_fq2_sqr,
+    (void (*)(void))ct_fq2_inv,      (void (*)(void))ct_fq12_mul,
+    (void (*)(void))ct_fq12_sqr,     (void (*)(void))ct_fq12_cyclo_sqr,
+    (void (*)(void))ct_fq12_mul_line, (void (*)(void))ct_fq12_inv,
+    (void (*)(void))ct_sm9_dbl_step, (void (*)(void))ct_sm9_add_step,
+    (void (*)(void))ct_g1_dbl,       (void (*)(void))ct_g1_add,
+    (void (*)(void))ct_g1_complete,  (void (*)(void))ct_g2_dbl,
+    (void (*)(void))ct_g2_add,       (void (*)(void))ct_g2_complete,
+    (void (*)(void))ct_g1_select,    (void (*)(void))ct_g2_select,
+    (void (*)(void))ct_gt_select,    (void (*)(void))ct_sm9_booth,
+    (void (*)(void))ct_g1_from_bytes, (void (*)(void))ct_sm9n_mul,
+    (void (*)(void))ct_sm9n_inv,
 };
 
 int main(void) {

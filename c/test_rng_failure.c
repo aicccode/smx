@@ -29,6 +29,26 @@ int main(void) {
         printf("FAIL: sign produced output\n");
         failed++;
     }
+    {
+        /* SM9: the standard's encryption master public key */
+        static const char epub[] = "04787ed7b8a51f3ab84e0a66003f32da5c720b17eca7137d39abc66e3c80a8"
+                                   "92ff769de61791e5adc4b9ff85a31354900b202871279a8c49dc3f220f"
+                                   "644c57a7b1";
+        char mpri[65] = "x", mpub[259] = "x", r[65] = "x", big_r[131] = "x";
+        char *ct;
+        if (sm9_gen_sign_master_key(mpri, mpub) || mpri[0] != '\0' || mpub[0] != '\0' ||
+            sm9_gen_enc_master_key(mpri, mpub) || mpri[0] != '\0') {
+            printf("FAIL: SM9 master keygen produced output\n");
+            failed++;
+        }
+        ct = sm9_encrypt("message", "Bob", epub, SM9_HID_ENCRYPT, SM9_MODE_STREAM);
+        if (ct != NULL || sm9_exchange_init("Bob", epub, SM9_HID_EXCHANGE, r, big_r) ||
+            r[0] != '\0') {
+            printf("FAIL: SM9 encrypt or exchange produced output\n");
+            failed++;
+        }
+        free(ct);
+    }
     printf("=== RNG failure: %s ===\n", failed ? "FAILED" : "all clean");
     return failed ? 1 : 0;
 }

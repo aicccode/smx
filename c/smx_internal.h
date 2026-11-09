@@ -325,4 +325,19 @@ void smx_sm3_compress(uint32_t v[8], const uint8_t *blocks, size_t n);
 /* The SM2 code never feeds it enough data to reach the 2^61-byte limit. */
 void smx_sm3_finish_bytes(SM3 *ctx, uint8_t out[32]);
 
+/* ---- shared with SM9 ---- */
+
+/* The operating system's CSPRNG (sm2.c): 1 on success, 0 if it failed. */
+int smx_random_bytes(uint8_t *buf, size_t len);
+
+/* SM4-ECB over whole blocks (sm4.c); in and out may be the same buffer. */
+void smx_sm4_ecb_encrypt(const uint8_t key[16], const uint8_t *in, uint8_t *out, size_t blocks);
+
+/*
+ * Decrypts len bytes (a nonzero multiple of 16) in place, then checks the PKCS#7 padding in
+ * constant time. Returns an all-ones mask if it is valid, and *plain_len is then the length.
+ */
+uint64_t smx_sm4_ecb_decrypt_pkcs7(const uint8_t key[16], uint8_t *buf, size_t len,
+                                   size_t *plain_len);
+
 #endif /* SMX_INTERNAL_H */

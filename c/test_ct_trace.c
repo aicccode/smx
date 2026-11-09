@@ -40,6 +40,7 @@ __attribute__((noinline)) static void no_free(void *p) {
 #define free(x) no_free(x)
 #include "sm2.c"
 #include "sm4.c"
+#include "sm9.c"
 #undef malloc
 #undef free
 
@@ -114,6 +115,12 @@ enum {
     OP_SIGN,
     OP_DECRYPT,
     OP_KEY_EXCHANGE,
+    OP_SM9_G1_MUL,
+    OP_SM9_G2_MUL,
+    OP_SM9_PAIRING,
+    OP_SM9_GT_POW,
+    OP_SM9_FQ_INV,
+    OP_SM9_N_INV,
     OP_COUNT
 };
 
@@ -126,7 +133,9 @@ static const char *const OP_NAMES[] = {
     "sm4_set_key",      "sm4_blocks",       "sm4_encrypt_bytes",
     "sm4_decrypt",      "sm4_decrypt_core", "parse_private_key",
     "bytes_equal",      "sm2_sign",         "sm2_decrypt",
-    "sm2_get_sa",
+    "sm2_get_sa",       "g1_mul_ct",        "g2_mul_ct",
+    "sm9_pairing",      "sm9_gt_pow",       "fq_inv",
+    "sm9n_inv",
 };
 
 NI void op_mul_g(Jac *r, const uint64_t *k) {
@@ -168,6 +177,26 @@ NI int op_parse(const char *h, BigInt256 *d) {
 NI void op_blocks(const uint32_t *rk, const uint8_t *i, uint8_t *o) {
     sm4_blocks(rk, i, o);
 }
+NI void op_g1_mul(g1_t *r, const uint64_t *k) {
+    g1_mul_ct(r, &SM9_P1, k);
+}
+NI void op_g2_mul(g2_t *r, const uint64_t *k) {
+    g2_mul_ct(r, &SM9_P2, k);
+}
+NI void op_pairing(fq12_t *r, const g2_t *q) {
+    sm9_pairing(r, &SM9_P1.x, &SM9_P1.y, &q->x, &q->y);
+}
+NI void op_gt_pow(fq12_t *r, const fq12_t *g, const uint64_t *k) {
+    sm9_gt_pow(r, g, k);
+}
+NI void op_fq_inv(fq_t *r, const uint64_t *a) {
+    fq_t x;
+    memcpy(x.v, a, 32);
+    fq_inv(r, &x);
+}
+NI void op_n_inv(uint64_t *r, const uint64_t *a) {
+    sm9n_inv(r, a);
+}
 NI uint64_t op_decrypt_core(const SM4 *c, uint8_t *b, size_t n, size_t *o) {
     return sm4_decrypt_core(c, b, n, o);
 }
@@ -184,6 +213,7 @@ static void child(void) {
     static uint64_t (*kp)[4] = K;
     static char keys[PRI_COUNT][65];
     static char bad_ct[sizeof(CIPHERTEXT)];
+    int sm9_full = getenv("CT_TRACE_SM9") != NULL;
 
     OPAQUE(kp);
     jac_set_affine(&base, EC_GX, EC_GY);
@@ -380,6 +410,54 @@ static void child(void) {
             sink += (uint64_t)kx.success;
         }
     }
+    /*
+     * SM9: scalars as for SM2 (all below the SM9 order, which is larger). The G2, pairing and GT
+     * operations take about three times the steps of everything else together, so they run
+     * only when CT_TRACE_SM9 is set; tools/check_ct_trace.sh sets it for one build per compiler.
+     */
+    if (sm9_full) {
+        fq12_t g;
+        g2_t qs[2];
+        sm9_pairing(&g, &SM9_P1.x, &SM9_P1.y, &SM9_P2.x, &SM9_P2.y);
+        for (i = 0; i < 2; i++) {
+            mark_start(OP_SM9_G2_MUL, i);
+            op_g2_mul(&qs[i], kp[i + 5]);
+            mark_end();
+            g2_normalize(&qs[i]);
+        }
+        for (i = 0; i < 2; i++) {
+            fq12_t r;
+            mark_start(OP_SM9_PAIRING, i);
+            op_pairing(&r, &qs[i]); /* a secret G2 point, as in decryption */
+            mark_end();
+            sink += r.c[0].c[0].a0.v[0];
+            mark_start(OP_SM9_GT_POW, i);
+            op_gt_pow(&r, &g, kp[i + 5]);
+            mark_end();
+            sink += r.c[0].c[0].a0.v[0];
+        }
+    }
+    {
+        for (i = 0; i < MUL_CT_INPUTS; i++) {
+            g1_t r;
+            mark_start(OP_SM9_G1_MUL, i);
+            op_g1_mul(&r, kp[i + 2]);
+            mark_end();
+            sink += r.x.v[0];
+        }
+        for (i = 0; i < K_COUNT; i++) {
+            fq_t r;
+            uint64_t n[4];
+            mark_start(OP_SM9_FQ_INV, i);
+            op_fq_inv(&r, kp[i]);
+            mark_end();
+            sink += r.v[0];
+            mark_start(OP_SM9_N_INV, i);
+            op_n_inv(n, kp[i]);
+            mark_end();
+            sink += n[0];
+        }
+    }
     _exit(0);
 }
 
@@ -484,6 +562,10 @@ int main(int argc, char **argv) {
                 low = cnt[op][i] < low ? cnt[op][i] : low;
                 high = cnt[op][i] > high ? cnt[op][i] : high;
             }
+        }
+        if (n < 2 && getenv("CT_TRACE_SM9") == NULL &&
+            (op == OP_SM9_G2_MUL || op == OP_SM9_PAIRING || op == OP_SM9_GT_POW)) {
+            continue; /* not asked for in this build */
         }
         if (n < 2) {
             printf("%-20s only %d inputs: the check did not exercise it\n", OP_NAMES[op], n);

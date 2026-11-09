@@ -791,3 +791,32 @@ uint8_t *sm4_decrypt_bytes(SM4 *ctx, const char *ciphertext_hex, size_t *out_len
 char *sm4_decrypt(SM4 *ctx, const char *ciphertext_hex) {
     return (char *)sm4_decrypt_bytes(ctx, ciphertext_hex, NULL);
 }
+
+/* ---- SM4-ECB for SM9 encryption (declared in smx_internal.h) ---- */
+
+void smx_sm4_ecb_encrypt(const uint8_t key[16], const uint8_t *in, uint8_t *out, size_t blocks) {
+    SM4 ctx;
+    size_t i;
+    sm4_expand_key(&ctx, key);
+    for (i = 0; i < blocks; i++) {
+        sm4_table_block(ctx.rk, in + 16 * i, out + 16 * i);
+    }
+    sm4_wipe(&ctx, sizeof(ctx));
+}
+
+uint64_t smx_sm4_ecb_decrypt_pkcs7(const uint8_t key[16], uint8_t *buf, size_t len,
+                                   size_t *plain_len) {
+    SM4 ctx;
+    uint32_t rk[32];
+    size_t i;
+    sm4_expand_key(&ctx, key);
+    for (i = 0; i < 32; i++) {
+        rk[i] = ctx.rk[31 - i];
+    }
+    for (i = 0; i < len / 16; i++) {
+        sm4_table_block(rk, buf + 16 * i, buf + 16 * i);
+    }
+    sm4_wipe(&ctx, sizeof(ctx));
+    sm4_wipe(rk, sizeof(rk));
+    return pkcs7_check(buf, len, plain_len);
+}
