@@ -1,6 +1,6 @@
 // Package smx implements the Chinese national cryptographic algorithms SM2 (public
-// key), SM3 (hash) and SM4 (block cipher) with no dependencies outside the standard
-// library.
+// key), SM3 (hash), SM4 (block cipher) and SM9 (identity-based cryptography) with no
+// dependencies outside the standard library.
 //
 // # Invalid input
 //
