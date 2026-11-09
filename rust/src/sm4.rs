@@ -525,6 +525,33 @@ impl SM4 {
     }
 }
 
+/// SM4-ECB in place over whole blocks, for SM9's block-cipher encryption mode. Same table-based
+/// rounds (and the same cache-timing caveat) as the rest of this module.
+pub(crate) fn ecb_crypt(key: &[u8; 16], buf: &mut [u8], decrypt: bool) {
+    debug_assert_eq!(buf.len() % BLOCK_LEN, 0);
+    let mut rk = expand_key(key);
+    if decrypt {
+        rk.reverse();
+    }
+    let mut chunks = buf.chunks_exact_mut(TABLE_WAYS * BLOCK_LEN);
+    for chunk in &mut chunks {
+        if let Ok(blocks) = <&mut [u8; TABLE_WAYS * BLOCK_LEN]>::try_from(chunk) {
+            crypt_ways(&rk, blocks);
+        }
+    }
+    for block in chunks.into_remainder().chunks_exact_mut(BLOCK_LEN) {
+        if let Ok(block) = <&mut [u8; BLOCK_LEN]>::try_from(block) {
+            crypt_block(&rk, block);
+        }
+    }
+    wipe(&mut rk, [0; 32]);
+}
+
+/// PKCS#7 padding check for SM9: 1 or 0 for the verdict, and the unpadded length.
+pub(crate) fn pkcs7_unpad_len(input: &[u8]) -> (u64, usize) {
+    pkcs7_check(input)
+}
+
 /// Removes the padding from decrypted blocks and returns the text, or the one error.
 ///
 /// The UTF-8 validation runs on the whole buffer, unconditionally and before anything depends on
