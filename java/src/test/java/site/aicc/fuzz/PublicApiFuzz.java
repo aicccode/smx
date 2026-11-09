@@ -44,6 +44,11 @@ import site.aicc.sm2.util.ConvertUtil;
 import site.aicc.sm2.util.SystemRandom;
 import site.aicc.sm3.SM3;
 import site.aicc.sm4.SM4;
+import site.aicc.sm9.SM9;
+import site.aicc.sm9.SM9CipherMode;
+import site.aicc.sm9.SM9Encapsulation;
+import site.aicc.sm9.SM9ExchangeResult;
+import site.aicc.sm9.SM9KeyPair;
 
 /**
  * Seeded malformed-input harness over the whole public surface, found by reflection: every public
@@ -101,8 +106,35 @@ public final class PublicApiFuzz {
     ECKeyPairGenerator.class,
     ECPrivateKey.class,
     ECPublicKey.class,
-    ECKey.class
+    ECKey.class,
+    SM9.class,
+    SM9KeyPair.class,
+    SM9Encapsulation.class,
+    SM9ExchangeResult.class
   };
+
+  /** Fixed SM9 keys (GB/T 38635.5 master keys) and values made with them, as seeds. */
+  private static final String SM9_KS =
+      "000130e78459d78545cb54c587e02cf480ce0b66340f319f348a1d5b1f2dc5f4";
+
+  private static final String SM9_KE =
+      "0001edee3778f441f8dea3d9fa0acc4e07ee36c93f9a08618af4ad85cede1c22";
+  private static final String SM9_MPK_S = SM9.signMasterPublicKey(SM9_KS);
+  private static final String SM9_MPK_E = SM9.encMasterPublicKey(SM9_KE);
+  private static final String SM9_DS = SM9.genSignUserKey(SM9_KS, "Alice");
+  private static final String SM9_DE = SM9.genEncUserKey(SM9_KE, "Bob");
+  private static final SM9KeyPair SM9_PAIR = SM9.exchangeInit("Bob", SM9_MPK_E);
+  private static final SM9Encapsulation SM9_KEM = SM9.encapsulate("Bob", SM9_MPK_E, 32);
+  private static final SM9ExchangeResult SM9_RESULT =
+      SM9.exchangeRespond(
+          16,
+          "Alice",
+          "Bob",
+          SM9_MPK_E,
+          SM9.genEncUserKey(SM9_KE, "Bob".getBytes(java.nio.charset.StandardCharsets.UTF_8), 2),
+          SM9_PAIR.getPrivateKey(),
+          SM9_PAIR.getPublicKey(),
+          SM9.exchangeInit("Alice", SM9_MPK_E).getPublicKey());
 
   private static final SM2Initializer STANDARD =
       new SM2Initializer(PARAMS, new DoubleAndAddMultiplier());
@@ -150,7 +182,19 @@ public final class PublicApiFuzz {
           "bd73e45045b9139bf5d9f533719cfcfd",
           "message digest",
           "sixteen byte key",
-          PUB_HEX.substring(2)
+          PUB_HEX.substring(2),
+          SM9_KS,
+          SM9_MPK_S,
+          SM9_MPK_E,
+          SM9_DS,
+          SM9_DE,
+          SM9.sign("fuzz seed", SM9_DS, SM9_MPK_S),
+          SM9.encrypt("fuzz seed", "Bob", SM9_MPK_E),
+          SM9_KEM.getCiphertext(),
+          SM9_PAIR.getPublicKey(),
+          SM9_RESULT.getSb(),
+          "Alice",
+          "Bob"
         };
   }
 
@@ -498,6 +542,10 @@ public final class PublicApiFuzz {
       int pick = r.nextInt(4);
       return pick == 0 ? null : pick == 1 ? CURVE : pick == 2 ? (Object) element(r) : string(r);
     }
+    if (type == SM9CipherMode.class) {
+      int pick = r.nextInt(5);
+      return pick == 0 ? null : pick % 2 == 0 ? SM9CipherMode.STREAM : SM9CipherMode.SM4;
+    }
     if (type == AbstractECPoint[].class) {
       if (r.nextInt(4) == 0) {
         return null;
@@ -566,6 +614,15 @@ public final class PublicApiFuzz {
     }
     if (type == ECPrivateKey.class) {
       return new ECPrivateKey(D);
+    }
+    if (type == SM9KeyPair.class) {
+      return SM9_PAIR;
+    }
+    if (type == SM9Encapsulation.class) {
+      return SM9_KEM;
+    }
+    if (type == SM9ExchangeResult.class) {
+      return SM9_RESULT;
     }
     if (type == ECPublicKey.class || type == ECKey.class) {
       return new ECPublicKey(generator());
