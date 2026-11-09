@@ -443,3 +443,8 @@ int sm2_verify(const char *user_id, const char *signature, const char *message,
 }
 
 #include "sm2_key_exchange.inc"
+
+/* The same operating-system randomness for the rest of the library (SM9). */
+int smx_random_bytes(uint8_t *buf, size_t len) {
+    return random_bytes(buf, len);
+}

@@ -2,6 +2,7 @@ bench
 test_kat
 test_internal
 test_security
+test_sm9
 fuzz_all
 crash-*
 leak-*

@@ -12,6 +12,7 @@
 #include "sm2_ec.h"
 #include "sm2.c"
 #include "sm4.c"
+#include "sm9.c"
 #include <sanitizer/msan_interface.h>
 #include <stdio.h>
 
@@ -177,12 +178,92 @@ static void test_full_operations(void) {
     PUBLIC(&kx, sizeof(kx));
 }
 
+/*
+ * SM9 with every secret poisoned: master keys, user private keys (G1 and G2, whose subgroup check
+ * may only branch on validity), r, and everything derived from them. Both encryption modes: SM4
+ * on this branch is constant time.
+ */
+static void test_sm9(void) {
+    static const char mpub_s[] = "049f64080b3084f733e48aff4b41b565011ce0711c5e392cfb0ab1b6791b94c4"
+                                 "0829dba116152d1f786ce843ed24a3b573414d2177386a92dd8f14d65696ea"
+                                 "5e3269850938abea0112b57329f447e3a0cbad3e2fdb1a77f335e89e1408d0"
+                                 "ef1c2541e00a53dda532da1a7ce027b7a46f741006e85f5cdff0730e75c05f"
+                                 "b4e3216d";
+    static const char mpub_e[] = "04787ed7b8a51f3ab84e0a66003f32da5c720b17eca7137d39abc66e3c80a8"
+                                 "92ff769de61791e5adc4b9ff85a31354900b202871279a8c49dc3f220f644c"
+                                 "57a7b1";
+    char ks[65] = "000130e78459d78545cb54c587e02cf480ce0b66340f319f348a1d5b1f2dc5f4";
+    char ke[65] = "0001edee3778f441f8dea3d9fa0acc4e07ee36c93f9a08618af4ad85cede1c22";
+    char ds[131], de[259], de_a[259], sig[195], pub[259], key[65], c[131];
+    char ra[65], rb[65], big_ra[131], big_rb[131];
+    SM9ExchangeResult b, a;
+    char *ct;
+    uint8_t *pt;
+
+    SECRET(ks, 64);
+    SECRET(ke, 64);
+    sm9_sign_master_public_key(ks, pub);
+    sm9_enc_master_public_key(ke, pub);
+    sm9_gen_sign_user_key(ks, "Alice", 1, ds);
+    sm9_gen_enc_user_key(ke, "Bob", 3, de);
+    sm9_gen_enc_user_key(ke, "Alice", 2, de_a);
+    PUBLIC(ds, sizeof(ds));
+    PUBLIC(de, sizeof(de));
+    PUBLIC(de_a, sizeof(de_a));
+    SECRET(ds, 130);
+    SECRET(de, 258);
+    SECRET(de_a, 258);
+
+    if (!sm9_sign("Chinese IBS standard", ds, mpub_s, sig)) {
+        printf("SM9 sign failed\n");
+    }
+    ct = sm9_encrypt("Chinese IBE standard", "Bob", mpub_e, 3, SM9_MODE_STREAM);
+    PUBLIC(ct, ct != NULL ? strlen(ct) : 0);
+    pt = sm9_decrypt_bytes(ct, "Bob", de, SM9_MODE_STREAM, NULL);
+    if (pt == NULL) {
+        printf("SM9 decrypt failed\n");
+    }
+    free(pt);
+    free(ct);
+    ct = sm9_encrypt("Chinese IBE standard", "Bob", mpub_e, 3, SM9_MODE_SM4);
+    PUBLIC(ct, ct != NULL ? strlen(ct) : 0);
+    pt = sm9_decrypt_bytes(ct, "Bob", de, SM9_MODE_SM4, NULL);
+    if (pt == NULL) {
+        printf("SM9 SM4-mode decrypt failed\n");
+    }
+    free(pt);
+    free(ct);
+    if (!sm9_encapsulate("Bob", mpub_e, 32, 3, key, c)) {
+        printf("SM9 encapsulate failed\n");
+    }
+    PUBLIC(c, sizeof(c));
+    sm9_decapsulate(c, "Bob", de, 32, key);
+
+    sm9_gen_enc_user_key(ke, "Bob", 2, de);
+    PUBLIC(de, sizeof(de));
+    SECRET(de, 258);
+    sm9_exchange_init("Bob", mpub_e, 2, ra, big_ra);
+    sm9_exchange_init("Alice", mpub_e, 2, rb, big_rb);
+    PUBLIC(big_ra, sizeof(big_ra));
+    PUBLIC(big_rb, sizeof(big_rb));
+    b = sm9_exchange_respond(16, "Alice", "Bob", mpub_e, de, rb, big_rb, big_ra);
+    PUBLIC(&b, sizeof(b));
+    a = sm9_exchange_confirm(16, "Alice", "Bob", mpub_e, de_a, ra, big_ra, big_rb, b.s_b);
+    PUBLIC(&a, sizeof(a));
+    if (!a.success || !sm9_exchange_check(b.s_2, a.s_a)) {
+        printf("SM9 key exchange failed\n");
+    }
+    sm9_exchange_result_free(&a);
+    sm9_exchange_result_free(&b);
+}
+
 int main(void) {
     test_scalar_mult();
     test_field_and_order();
     test_hex();
     test_sm4();
     test_full_operations();
+    test_sm9();
     printf("constant-time check passed\n");
     return 0;
 }

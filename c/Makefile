@@ -2,9 +2,13 @@ CC = gcc
 # No -march=native on purpose: the SIMD paths are selected at run time.
 CFLAGS = -Wall -Wextra -O3 -std=c99
 
-SRCS = bigint256.c sm3.c sm4.c sm2.c
+SRCS = bigint256.c sm3.c sm4.c sm2.c sm9.c
+# everything but sm9.c, for test_sm9, which includes it
+SM9_DEPS = bigint256.c sm3.c sm4.c sm2.c
 HDRS = smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_precomp.inc sm4_sbox_circuit.inc \
-	sm2_point.inc sm2_support.inc sm2_key_exchange.inc sm2_support_ct.h
+	sm2_point.inc sm2_support.inc sm2_key_exchange.inc sm2_support_ct.h \
+	sm9.h sm9_const.h sm9_fp.h sm9_tower.h sm9_curve.h sm9_point.inc sm9_pairing.h \
+	sm9_support.inc sm9_exchange.inc
 OBJS = $(SRCS:.c=.o)
 
 all: test_all
@@ -25,14 +29,19 @@ test_internal: test_internal.c $(HDRS) $(OBJS)
 test_security: test_security.c $(HDRS) bigint256.o sm3.o sm2.o sm4.c
 	$(CC) $(CFLAGS) -o $@ test_security.c bigint256.o sm3.o sm2.o
 
+# Includes sm9.c itself, to reach the variants that take a fixed r.
+test_sm9: test_sm9.c test_sm9_vectors.h $(HDRS) $(SM9_DEPS:.c=.o)
+	$(CC) $(CFLAGS) -o $@ test_sm9.c $(SM9_DEPS:.c=.o)
+
 bench: bench.c $(OBJS)
 	$(CC) $(CFLAGS) -o $@ bench.c $(OBJS)
 
-test: test_all test_kat test_internal test_security
+test: test_all test_kat test_internal test_security test_sm9
 	./test_all
 	./test_kat
 	./test_internal
 	./test_security
+	./test_sm9
 
 # Runs every test against each compile-time fallback: the portable 128-bit-free
 # multiply, no x86 SIMD at all, and every SM4 tier.
@@ -48,6 +57,8 @@ check-fallbacks:
 		done; \
 		$(CC) $(CFLAGS) $$f -o /tmp/smx_fallback_sec test_security.c bigint256.c sm3.c sm2.c; \
 		/tmp/smx_fallback_sec | tail -1; \
+		$(CC) $(CFLAGS) $$f -o /tmp/smx_fallback_sm9 test_sm9.c $(SM9_DEPS); \
+		/tmp/smx_fallback_sm9 | tail -1; \
 	done
 	@for f in -DSMX_TEST_RNG_FAILS -DSMX_TEST_RNG_ALL_ONES; do \
 		$(CC) $(CFLAGS) $$f -o /tmp/smx_rng test_rng_failure.c $(SRCS) && /tmp/smx_rng | tail -1; \
@@ -61,13 +72,19 @@ check-sanitizers:
 	done; \
 	$(CC) -std=c99 -Wall -Wextra -O1 -g -fsanitize=address,undefined \
 		-fno-sanitize-recover=all -o /tmp/smx_san_sec test_security.c bigint256.c sm3.c sm2.c; \
-	/tmp/smx_san_sec | tail -1
+	/tmp/smx_san_sec | tail -1; \
+	$(CC) -std=c99 -Wall -Wextra -O1 -g -fsanitize=address,undefined \
+		-fno-sanitize-recover=all -o /tmp/smx_san_sm9 test_sm9.c $(SM9_DEPS); \
+	/tmp/smx_san_sm9 | tail -1
 
 # Secret-dependent branches and addresses: the compiled code's branch shapes
 # (tools/check_ct_asm.py), a single-stepped instruction trace compared between secret inputs
 # (tools/check_ct_trace.sh; control flow only), then MemorySanitizer. Capped at
 # SM4 tier 2 because clang's MSan rejects the GFNI intrinsics outright. Tier 3 shares
 # all of its structure with tier 2 and differs only in the S-box instructions.
+# SM9 is covered by all three: its field, point and pairing code by the branch-shape check, its
+# scalar multiplications, pairing and GT exponentiation by the trace, and the whole public API,
+# with master keys, user keys and r secret, by MemorySanitizer.
 check-ct:
 	python3 tools/check_ct_asm.py
 	tools/check_ct_trace.sh
@@ -87,9 +104,10 @@ fuzz_all: fuzz/fuzz_all.c $(SRCS) $(HDRS)
 
 format:
 	clang-format -i *.c smx.h smx_internal.h sm2_fp.h sm2_fn.h sm2_ec.h sm2_support_ct.h sm2_point.inc sm2_support.inc \
-		sm2_key_exchange.inc tools/*.c fuzz/*.c
+		sm2_key_exchange.inc sm9.h sm9_fp.h sm9_tower.h sm9_curve.h sm9_point.inc sm9_pairing.h \
+		sm9_support.inc sm9_exchange.inc tools/*.c fuzz/*.c
 
 clean:
-	rm -f *.o test_all test_kat test_internal test_security bench fuzz_all
+	rm -f *.o test_all test_kat test_internal test_security test_sm9 bench fuzz_all
 
 .PHONY: all test check-fallbacks check-sanitizers check-ct fuzz format clean

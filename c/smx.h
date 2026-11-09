@@ -235,4 +235,8 @@ void bytes_to_hex(const uint8_t *data, size_t len, char *out);
 /* Returns the byte count, or -1 for odd length, non-hex input or more than max_len bytes. */
 int hex_to_bytes(const char *hex, uint8_t *out, size_t max_len);
 
+/* ========== SM9 Identity-Based Cryptography ========== */
+
+#include "sm9.h"
+
 #endif /* SMX_H */

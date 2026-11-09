@@ -797,3 +797,50 @@ uint8_t *sm4_decrypt_bytes(SM4 *ctx, const char *ciphertext_hex, size_t *out_len
 char *sm4_decrypt(SM4 *ctx, const char *ciphertext_hex) {
     return (char *)sm4_decrypt_bytes(ctx, ciphertext_hex, NULL);
 }
+
+/* ---- SM4-ECB for SM9 encryption (declared in smx_internal.h) ---- */
+
+/* ECB over whole blocks with this branch's constant-time block function, sm4_lanes at a time. */
+static void sm4_ecb_blocks(const uint32_t rk[32], const uint8_t *in, uint8_t *out, size_t blocks) {
+    uint8_t partial[SM4_MAX_LANES * 16];
+    uint8_t tmp[SM4_MAX_LANES * 16];
+    size_t lanes = sm4_lanes;
+    while (blocks > 0) {
+        size_t count = blocks < lanes ? blocks : lanes;
+        if (count == lanes) {
+            sm4_blocks(rk, in, out);
+        } else {
+            memset(partial, 0, sizeof(partial));
+            memcpy(partial, in, count * 16);
+            sm4_blocks(rk, partial, tmp);
+            memcpy(out, tmp, count * 16);
+        }
+        in += count * 16;
+        out += count * 16;
+        blocks -= count;
+    }
+    smx_wipe(partial, sizeof(partial));
+    smx_wipe(tmp, sizeof(tmp));
+}
+
+void smx_sm4_ecb_encrypt(const uint8_t key[16], const uint8_t *in, uint8_t *out, size_t blocks) {
+    SM4 ctx;
+    sm4_expand_key(&ctx, key);
+    sm4_ecb_blocks(ctx.rk, in, out, blocks);
+    smx_wipe(&ctx, sizeof(ctx));
+}
+
+uint64_t smx_sm4_ecb_decrypt_pkcs7(const uint8_t key[16], uint8_t *buf, size_t len,
+                                   size_t *plain_len) {
+    SM4 ctx;
+    uint32_t rk[32];
+    size_t i;
+    sm4_expand_key(&ctx, key);
+    for (i = 0; i < 32; i++) {
+        rk[i] = ctx.rk[31 - i];
+    }
+    sm4_ecb_blocks(rk, buf, buf, len / 16);
+    smx_wipe(&ctx, sizeof(ctx));
+    smx_wipe(rk, sizeof(rk));
+    return pkcs7_check(buf, len, plain_len);
+}

@@ -25,6 +25,34 @@
     "59983c18f809e262923c53aec295d30383b54e39d609d160afcb1908d0bd8766"                             \
     "21886ca989ca9c7d58087307ca93092d651efa"
 
+/* SM9: the worked examples of GB/T 38635.5 (signing for Alice, encryption for Bob) */
+#define SM9_SIGN_PUB \
+    "049f64080b3084f733e48aff4b41b565011ce0711c5e392cfb0ab1b6791b94c4" \
+    "0829dba116152d1f786ce843ed24a3b573414d2177386a92dd8f14d65696ea5e" \
+    "3269850938abea0112b57329f447e3a0cbad3e2fdb1a77f335e89e1408d0ef1c" \
+    "2541e00a53dda532da1a7ce027b7a46f741006e85f5cdff0730e75c05fb4e321" \
+    "6d"
+#define SM9_SIGN_SIG \
+    "823c4b21e4bd2dfe1ed92c606653e996668563152fc33f55d7bfbb9bd9705adb" \
+    "0473bf96923ce58b6ad0e13e9643a406d8eb98417c50ef1b29cef9adb48b6d59" \
+    "8c856712f1c2e0968ab7769f42a99586aed139d5b8b3e15891827cc2aced9baa" \
+    "05"
+#define SM9_ENC_PUB \
+    "04787ed7b8a51f3ab84e0a66003f32da5c720b17eca7137d39abc66e3c80a892" \
+    "ff769de61791e5adc4b9ff85a31354900b202871279a8c49dc3f220f644c57a7" \
+    "b1"
+#define SM9_ENC_KEY \
+    "0494736acd2c8c8796cc4785e938301a139a059d3537b6414140b2d31eecf416" \
+    "83115bae85f5d8bc6c3dbd9e5342979acccf3c2f4f28420b1cb4f8c0b59a19b1" \
+    "587aa5e47570da7600cd760a0cf7beaf71c447f3844753fe74fa7ba92ca7d3b5" \
+    "5f27538a62e7f7bfb51dce08704796d94c9d56734f119ea44732b50e31cdeb75" \
+    "c1"
+#define SM9_ENC_CT \
+    "042445471164490618e1ee20528ff1d545b0f14c8bcaa44544f03dab5dac07d8" \
+    "ff42ffca97d57cddc05ea405f2e586feb3a6930715532b8000759f13059ed59a" \
+    "c0ba672387bcd6de5016a158a52bb2e7fc429197bcab70b25afee37a2b9db9f3" \
+    "671b5f5b0e951489682f3e64e1378cdd5da9513b1c"
+
 /* A NUL-terminated copy of the input. */
 static char *to_string(const uint8_t *data, size_t len) {
     char *s = (char *)malloc(len + 1);
@@ -382,6 +410,95 @@ static void fuzz_points(const uint8_t *data, size_t len) {
     assert(r.infinity || ec_point_is_on_curve(&r));
 }
 
+/* ---- SM9 ---- */
+
+static int equal_ignore_case(const char *a, const char *b) {
+    for (; *a != '\0' && *b != '\0'; a++, b++) {
+        char x = *a >= 'A' && *a <= 'F' ? (char)(*a + 32) : *a;
+        char y = *b >= 'A' && *b <= 'F' ? (char)(*b + 32) : *b;
+        if (x != y) {
+            return 0;
+        }
+    }
+    return *a == *b;
+}
+
+/* Any text as a G1 or G2 key or point: refused or used, never a crash. */
+static void fuzz_sm9_points(const uint8_t *data, size_t len) {
+    char *text = to_string(data, len < 300 ? len : 300);
+    char key[65], c[131];
+    if (sm9_encapsulate("Bob", text, 16, SM9_HID_ENCRYPT, key, c)) {
+        assert(strlen(text) == 130 && strlen(c) == 130 && strlen(key) == 32);
+    }
+    assert(!sm9_verify("Chinese IBS standard", SM9_SIGN_SIG, "Alice", text, SM9_HID_SIGN) ||
+           equal_ignore_case(text, SM9_SIGN_PUB));
+    assert(!sm9_decapsulate(text, "Bob", SM9_ENC_KEY, 16, key) || strlen(text) == 130);
+    assert(!sm9_decapsulate(SM9_ENC_CT, "Bob", text, 16, key) || strlen(text) == 258);
+    free(text);
+}
+
+/* Signature and ID from the input: a forged signature never verifies. */
+static void fuzz_sm9_verify(const uint8_t *data, size_t len) {
+    char *sig, *id;
+    split(data, len < 400 ? len : 400, &sig, &id);
+    assert(!sm9_verify("Chinese IBS standard", sig, id, SM9_SIGN_PUB, SM9_HID_SIGN) ||
+           (strcmp(sig, SM9_SIGN_SIG) == 0 && strcmp(id, "Alice") == 0));
+    free(sig);
+    free(id);
+}
+
+/* Arbitrary ciphertexts: an accepted one must be the vector, or carry a valid C3. */
+static void fuzz_sm9_decrypt(const uint8_t *data, size_t len) {
+    char *text = to_string(data, len < 600 ? len : 600);
+    size_t out_len;
+    int mode;
+    for (mode = 0; mode < 2; mode++) {
+        uint8_t *p = sm9_decrypt_bytes(text, "Bob", SM9_ENC_KEY, mode, &out_len);
+        assert(p == NULL || (out_len > 0 && p[out_len] == '\0'));
+        free(p);
+    }
+    free(text);
+}
+
+/* Encrypting the input decrypts back to it, in both modes, and a flipped bit is refused. */
+static void fuzz_sm9_roundtrip(const uint8_t *data, size_t len) {
+    int mode;
+    if (len == 0 || len > 256) {
+        return;
+    }
+    for (mode = 0; mode < 2; mode++) {
+        char *ct = sm9_encrypt_bytes(data, len, "Bob", SM9_ENC_PUB, SM9_HID_ENCRYPT, mode);
+        size_t out_len;
+        uint8_t *p;
+        assert(ct != NULL);
+        p = sm9_decrypt_bytes(ct, "Bob", SM9_ENC_KEY, mode, &out_len);
+        assert(p != NULL && out_len == len && memcmp(p, data, len) == 0);
+        free(p);
+        ct[130 + data[0] % 64] ^= 1; /* inside C3 */
+        p = sm9_decrypt_bytes(ct, "Bob", SM9_ENC_KEY, mode, &out_len);
+        assert(p == NULL);
+        free(ct);
+    }
+}
+
+/* Key exchange with R_A and S_B taken from the input. */
+static void fuzz_sm9_exchange(const uint8_t *data, size_t len) {
+    char *ra, *sb, r[65], rb[131];
+    SM9ExchangeResult res;
+    split(data, len < 300 ? len : 300, &ra, &sb);
+    if (sm9_exchange_init("Alice", SM9_ENC_PUB, SM9_HID_EXCHANGE, r, rb)) {
+        res = sm9_exchange_respond(16, "Alice", "Bob", SM9_ENC_PUB, SM9_ENC_KEY, r, rb, ra);
+        assert(!res.success || (strlen(res.shared_key) == 32 && strlen(res.s_b) == 64));
+        sm9_exchange_result_free(&res);
+        res = sm9_exchange_confirm(16, "Alice", "Bob", SM9_ENC_PUB, SM9_ENC_KEY, r, rb, ra, sb);
+        assert(!res.success);
+        sm9_exchange_result_free(&res);
+        assert(!sm9_exchange_check(ra, sb) || strlen(ra) == 64);
+    }
+    free(ra);
+    free(sb);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
@@ -393,7 +510,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
     n = size - 1;
     /* operations with a scalar multiplication get less data, so more runs fit */
-    switch (data[0] % 14) {
+    switch (data[0] % 19) {
     case 0:
         text = to_string(rest, n);
         check_parsed_point(text);
@@ -435,6 +552,21 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     case 12:
         fuzz_bigint(rest, n);
         fuzz_hex(rest, n);
+        break;
+    case 14:
+        fuzz_sm9_points(rest, n);
+        break;
+    case 15:
+        fuzz_sm9_verify(rest, n);
+        break;
+    case 16:
+        fuzz_sm9_decrypt(rest, n);
+        break;
+    case 17:
+        fuzz_sm9_roundtrip(rest, n);
+        break;
+    case 18:
+        fuzz_sm9_exchange(rest, n);
         break;
     default:
         fuzz_points(rest, n);

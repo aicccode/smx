@@ -180,6 +180,146 @@ static void bench_key_exchange(void *arg) {
     }
 }
 
+/* ---- SM9 (only where smx.h has it, so older revisions still build) ---- */
+
+#ifdef SMX_SM9_H
+typedef struct {
+    char spri[65], spub[259], ds[131], sig[195];
+    char epri[65], epub[131], de[259], de_a[259], *cipher, *cipher_sm4;
+    char kem_c[131];
+    char ra[65], rb[65], big_ra[131], big_rb[131];
+} Sm9Arg;
+
+static void bench_sm9_sign_user_key(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char out[131];
+    if (!sm9_gen_sign_user_key(a->spri, "Alice", SM9_HID_SIGN, out)) {
+        abort();
+    }
+}
+
+static void bench_sm9_enc_user_key(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char out[259];
+    if (!sm9_gen_enc_user_key(a->epri, "Bob", SM9_HID_ENCRYPT, out)) {
+        abort();
+    }
+}
+
+static void bench_sm9_sign(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char sig[195];
+    if (!sm9_sign(MESSAGE, a->ds, a->spub, sig)) {
+        abort();
+    }
+}
+
+static void bench_sm9_verify(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    if (!sm9_verify(MESSAGE, a->sig, "Alice", a->spub, SM9_HID_SIGN)) {
+        abort();
+    }
+}
+
+static void bench_sm9_encrypt(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char *c = sm9_encrypt(MESSAGE, "Bob", a->epub, SM9_HID_ENCRYPT, SM9_MODE_STREAM);
+    if (c == NULL) {
+        abort();
+    }
+    free(c);
+}
+
+static void bench_sm9_decrypt(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char *p = sm9_decrypt(a->cipher, "Bob", a->de, SM9_MODE_STREAM);
+    if (p == NULL) {
+        abort();
+    }
+    free(p);
+}
+
+static void bench_sm9_decrypt_sm4(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char *p = sm9_decrypt(a->cipher_sm4, "Bob", a->de, SM9_MODE_SM4);
+    if (p == NULL) {
+        abort();
+    }
+    free(p);
+}
+
+static void bench_sm9_encapsulate(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char key[65], c[131];
+    if (!sm9_encapsulate("Bob", a->epub, 32, SM9_HID_ENCRYPT, key, c)) {
+        abort();
+    }
+}
+
+static void bench_sm9_decapsulate(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char key[65];
+    if (!sm9_decapsulate(a->kem_c, "Bob", a->de, 32, key)) {
+        abort();
+    }
+}
+
+/* both sides: two inits, respond, confirm and check */
+static void bench_sm9_exchange(void *arg) {
+    Sm9Arg *a = (Sm9Arg *)arg;
+    char ra[65], rb[65], big_ra[131], big_rb[131];
+    SM9ExchangeResult b, r;
+    if (!sm9_exchange_init("Bob", a->epub, SM9_HID_EXCHANGE, ra, big_ra) ||
+        !sm9_exchange_init("Alice", a->epub, SM9_HID_EXCHANGE, rb, big_rb)) {
+        abort();
+    }
+    b = sm9_exchange_respond(16, "Alice", "Bob", a->epub, a->de, rb, big_rb, big_ra);
+    r = sm9_exchange_confirm(16, "Alice", "Bob", a->epub, a->de_a, ra, big_ra, big_rb, b.s_b);
+    if (!b.success || !r.success || !sm9_exchange_check(b.s_2, r.s_a)) {
+        abort();
+    }
+    sm9_exchange_result_free(&b);
+    sm9_exchange_result_free(&r);
+}
+
+static void bench_sm9(void) {
+    Sm9Arg a;
+    char key[65];
+    if (!sm9_gen_sign_master_key(a.spri, a.spub) || !sm9_gen_enc_master_key(a.epri, a.epub) ||
+        !sm9_gen_sign_user_key(a.spri, "Alice", SM9_HID_SIGN, a.ds) ||
+        !sm9_gen_enc_user_key(a.epri, "Bob", SM9_HID_ENCRYPT, a.de) ||
+        !sm9_gen_enc_user_key(a.epri, "Alice", SM9_HID_EXCHANGE, a.de_a) ||
+        !sm9_sign(MESSAGE, a.ds, a.spub, a.sig) ||
+        !sm9_encapsulate("Bob", a.epub, 32, SM9_HID_ENCRYPT, key, a.kem_c)) {
+        abort();
+    }
+    /* B's exchange key has hid 2 as well */
+    if (!sm9_gen_enc_user_key(a.epri, "Bob", SM9_HID_EXCHANGE, a.de)) {
+        abort();
+    }
+    report_ops("SM9 sign user key", bench_sm9_sign_user_key, &a);
+    report_ops("SM9 enc user key", bench_sm9_enc_user_key, &a);
+    report_ops("SM9 sign", bench_sm9_sign, &a);
+    report_ops("SM9 verify", bench_sm9_verify, &a);
+    report_ops("SM9 key exchange (A+B)", bench_sm9_exchange, &a);
+    if (!sm9_gen_enc_user_key(a.epri, "Bob", SM9_HID_ENCRYPT, a.de)) {
+        abort();
+    }
+    a.cipher = sm9_encrypt(MESSAGE, "Bob", a.epub, SM9_HID_ENCRYPT, SM9_MODE_STREAM);
+    a.cipher_sm4 = sm9_encrypt(MESSAGE, "Bob", a.epub, SM9_HID_ENCRYPT, SM9_MODE_SM4);
+    if (a.cipher == NULL || a.cipher_sm4 == NULL) {
+        abort();
+    }
+    report_ops("SM9 encrypt", bench_sm9_encrypt, &a);
+    report_ops("SM9 decrypt", bench_sm9_decrypt, &a);
+    report_ops("SM9 decrypt (SM4 mode)", bench_sm9_decrypt_sm4, &a);
+    report_ops("SM9 encapsulate", bench_sm9_encapsulate, &a);
+    report_ops("SM9 decapsulate", bench_sm9_decapsulate, &a);
+    free(a.cipher);
+    free(a.cipher_sm4);
+}
+#endif
+
 static char *make_text(size_t n) {
     char *t = (char *)malloc(n + 1);
     size_t i;
@@ -258,6 +398,9 @@ int main(int argc, char **argv) {
     kx.ra_pub = sm2_get_public_key(&kx.ra);
     kx.rb_pub = sm2_get_public_key(&kx.rb);
     report_ops("SM2 key exchange (A+B)", bench_key_exchange, &kx);
+#ifdef SMX_SM9_H
+    bench_sm9();
+#endif
 
     return sink == 0xFFFFFFFFu ? 1 : 0;
 }
