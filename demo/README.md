@@ -1,6 +1,6 @@
 # SM2跨语言密钥交换与加密通信Demo
 
-本Demo验证Java、JavaScript、Rust、Swift、Go、C、C#、Python八种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
+本Demo验证Java、JavaScript、Rust、Swift、Go、C、C#、Python、Dart九种语言的SM2实现能够完成密钥交换协议并使用协商密钥进行加密解密通信。
 
 ## 架构
 
@@ -19,6 +19,8 @@
 │  C# Client  │─────────────>│             │
 ├─────────────┤              │             │
 │Python Client│─────────────>│             │
+├─────────────┤              │             │
+│ Dart Client │─────────────>│             │
 └─────────────┘              └─────────────┘
      (A侧)
 ```
@@ -36,7 +38,8 @@ demo/
 ├── client-go/                   # Go客户端
 ├── client-c/                    # C客户端（使用libcurl）
 ├── client-csharp/               # C#客户端（.NET 8）
-└── client-python/               # Python客户端（仅标准库）
+├── client-python/               # Python客户端（仅标准库）
+└── client-dart/                 # Dart客户端（仅 dart:io）
 ```
 
 ## API接口
@@ -140,6 +143,12 @@ dotnet run
 ```bash
 cd client-python
 python3 main.py
+```
+
+9. 测试Dart客户端
+```bash
+cd client-dart
+dart pub get && dart run bin/main.dart
 ```
 
 ## 密钥交换流程

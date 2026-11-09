@@ -1,0 +1,10 @@
+name: smx_demo_client
+description: SM2 key exchange and SM4 demo client (side A) for the Java demo server.
+publish_to: none
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  smx:
+    path: ../../dart
