@@ -460,6 +460,38 @@ public final class Sm4Impl: @unchecked Sendable {
     }
 }
 
+// MARK: - ECB（只供 SM9 加密的 SM4 模式使用）
+
+/// SM4-ECB 加密或解密 data（长度必须是16的倍数，调用方保证），key 恰好16字节。不处理填充。
+func sm4ECB(key: [UInt8], data: [UInt8], decrypt: Bool) -> [UInt8] {
+    precondition(key.count == 16 && data.count % 16 == 0)
+    let state = SM4KeyState(key: key, iv: [UInt8](repeating: 0, count: 16))
+    var output = data
+    let keys = decrypt ? state.decryptKeys : state.roundKeys
+    keys.withUnsafeBufferPointer { keyBuffer in
+        sm4RoundTables.withUnsafeBufferPointer { tables in
+            output.withUnsafeMutableBufferPointer { buffer in
+                guard let rk = keyBuffer.baseAddress, let table = tables.baseAddress, var block = buffer.baseAddress
+                else {
+                    return
+                }
+                for _ in 0..<(data.count / 16) {
+                    let (c0, c1, c2, c3) = cryptWords(
+                        loadBE(UnsafePointer(block)), loadBE(UnsafePointer(block + 4)),
+                        loadBE(UnsafePointer(block + 8)), loadBE(UnsafePointer(block + 12)), roundKeys: rk,
+                        table: table)
+                    storeBE(c0, block)
+                    storeBE(c1, block + 4)
+                    storeBE(c2, block + 8)
+                    storeBE(c3, block + 12)
+                    block += 16
+                }
+            }
+        }
+    }
+    return output
+}
+
 /// 恒定流程的 PKCS#7 检查：合法时返回 0，否则返回非 0。count 必须是不小于16的整数。
 /// 总是检查最后16个字节，不提前退出，也不按数据分支。
 @inline(never)

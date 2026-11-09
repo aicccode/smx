@@ -422,5 +422,118 @@ try suite("round trip: SM4", propertyCount) { _ in
     try check(try cipher.decryptChecked(text: try cipher.encryptChecked(text: text)) == text, "SM4 round trip")
 }
 
+
+// MARK: - SM9（每次调用都要做配对，用例数按比例缩小）
+
+let sm9Count = max(20, caseCount / 1000)
+guard let sm9SignMaster = try? SM9.genSignMasterKey(), let sm9EncMaster = try? SM9.genEncMasterKey(),
+    let sm9SignKey = try? SM9.genSignUserKey(masterPrivateKey: sm9SignMaster.masterPrivateKey, userId: "Alice"),
+    let sm9EncKey = try? SM9.genEncUserKey(masterPrivateKey: sm9EncMaster.masterPrivateKey, userId: "Bob"),
+    let sm9KeyA = try? SM9.genEncUserKey(
+        masterPrivateKey: sm9EncMaster.masterPrivateKey, userId: "Alice", hid: SM9.hidExchange),
+    let sm9KeyB = try? SM9.genEncUserKey(
+        masterPrivateKey: sm9EncMaster.masterPrivateKey, userId: "Bob", hid: SM9.hidExchange),
+    let sm9Signature = try? SM9.sign(
+        signedMessage, userPrivateKey: sm9SignKey, masterPublicKey: sm9SignMaster.masterPublicKey),
+    let sm9Cipher = try? SM9.encrypt(encryptedMessage, userId: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey),
+    let sm9CipherSM4 = try? SM9.encrypt(
+        encryptedMessage, userId: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey, mode: .sm4),
+    let sm9Kem = try? SM9.encapsulate(userId: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey, keyLength: 32),
+    let sm9InitA = try? SM9.exchangeInit(peerId: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey),
+    let sm9InitB = try? SM9.exchangeInit(peerId: "Alice", masterPublicKey: sm9EncMaster.masterPublicKey)
+else {
+    fatalError("SM9 setup")
+}
+let sm9Respond = SM9.exchangeRespond(
+    keyLength: 16, idA: "Alice", idB: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey, userPrivateKeyB: sm9KeyB,
+    randomPrivateB: sm9InitB.randomPrivate, randomPointB: sm9InitB.randomPoint, randomPointA: sm9InitA.randomPoint)
+
+suite("SM9 master/user key parsing", sm9Count) { _ in
+    let master = mutate(sm9SignMaster.masterPrivateKey)
+    if let pub = try? SM9.signMasterPublicKey(master) {
+        accepted += 1
+        check(pub.utf8.count == 258 && master.utf8.count == 64, "bad sign master public key shape")
+    }
+    if let key = try? SM9.genEncUserKey(masterPrivateKey: master, userId: mutate("Bob")) {
+        check(key.utf8.count == 258, "bad enc user key shape")
+    }
+}
+suite("SM9.verify", sm9Count) { _ in
+    let signature = mutate(sm9Signature)
+    let key = rng.below(4) == 0 ? mutate(sm9SignMaster.masterPublicKey) : sm9SignMaster.masterPublicKey
+    let id = rng.below(5) == 0 ? mutate("Alice") : "Alice"
+    if SM9.verify(signedMessage, signature: signature, userId: id, masterPublicKey: key) {
+        accepted += 1
+        check(signature == sm9Signature && id == "Alice", "SM9 forged signature \(signature.debugDescription)")
+    }
+}
+suite("SM9.sign", sm9Count) { _ in
+    let key = mutate(sm9SignKey)
+    let pub = rng.below(4) == 0 ? mutate(sm9SignMaster.masterPublicKey) : sm9SignMaster.masterPublicKey
+    if let signature = try? SM9.sign(signedMessage, userPrivateKey: key, masterPublicKey: pub) {
+        accepted += 1
+        check(signature.utf8.count == 194, "bad SM9 signature shape")
+    }
+}
+suite("SM9.encrypt", sm9Count) { _ in
+    let pub = mutate(sm9EncMaster.masterPublicKey)
+    if let cipher = try? SM9.encrypt(mutate(encryptedMessage), userId: "Bob", masterPublicKey: pub) {
+        accepted += 1
+        check(cipher.utf8.count > 194, "bad SM9 ciphertext shape")
+    }
+}
+suite("SM9.decrypt", sm9Count) { _ in
+    let useSM4 = rng.below(2) == 0
+    let good = useSM4 ? sm9CipherSM4 : sm9Cipher
+    let cipher = mutate(good)
+    let key = rng.below(4) == 0 ? mutate(sm9EncKey) : sm9EncKey
+    do {
+        let plain = try SM9.decrypt(cipher, userId: "Bob", userPrivateKey: key, mode: useSM4 ? .sm4 : .stream)
+        accepted += 1
+        check(cipher == good && plain == Array(encryptedMessage.utf8), "SM9 forged ciphertext accepted")
+    } catch let error as SM9Error {
+        if case .invalidKey = error {
+            check(key != sm9EncKey, "valid key rejected")
+        } else {
+            check(error == .decryptionFailed("Decryption failed"), "non-uniform SM9 error")
+        }
+    } catch {
+        check(false, "unexpected error type")
+    }
+}
+suite("SM9.decapsulate", sm9Count) { _ in
+    let cipher = mutate(sm9Kem.ciphertext)
+    if let key = try? SM9.decapsulate(cipher, userId: "Bob", userPrivateKey: sm9EncKey, keyLength: fuzzedLength()) {
+        accepted += 1
+        check(cipher == sm9Kem.ciphertext || key.utf8.count % 2 == 0, "bad SM9 key shape")
+    }
+}
+suite("SM9.exchangeRespond", sm9Count) { _ in
+    let result = SM9.exchangeRespond(
+        keyLength: fuzzedLength(), idA: fuzzedId("Alice"), idB: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey,
+        userPrivateKeyB: rng.below(4) == 0 ? mutate(sm9KeyB) : sm9KeyB, randomPrivateB: mutate(sm9InitB.randomPrivate),
+        randomPointB: mutate(sm9InitB.randomPoint), randomPointA: mutate(sm9InitA.randomPoint))
+    check(result.success == (result.sharedKey != nil), "SM9 respond inconsistent result")
+    accepted += result.success ? 1 : 0
+}
+suite("SM9.exchangeConfirm", sm9Count) { _ in
+    let sb = mutate(sm9Respond.sb ?? "")
+    let result = SM9.exchangeConfirm(
+        keyLength: 16, idA: "Alice", idB: "Bob", masterPublicKey: sm9EncMaster.masterPublicKey,
+        userPrivateKeyA: sm9KeyA, randomPrivateA: sm9InitA.randomPrivate, randomPointA: sm9InitA.randomPoint,
+        randomPointB: sm9InitB.randomPoint, sb: sb)
+    accepted += result.success ? 1 : 0
+    if result.success {
+        check(sb == sm9Respond.sb, "SM9 confirm accepted a wrong S_B")
+        check(SM9.exchangeCheck(s2: sm9Respond.s2 ?? "", sa: result.sa ?? ""), "SM9 S_A mismatch")
+    }
+}
+suite("SM9.exchangeCheck", sm9Count * 100) { _ in
+    let sa = mutate(sm9Respond.s2 ?? "")
+    if SM9.exchangeCheck(s2: sm9Respond.s2 ?? "", sa: sa) {
+        check(sa == sm9Respond.s2, "SM9 check accepted a wrong S_A")
+    }
+}
+
 print("finished seed=\(seed) failures=\(failures)")
 exit(failures == 0 ? 0 : 1)

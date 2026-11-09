@@ -96,4 +96,71 @@ bench("SM2 key exchange getSb") {
     ).success ? 1 : 0
 }
 
+// SM9：签名主密钥、加密主密钥各一套，用户 Alice/Bob
+let sm9Sign = try SM9.genSignMasterKey()
+let sm9Enc = try SM9.genEncMasterKey()
+let sm9SignKey = try SM9.genSignUserKey(masterPrivateKey: sm9Sign.masterPrivateKey, userId: "Alice")
+let sm9EncKey = try SM9.genEncUserKey(masterPrivateKey: sm9Enc.masterPrivateKey, userId: "Bob")
+let sm9Signature = try SM9.sign(message, userPrivateKey: sm9SignKey, masterPublicKey: sm9Sign.masterPublicKey)
+let sm9Cipher = try SM9.encrypt(message, userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey)
+let sm9CipherSM4 = try SM9.encrypt(message, userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey, mode: .sm4)
+let sm9Kem = try SM9.encapsulate(userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey, keyLength: 32)
+let sm9ExchangeA = try SM9.genEncUserKey(
+    masterPrivateKey: sm9Enc.masterPrivateKey, userId: "Alice", hid: SM9.hidExchange)
+let sm9ExchangeB = try SM9.genEncUserKey(masterPrivateKey: sm9Enc.masterPrivateKey, userId: "Bob", hid: SM9.hidExchange)
+let sm9InitA = try SM9.exchangeInit(peerId: "Bob", masterPublicKey: sm9Enc.masterPublicKey)
+let sm9InitB = try SM9.exchangeInit(peerId: "Alice", masterPublicKey: sm9Enc.masterPublicKey)
+let sm9Respond = SM9.exchangeRespond(
+    keyLength: 16, idA: "Alice", idB: "Bob", masterPublicKey: sm9Enc.masterPublicKey, userPrivateKeyB: sm9ExchangeB,
+    randomPrivateB: sm9InitB.randomPrivate, randomPointB: sm9InitB.randomPoint, randomPointA: sm9InitA.randomPoint)
+
+// 不带缓存的一次完整配对（Miller 循环 + 最终幂）
+bench("SM9 pairing") { SM9Pairing.pairing(SM9Points.p1, SM9Points.p2).isOne ? 0 : 1 }
+try bench("SM9 sign master keygen") { try SM9.genSignMasterKey().masterPublicKey.utf8.count }
+try bench("SM9 sign user keygen") {
+    try SM9.genSignUserKey(masterPrivateKey: sm9Sign.masterPrivateKey, userId: "Alice").utf8.count
+}
+try bench("SM9 enc user keygen") {
+    try SM9.genEncUserKey(masterPrivateKey: sm9Enc.masterPrivateKey, userId: "Bob").utf8.count
+}
+try bench("SM9 sign") {
+    try SM9.sign(message, userPrivateKey: sm9SignKey, masterPublicKey: sm9Sign.masterPublicKey).utf8.count
+}
+bench("SM9 verify") {
+    SM9.verify(message, signature: sm9Signature, userId: "Alice", masterPublicKey: sm9Sign.masterPublicKey) ? 1 : 0
+}
+try bench("SM9 encrypt") {
+    try SM9.encrypt(message, userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey).utf8.count
+}
+try bench("SM9 decrypt") { try SM9.decrypt(sm9Cipher, userId: "Bob", userPrivateKey: sm9EncKey).count }
+try bench("SM9 encrypt SM4") {
+    try SM9.encrypt(message, userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey, mode: .sm4).utf8.count
+}
+try bench("SM9 decrypt SM4") {
+    try SM9.decrypt(sm9CipherSM4, userId: "Bob", userPrivateKey: sm9EncKey, mode: .sm4).count
+}
+try bench("SM9 encapsulate") {
+    try SM9.encapsulate(userId: "Bob", masterPublicKey: sm9Enc.masterPublicKey, keyLength: 32).key.utf8.count
+}
+try bench("SM9 decapsulate") {
+    try SM9.decapsulate(sm9Kem.ciphertext, userId: "Bob", userPrivateKey: sm9EncKey, keyLength: 32).utf8.count
+}
+try bench("SM9 exchange init") {
+    try SM9.exchangeInit(peerId: "Bob", masterPublicKey: sm9Enc.masterPublicKey).randomPoint.utf8.count
+}
+bench("SM9 exchange respond") {
+    SM9.exchangeRespond(
+        keyLength: 16, idA: "Alice", idB: "Bob", masterPublicKey: sm9Enc.masterPublicKey,
+        userPrivateKeyB: sm9ExchangeB, randomPrivateB: sm9InitB.randomPrivate, randomPointB: sm9InitB.randomPoint,
+        randomPointA: sm9InitA.randomPoint
+    ).success ? 1 : 0
+}
+bench("SM9 exchange confirm") {
+    SM9.exchangeConfirm(
+        keyLength: 16, idA: "Alice", idB: "Bob", masterPublicKey: sm9Enc.masterPublicKey,
+        userPrivateKeyA: sm9ExchangeA, randomPrivateA: sm9InitA.randomPrivate, randomPointA: sm9InitA.randomPoint,
+        randomPointB: sm9InitB.randomPoint, sb: sm9Respond.sb ?? ""
+    ).success ? 1 : 0
+}
+
 print("(sink \(sink))")
