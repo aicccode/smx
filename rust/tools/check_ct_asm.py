@@ -33,6 +33,12 @@ BRANCH_FREE = {
     r"modinv::invert": 2,  # the fixed 59- and 10-iteration counters
     r"hex::encode_scalar": 2,  # the loop over the public length
     r"hex::decode_scalar": 2,  # the loop over the public length
+    # SM9: the field, curve and pairing kernels that secret scalars and keys go through. Their
+    # callers (mul_ct, pow_ct, the Miller loop) branch on loop counters and window positions only.
+    r"sm9::curve::Jacobian<[^>]*>>::(double|add_raw|add|select)$": 0,
+    r"sm9::fp12::Fp12>::(mul|sqr|cyclotomic_sqr|mul_by_line|conj|select|invert)$": 0,
+    r"sm9::pairing::(double_step|add_step)$": 0,
+    r"sm9::tower::Fp4>::invert$": 0,
 }
 SCAN_HOSTS = r"scalar_mul::mul_(base|ct)\b|ECPoint>?::multiply\b"
 

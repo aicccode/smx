@@ -2,7 +2,8 @@
 //!
 //! Run with `cargo bench --bench sm_bench`. Only public APIs of the baseline are
 //! used, so the same file can be run against any older checkout of this crate
-//! for a before/after comparison. Pass a substring as first argument to filter.
+//! for a before/after comparison (drop `bench_sm9` for checkouts without SM9). Pass a
+//! substring as first argument to filter.
 
 use gm_rust::sm2::SM2;
 use gm_rust::sm2::bigint256::BigInt256;
@@ -10,6 +11,7 @@ use gm_rust::sm2::fp::FpElement;
 use gm_rust::sm2::point::{ECPoint, SM2_N};
 use gm_rust::sm3::Sm3;
 use gm_rust::sm4::SM4;
+use gm_rust::sm9::{SM9, SM9_HID_EXCHANGE, SM9EncryptMode};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -154,6 +156,68 @@ fn bench_sm2(b: &Filter) {
     });
 }
 
+fn bench_sm9(b: &Filter) {
+    let (ks, ppub_s) = SM9::gen_sign_master_key();
+    let (ke, ppub_e) = SM9::gen_enc_master_key();
+    let ds = SM9::gen_sign_user_key(&ks, "Alice").unwrap();
+    let de = SM9::gen_enc_user_key(&ke, "Bob").unwrap();
+    let msg = "Chinese IBS standard";
+    let plain = payload(32);
+    let sig = SM9::sign(msg, &ds, &ppub_s).unwrap();
+    let stream = SM9::encrypt(&plain, "Bob", &ppub_e, SM9EncryptMode::Stream).unwrap();
+    let block = SM9::encrypt(&plain, "Bob", &ppub_e, SM9EncryptMode::Sm4).unwrap();
+    let (_, kem) = SM9::encapsulate("Bob", &ppub_e, 32).unwrap();
+
+    b.run("sm9/sign_master_keygen", 0, || {
+        black_box(SM9::gen_sign_master_key());
+    });
+    b.run("sm9/sign_user_key", 0, || {
+        black_box(SM9::gen_sign_user_key(&ks, black_box("Alice")).unwrap());
+    });
+    b.run("sm9/enc_user_key", 0, || {
+        black_box(SM9::gen_enc_user_key(&ke, black_box("Bob")).unwrap());
+    });
+    b.run("sm9/sign", 0, || {
+        black_box(SM9::sign(msg, &ds, &ppub_s).unwrap());
+    });
+    b.run("sm9/verify", 0, || {
+        assert!(SM9::verify(msg, black_box(&sig), "Alice", &ppub_s));
+    });
+    b.run("sm9/encrypt_32B", 0, || {
+        black_box(SM9::encrypt(&plain, "Bob", &ppub_e, SM9EncryptMode::Stream).unwrap());
+    });
+    b.run("sm9/decrypt_32B", 0, || {
+        black_box(SM9::decrypt(&stream, "Bob", &de, SM9EncryptMode::Stream).unwrap());
+    });
+    b.run("sm9/encrypt_sm4_32B", 0, || {
+        black_box(SM9::encrypt(&plain, "Bob", &ppub_e, SM9EncryptMode::Sm4).unwrap());
+    });
+    b.run("sm9/decrypt_sm4_32B", 0, || {
+        black_box(SM9::decrypt(&block, "Bob", &de, SM9EncryptMode::Sm4).unwrap());
+    });
+    b.run("sm9/encapsulate", 0, || {
+        black_box(SM9::encapsulate("Bob", &ppub_e, 32).unwrap());
+    });
+    b.run("sm9/decapsulate", 0, || {
+        black_box(SM9::decapsulate(&kem, "Bob", &de, 32).unwrap());
+    });
+
+    let (id_a, id_b) = ("Alice", "Bob");
+    let de_a = SM9::gen_enc_user_key_with_hid(&ke, id_a, SM9_HID_EXCHANGE).unwrap();
+    let de_b = SM9::gen_enc_user_key_with_hid(&ke, id_b, SM9_HID_EXCHANGE).unwrap();
+    b.run("sm9/key_exchange_full", 0, || {
+        let (r_a, ra) = SM9::exchange_init(id_b, &ppub_e).unwrap();
+        let (r_b, rb) = SM9::exchange_init(id_a, &ppub_e).unwrap();
+        let resp = SM9::exchange_respond(16, id_a, id_b, &ppub_e, &de_b, &r_b, &rb, &ra);
+        let s_b = resp.s_b.as_ref().unwrap();
+        let conf = SM9::exchange_confirm(16, id_a, id_b, &ppub_e, &de_a, &r_a, &ra, &rb, s_b);
+        assert!(SM9::exchange_check(
+            resp.s_2.as_ref().unwrap(),
+            conf.s_a.as_ref().unwrap()
+        ));
+    });
+}
+
 fn hex_decode(hex: &str) -> Vec<u8> {
     (0..hex.len() / 2)
         .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
@@ -212,5 +276,6 @@ fn main() {
     bench_sm3(&b);
     bench_sm4(&b);
     bench_sm2(&b);
+    bench_sm9(&b);
     bench_primitives(&b);
 }

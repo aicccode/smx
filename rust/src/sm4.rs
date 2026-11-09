@@ -480,6 +480,26 @@ impl SM4 {
     }
 }
 
+/// SM4-ECB in place over whole blocks, for SM9's block-cipher encryption mode. Uses the portable
+/// rounds with the Boolean-circuit S-box, so it is constant time on every target; SM9 messages are
+/// short, so the hardware backends would gain little here.
+pub(crate) fn ecb_crypt(key: &[u8; 16], buf: &mut [u8], decrypt: bool) {
+    debug_assert_eq!(buf.len() % BLOCK_LEN, 0);
+    let mut rk = expand_key(key, sbox::sbox_word);
+    if decrypt {
+        rk.reverse();
+    }
+    for block in buf.chunks_exact_mut(BLOCK_LEN) {
+        crypt_block_soft(&rk, block);
+    }
+    wipe(&mut rk, [0; 32]);
+}
+
+/// PKCS#7 padding check for SM9: 1 or 0 for the verdict, and the unpadded length.
+pub(crate) fn pkcs7_unpad_len(input: &[u8]) -> (u64, usize) {
+    pkcs7_check(input)
+}
+
 /// Removes the padding from decrypted blocks and returns the text, or the one error.
 ///
 /// The UTF-8 validation runs on the whole buffer, unconditionally and before anything depends on
