@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 from operator import itemgetter
 
@@ -537,6 +537,12 @@ def mul_shamir(s: int, t: int, x: int, y: int) -> Jacobian:
     return _run_additions(additions)
 
 
+# Other modules (SM9) register functions here that drop their own per-key caches.
+cache_clearers: list[Callable[[], None]] = []
+
+
 def clear_caches() -> None:
     """Forget per-key tables. The generator tables stay, as they are not per key."""
     _remembered_key_tables.cache_clear()
+    for clear in cache_clearers:
+        clear()

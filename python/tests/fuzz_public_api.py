@@ -41,6 +41,21 @@ from smx import (
     sm2_sign,
     sm2_verify,
     sm4,
+    sm9_decapsulate,
+    sm9_decrypt,
+    sm9_decrypt_text,
+    sm9_enc_master_public_key,
+    sm9_encapsulate,
+    sm9_encrypt,
+    sm9_exchange_check,
+    sm9_exchange_confirm,
+    sm9_exchange_init,
+    sm9_exchange_respond,
+    sm9_gen_enc_user_key,
+    sm9_gen_sign_user_key,
+    sm9_sign,
+    sm9_sign_master_public_key,
+    sm9_verify,
 )
 from smx.sm2 import user_sm3_z
 
@@ -61,6 +76,23 @@ EXCHANGE = sm2_get_sb(16, PUBLIC_POINT, R_POINT, OTHER_POINT, 7, R_POINT, 9, "a"
 CIPHER = SM4()
 CIPHER.set_key(bytes(range(16)), bytes(16))
 SM4_TEXT = CIPHER.encrypt("some valid text")
+SM9_SIGN_MASTER = "1f2e3d4c5b6a79880102030405060708090a0b0c0d0e0f101112131415161718"
+SM9_ENC_MASTER = "2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819"
+SM9_SIGN_PUBLIC = sm9_sign_master_public_key(SM9_SIGN_MASTER)
+SM9_ENC_PUBLIC = sm9_enc_master_public_key(SM9_ENC_MASTER)
+SM9_SIGN_KEY = sm9_gen_sign_user_key(SM9_SIGN_MASTER, "Alice")
+SM9_ENC_KEY = sm9_gen_enc_user_key(SM9_ENC_MASTER, "Bob")
+SM9_KEY_A = sm9_gen_enc_user_key(SM9_ENC_MASTER, "Alice", 2)
+SM9_KEY_B = sm9_gen_enc_user_key(SM9_ENC_MASTER, "Bob", 2)
+SM9_SIGNATURE = sm9_sign(b"message", SM9_SIGN_KEY, SM9_SIGN_PUBLIC)
+SM9_CIPHERTEXT = sm9_encrypt(b"message", "Bob", SM9_ENC_PUBLIC)
+SM9_KEM = sm9_encapsulate("Bob", SM9_ENC_PUBLIC, 16)[1]
+SM9_RA_SECRET, SM9_RA = sm9_exchange_init("Bob", SM9_ENC_PUBLIC)
+SM9_RB_SECRET, SM9_RB = sm9_exchange_init("Alice", SM9_ENC_PUBLIC)
+SM9_SIDE_B = sm9_exchange_respond(
+    16, "Alice", "Bob", SM9_ENC_PUBLIC, SM9_KEY_B, SM9_RB_SECRET, SM9_RB, SM9_RA
+)
+SM9_MODES = ("stream", "sm4", "STREAM", "", None, 1)
 
 WEIRD_TEXT = (
     "",
@@ -458,19 +490,169 @@ def f_sm2_check_sa(rng):
     is_type(result, bool)
 
 
+def sm9_data(rng: random.Random, valid: str = "message") -> object:
+    roll = rng.random()
+    if roll < 0.4:
+        return valid
+    if roll < 0.6:
+        return valid.encode()
+    if roll < 0.8:
+        return any_bytes(rng, valid.encode())
+    return any_text(rng, valid)
+
+
+def sm9_hid(rng: random.Random, valid: int) -> object:
+    return valid if rng.random() < 0.7 else any_int(rng)
+
+
+def sm9_mode(rng: random.Random) -> object:
+    return rng.choice(SM9_MODES[:2]) if rng.random() < 0.8 else rng.choice(SM9_MODES)
+
+
+def f_sm9_master_public_key(rng):
+    function = rng.choice((sm9_sign_master_public_key, sm9_enc_master_public_key))
+    is_type(function(any_text(rng, SM9_SIGN_MASTER)), str)
+
+
+def f_sm9_gen_user_key(rng):
+    function = rng.choice((sm9_gen_sign_user_key, sm9_gen_enc_user_key))
+    result = function(
+        any_text(rng, SM9_ENC_MASTER), sm9_data(rng, "Bob"), sm9_hid(rng, 3)
+    )
+    is_type(result, str)
+
+
+def f_sm9_sign(rng):
+    result = sm9_sign(
+        sm9_data(rng),
+        any_text(rng, SM9_SIGN_KEY),
+        SM9_SIGN_PUBLIC if rng.random() < 0.5 else any_text(rng, SM9_SIGN_PUBLIC),
+    )
+    is_type(result, str)
+
+
+def f_sm9_verify(rng):
+    result = sm9_verify(
+        sm9_data(rng),
+        any_text(rng, SM9_SIGNATURE),
+        sm9_data(rng, "Alice"),
+        SM9_SIGN_PUBLIC if rng.random() < 0.5 else any_text(rng, SM9_SIGN_PUBLIC),
+        sm9_hid(rng, 1),
+    )
+    is_type(result, bool)
+
+
+def f_sm9_encrypt(rng):
+    result = sm9_encrypt(
+        sm9_data(rng),
+        sm9_data(rng, "Bob"),
+        SM9_ENC_PUBLIC if rng.random() < 0.5 else any_text(rng, SM9_ENC_PUBLIC),
+        sm9_hid(rng, 3),
+        sm9_mode(rng),
+    )
+    is_type(result, str)
+
+
+def f_sm9_decrypt(rng):
+    function = rng.choice((sm9_decrypt, sm9_decrypt_text))
+    result = function(
+        any_text(rng, SM9_CIPHERTEXT),
+        sm9_data(rng, "Bob"),
+        SM9_ENC_KEY if rng.random() < 0.5 else any_text(rng, SM9_ENC_KEY),
+        sm9_mode(rng),
+    )
+    is_type(result, bytes if function is sm9_decrypt else str)
+
+
+def f_sm9_encapsulate(rng):
+    key_len = 16 if rng.random() < 0.7 else any_int(rng)
+    result = sm9_encapsulate(
+        sm9_data(rng, "Bob"),
+        SM9_ENC_PUBLIC if rng.random() < 0.5 else any_text(rng, SM9_ENC_PUBLIC),
+        key_len,
+        sm9_hid(rng, 3),
+    )
+    is_type(result, tuple)
+
+
+def f_sm9_decapsulate(rng):
+    key_len = 16 if rng.random() < 0.7 else any_int(rng)
+    result = sm9_decapsulate(
+        any_text(rng, SM9_KEM),
+        sm9_data(rng, "Bob"),
+        SM9_ENC_KEY if rng.random() < 0.5 else any_text(rng, SM9_ENC_KEY),
+        key_len,
+    )
+    is_type(result, str)
+
+
+def f_sm9_exchange_init(rng):
+    result = sm9_exchange_init(
+        sm9_data(rng, "Bob"),
+        SM9_ENC_PUBLIC if rng.random() < 0.5 else any_text(rng, SM9_ENC_PUBLIC),
+        sm9_hid(rng, 2),
+    )
+    is_type(result, tuple)
+
+
+def f_sm9_exchange_respond(rng):
+    keep = rng.random() < 0.3
+    result = sm9_exchange_respond(
+        16 if rng.random() < 0.7 else any_int(rng),
+        sm9_data(rng, "Alice"),
+        sm9_data(rng, "Bob"),
+        SM9_ENC_PUBLIC if keep else any_text(rng, SM9_ENC_PUBLIC),
+        SM9_KEY_B if keep else any_text(rng, SM9_KEY_B),
+        any_text(rng, SM9_RB_SECRET),
+        any_text(rng, SM9_RB),
+        any_text(rng, SM9_RA),
+    )
+    is_type(result, smx.SM9ExchangeResult)
+
+
+def f_sm9_exchange_confirm(rng):
+    keep = rng.random() < 0.3
+    result = sm9_exchange_confirm(
+        16 if rng.random() < 0.7 else any_int(rng),
+        sm9_data(rng, "Alice"),
+        sm9_data(rng, "Bob"),
+        SM9_ENC_PUBLIC if keep else any_text(rng, SM9_ENC_PUBLIC),
+        SM9_KEY_A if keep else any_text(rng, SM9_KEY_A),
+        any_text(rng, SM9_RA_SECRET),
+        any_text(rng, SM9_RA),
+        any_text(rng, SM9_RB),
+        any_text(rng, SM9_SIDE_B.s_b),
+    )
+    is_type(result, smx.SM9ExchangeResult)
+
+
+def f_sm9_exchange_check(rng):
+    result = sm9_exchange_check(
+        any_text(rng, SM9_SIDE_B.s_2), any_text(rng, SM9_SIDE_B.s_2)
+    )
+    is_type(result, bool)
+
+
 def f_set_key_cache_enabled(rng):
     smx.set_key_cache_enabled(rng.choice((True, False, None, 0, "x", 1.0)))
     smx.set_key_cache_enabled(True)
 
 
 # Functions that may never raise, and those that may only raise ValueError.
-NEVER_RAISE = {f_sm2_verify, f_sm2_check_sa}
-ONLY_VALUE_ERROR = {f_sm2_get_sb, f_sm2_get_sa}
+NEVER_RAISE = {f_sm2_verify, f_sm2_check_sa, f_sm9_verify, f_sm9_exchange_check}
+ONLY_VALUE_ERROR = {
+    f_sm2_get_sb,
+    f_sm2_get_sa,
+    f_sm9_exchange_respond,
+    f_sm9_exchange_confirm,
+}
 ALL_FUNCTIONS = tuple(
     value for name, value in sorted(globals().items()) if name.startswith("f_")
 )
 # This function takes no input, so there is nothing malformed to feed it.
 KEY_PAIR_CASES = 2000
+# SM9 cases that get through validation cost a pairing or a scalar multiplication.
+SM9_CASES = 3000
 
 
 def run_function(arguments):
@@ -484,6 +666,8 @@ def run_function(arguments):
         allowed = ()
     if function is f_sm2_gen_key_pair:
         cases = min(cases, KEY_PAIR_CASES)
+    if name.startswith("f_sm9_"):
+        cases = min(cases, SM9_CASES)
     rng = random.Random(f"{seed}/{name}")
     failures = []
     outcomes = {"returned": 0, "rejected": 0}
@@ -507,13 +691,50 @@ def run_function(arguments):
     return name, cases, outcomes, failures, seconds, slowest
 
 
+# SM9 round trips cost tens of milliseconds, so only every few rounds runs one.
+SM9_ROUND_TRIP_EVERY = 10
+
+
+def sm9_round_trip(rng: random.Random, text: str, user: str, size: int) -> None:
+    sign_key = sm9_gen_sign_user_key(SM9_SIGN_MASTER, user)
+    signature = sm9_sign(text, sign_key, SM9_SIGN_PUBLIC)
+    if not sm9_verify(text, signature, user, SM9_SIGN_PUBLIC):
+        raise AssertionError("SM9 signature round trip")
+    if sm9_verify(text + "x", signature, user, SM9_SIGN_PUBLIC):
+        raise AssertionError("SM9 signature accepted another message")
+    enc_key = sm9_gen_enc_user_key(SM9_ENC_MASTER, user)
+    mode = rng.choice(("stream", "sm4"))
+    ciphertext = sm9_encrypt(text, user, SM9_ENC_PUBLIC, mode=mode)
+    if sm9_decrypt_text(ciphertext, user, enc_key, mode) != text:
+        raise AssertionError("SM9 encryption round trip")
+    key, kem = sm9_encapsulate(user, SM9_ENC_PUBLIC, size)
+    if sm9_decapsulate(kem, user, enc_key, size) != key:
+        raise AssertionError("SM9 KEM round trip")
+    key_a = sm9_gen_enc_user_key(SM9_ENC_MASTER, user, 2)
+    r_a, big_r_a = sm9_exchange_init("b", SM9_ENC_PUBLIC)
+    r_b, big_r_b = sm9_exchange_init(user, SM9_ENC_PUBLIC)
+    key_b = sm9_gen_enc_user_key(SM9_ENC_MASTER, "b", 2)
+    side_b = sm9_exchange_respond(
+        size, user, "b", SM9_ENC_PUBLIC, key_b, r_b, big_r_b, big_r_a
+    )
+    side_a = sm9_exchange_confirm(
+        size, user, "b", SM9_ENC_PUBLIC, key_a, r_a, big_r_a, big_r_b, side_b.s_b
+    )
+    if not (
+        side_a.success and side_b.success and side_a.shared_key == side_b.shared_key
+    ):
+        raise AssertionError("SM9 key exchange")
+    if not sm9_exchange_check(side_b.s_2, side_a.s_a):
+        raise AssertionError("SM9 key exchange confirmation")
+
+
 def run_round_trips(arguments):
     """Check valid-input properties with random keys and messages."""
     rounds, seed = arguments
     rng = random.Random(f"{seed}/round-trip")
     alphabet = "abc 012é密€😀"
     started = time.perf_counter()
-    for _ in range(rounds):
+    for done in range(rounds):
         private, public = sm2_gen_key_pair()
         text = "".join(rng.choice(alphabet) for _ in range(rng.randrange(1, 200)))
         user = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 40)))
@@ -558,6 +779,8 @@ def run_round_trips(arguments):
             side_b.v, side_b.za, side_b.zb, big_ra, big_rb, bytes.fromhex(side_a.sa)
         ):
             raise AssertionError("key exchange confirmation")
+        if done % SM9_ROUND_TRIP_EVERY == 0:
+            sm9_round_trip(rng, text, user, size)
     return rounds, time.perf_counter() - started
 
 
