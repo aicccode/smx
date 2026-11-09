@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gm-python"
 version = "1.0.0"
-description = "SM2, SM3 and SM4 commercial cryptography algorithms with no third-party dependencies"
+description = "SM2, SM3, SM4 and SM9 commercial cryptography algorithms with no third-party dependencies"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 dependencies = []

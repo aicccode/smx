@@ -1,7 +1,8 @@
-"""SM2, SM3 and SM4 commercial cryptography algorithms with no third-party dependencies.
+"""SM2, SM3, SM4 and SM9 commercial cryptography algorithms with no third-party dependencies.
 
 Per-key caches: by default the library remembers public keys, Z values and point tables
 for recently used keys, which makes repeated signing, verifying and encrypting faster.
+SM9 keeps decoded master public keys and their pairing values the same way.
 Private keys are never stored; the public-key cache is keyed by their SHA-256 digest.
 The caches do reveal, through timing and to anyone who can read process memory, which
 keys were used recently. To turn them off, call ``smx.set_key_cache_enabled(False)`` or
@@ -31,6 +32,33 @@ from .sm2 import (
 )
 from .sm3 import SM3
 from .sm4 import SM4
+from .sm9 import (
+    SM9_HID_ENCRYPT,
+    SM9_HID_EXCHANGE,
+    SM9_HID_SIGN,
+    SM9_MODE_SM4,
+    SM9_MODE_STREAM,
+    SM9_N,
+    SM9_Q,
+    SM9ExchangeResult,
+    sm9_decapsulate,
+    sm9_decrypt,
+    sm9_decrypt_text,
+    sm9_enc_master_public_key,
+    sm9_encapsulate,
+    sm9_encrypt,
+    sm9_exchange_check,
+    sm9_exchange_confirm,
+    sm9_exchange_init,
+    sm9_exchange_respond,
+    sm9_gen_enc_master_key,
+    sm9_gen_enc_user_key,
+    sm9_gen_sign_master_key,
+    sm9_gen_sign_user_key,
+    sm9_sign,
+    sm9_sign_master_public_key,
+    sm9_verify,
+)
 
 __all__ = [
     "SM2_A",
@@ -41,8 +69,16 @@ __all__ = [
     "SM2_P",
     "SM3",
     "SM4",
+    "SM9_HID_ENCRYPT",
+    "SM9_HID_EXCHANGE",
+    "SM9_HID_SIGN",
+    "SM9_MODE_SM4",
+    "SM9_MODE_STREAM",
+    "SM9_N",
+    "SM9_Q",
     "ECPoint",
     "SM2KeySwapParams",
+    "SM9ExchangeResult",
     "bytes_to_hex",
     "clear_key_caches",
     "hex_to_bytes",
@@ -57,4 +93,21 @@ __all__ = [
     "sm2_get_sb",
     "sm2_sign",
     "sm2_verify",
+    "sm9_decapsulate",
+    "sm9_decrypt",
+    "sm9_decrypt_text",
+    "sm9_enc_master_public_key",
+    "sm9_encapsulate",
+    "sm9_encrypt",
+    "sm9_exchange_check",
+    "sm9_exchange_confirm",
+    "sm9_exchange_init",
+    "sm9_exchange_respond",
+    "sm9_gen_enc_master_key",
+    "sm9_gen_enc_user_key",
+    "sm9_gen_sign_master_key",
+    "sm9_gen_sign_user_key",
+    "sm9_sign",
+    "sm9_sign_master_public_key",
+    "sm9_verify",
 ]

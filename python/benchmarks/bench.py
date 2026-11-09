@@ -142,6 +142,78 @@ def sm2_cases(smx, clear_caches) -> Iterator[tuple[str, Callable[[], object], in
     yield "sm2 key exchange (cold)", cold(exchange), 0
 
 
+def sm9_cases(smx, clear_caches) -> Iterator[tuple[str, Callable[[], object], int]]:
+    """SM9 with fixed master keys; skipped for a checkout without SM9."""
+    if not hasattr(smx, "sm9_sign"):
+        return
+    sign_master = "1f2e3d4c5b6a79880102030405060708090a0b0c0d0e0f101112131415161718"
+    enc_master = "2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819"
+    sign_public = smx.sm9_sign_master_public_key(sign_master)
+    enc_public = smx.sm9_enc_master_public_key(enc_master)
+    sign_key = smx.sm9_gen_sign_user_key(sign_master, ID_A)
+    enc_key = smx.sm9_gen_enc_user_key(enc_master, ID_B)
+    key_a = smx.sm9_gen_enc_user_key(enc_master, ID_A, smx.SM9_HID_EXCHANGE)
+    key_b = smx.sm9_gen_enc_user_key(enc_master, ID_B, smx.SM9_HID_EXCHANGE)
+    message = MESSAGE.encode()
+    signature = smx.sm9_sign(message, sign_key, sign_public)
+    ciphertext = smx.sm9_encrypt(message, ID_B, enc_public)
+    block = smx.sm9_encrypt(message, ID_B, enc_public, mode=smx.SM9_MODE_SM4)
+    kem = smx.sm9_encapsulate(ID_B, enc_public, 32)[1]
+
+    def sign() -> str:
+        return smx.sm9_sign(message, sign_key, sign_public)
+
+    def verify() -> None:
+        assert smx.sm9_verify(message, signature, ID_A, sign_public)
+
+    def encrypt() -> str:
+        return smx.sm9_encrypt(message, ID_B, enc_public)
+
+    def exchange() -> None:
+        r_a, big_r_a = smx.sm9_exchange_init(ID_B, enc_public)
+        r_b, big_r_b = smx.sm9_exchange_init(ID_A, enc_public)
+        side_b = smx.sm9_exchange_respond(
+            16, ID_A, ID_B, enc_public, key_b, r_b, big_r_b, big_r_a
+        )
+        side_a = smx.sm9_exchange_confirm(
+            16, ID_A, ID_B, enc_public, key_a, r_a, big_r_a, big_r_b, side_b.s_b
+        )
+        assert side_a.success and side_a.shared_key == side_b.shared_key
+        assert smx.sm9_exchange_check(side_b.s_2, side_a.s_a)
+
+    def cold(func: Callable[[], object]) -> Callable[[], object]:
+        def run() -> object:
+            clear_caches()
+            return func()
+
+        return run
+
+    yield "sm9 sign master keygen", smx.sm9_gen_sign_master_key, 0
+    yield "sm9 enc master keygen", smx.sm9_gen_enc_master_key, 0
+    yield (
+        "sm9 sign user key",
+        lambda: smx.sm9_gen_sign_user_key(sign_master, ID_A),
+        0,
+    )
+    yield "sm9 enc user key", lambda: smx.sm9_gen_enc_user_key(enc_master, ID_B), 0
+    yield "sm9 sign", sign, 0
+    yield "sm9 sign (cold)", cold(sign), 0
+    yield "sm9 verify", verify, 0
+    yield "sm9 verify (cold)", cold(verify), 0
+    yield "sm9 encrypt", encrypt, 0
+    yield "sm9 encrypt (cold)", cold(encrypt), 0
+    yield "sm9 decrypt", lambda: smx.sm9_decrypt(ciphertext, ID_B, enc_key), 0
+    yield (
+        "sm9 decrypt sm4",
+        lambda: smx.sm9_decrypt(block, ID_B, enc_key, smx.SM9_MODE_SM4),
+        0,
+    )
+    yield "sm9 encapsulate", lambda: smx.sm9_encapsulate(ID_B, enc_public, 32), 0
+    yield "sm9 decapsulate", lambda: smx.sm9_decapsulate(kem, ID_B, enc_key, 32), 0
+    yield "sm9 key exchange (both sides)", exchange, 0
+    yield "sm9 key exchange (cold)", cold(exchange), 0
+
+
 def format_result(name: str, seconds: float, size: int) -> str:
     rate = f"{size / seconds / MIB:10.3f} MiB/s" if size else " " * 16
     return f"{name:32s} {seconds * 1e6:14.2f} us/op {1 / seconds:12.1f} op/s {rate}"
@@ -168,7 +240,12 @@ def main() -> int:
     )
 
     results: dict[str, float] = {}
-    groups = (sm3_cases(smx), sm4_cases(smx, args.filter), sm2_cases(smx, clear_caches))
+    groups = (
+        sm3_cases(smx),
+        sm4_cases(smx, args.filter),
+        sm2_cases(smx, clear_caches),
+        sm9_cases(smx, clear_caches),
+    )
     for group in groups:
         for name, func, size in group:
             if args.filter in name:
