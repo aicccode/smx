@@ -1,5 +1,5 @@
 /**
- * Benchmark for SM2/SM3/SM4 using only the public API and no dependencies.
+ * Benchmark for SM2/SM3/SM4/SM9 using only the public API and no dependencies.
  *
  *   node bench/bench.js [libraryRoot] [--rounds=N] [--ms=N] [--json] [--only=regex]
  *
@@ -30,6 +30,7 @@ const { SM3 } = await load('sm3/sm3.js')
 const { SM4 } = await load('sm4/sm4.js')
 const { getSM2 } = await load('sm2/sm2.js')
 const util = await load('sm2/utils.js')
+const sm9Module = await load('sm9/sm9.js').catch(() => null)
 
 let sink = 0
 const results = []
@@ -114,6 +115,65 @@ bench(
   'sm2 key exchange',
   () => sm2.getSb(16, PA, RAH, IDA, IDB, DB, PB, RB, RBH).Kb.length,
 )
+
+// ---- SM9 (skipped when libraryRoot has no SM9) ----
+if (sm9Module !== null) {
+  const sm9 = sm9Module.getSM9()
+  const KS = '1f2e3d4c5b6a79880102030405060708090a0b0c0d0e0f101112131415161718'
+  const KE = '2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819'
+  const MPK_S = sm9.sm9SignMasterPublicKey(KS)
+  const MPK_E = sm9.sm9EncMasterPublicKey(KE)
+  const DS = sm9.sm9GenSignUserKey(KS, 'alice@example.com')
+  const DE = sm9.sm9GenEncUserKey(KE, 'bob@example.com')
+  const SIG9 = sm9.sm9Sign(MSG, DS, MPK_S)
+  const CT9 = sm9.sm9Encrypt(MSG, 'bob@example.com', MPK_E)
+  const CT9_SM4 = sm9.sm9Encrypt(MSG, 'bob@example.com', MPK_E, 3, 'sm4')
+  const KEM9 = sm9.sm9Encapsulate('bob@example.com', MPK_E, 32)
+  const DA9 = sm9.sm9GenEncUserKey(KE, IDA, 2)
+  const DB9 = sm9.sm9GenEncUserKey(KE, IDB, 2)
+  const XA = sm9.sm9ExchangeInit(IDB, MPK_E)
+  const XB = sm9.sm9ExchangeInit(IDA, MPK_E)
+  const XR = sm9.sm9ExchangeRespond(16, IDA, IDB, MPK_E, DB9, XB.r, XB.R, XA.R)
+
+  bench('sm9 sign master keygen', () => sm9.sm9GenSignMasterKey().publicKey)
+  bench('sm9 sign user key', () =>
+    sm9.sm9GenSignUserKey(KS, 'alice@example.com'),
+  )
+  bench('sm9 enc user key', () => sm9.sm9GenEncUserKey(KE, 'bob@example.com'))
+  bench('sm9 sign', () => sm9.sm9Sign(MSG, DS, MPK_S))
+  bench('sm9 verify', () =>
+    sm9.sm9Verify(MSG, SIG9, 'alice@example.com', MPK_S),
+  )
+  bench('sm9 encrypt', () => sm9.sm9Encrypt(MSG, 'bob@example.com', MPK_E))
+  bench('sm9 decrypt', () => sm9.sm9Decrypt(CT9, 'bob@example.com', DE).length)
+  bench('sm9 encrypt sm4', () =>
+    sm9.sm9Encrypt(MSG, 'bob@example.com', MPK_E, 3, 'sm4'),
+  )
+  bench(
+    'sm9 decrypt sm4',
+    () => sm9.sm9Decrypt(CT9_SM4, 'bob@example.com', DE, 'sm4').length,
+  )
+  bench(
+    'sm9 encapsulate',
+    () => sm9.sm9Encapsulate('bob@example.com', MPK_E, 32).key,
+  )
+  bench('sm9 decapsulate', () =>
+    sm9.sm9Decapsulate(KEM9.ciphertext, 'bob@example.com', DE, 32),
+  )
+  bench('sm9 exchange init', () => sm9.sm9ExchangeInit(IDB, MPK_E).R)
+  bench(
+    'sm9 exchange respond',
+    () =>
+      sm9.sm9ExchangeRespond(16, IDA, IDB, MPK_E, DB9, XB.r, XB.R, XA.R)
+        .success,
+  )
+  bench(
+    'sm9 exchange confirm',
+    () =>
+      sm9.sm9ExchangeConfirm(16, IDA, IDB, MPK_E, DA9, XA.r, XA.R, XB.R, XR.sB)
+        .success,
+  )
+}
 
 if (JSON_OUT) console.log(JSON.stringify(results))
 if (sink === 0.5) console.log(sink)
