@@ -84,6 +84,7 @@ if (isMainThread) {
 
 async function runWorker({ cases, seed, shard, shards, only, shared }) {
   const { getSM2 } = await import('../sm2/sm2.js')
+  const { getSM9 } = await import('../sm9/sm9.js')
   const { SM3, getSM3 } = await import('../sm3/sm3.js')
   const { SM4, getSM4 } = await import('../sm4/sm4.js')
   const { BigInteger, SecureRandom } = await import('../sm2/biginteger.js')
@@ -497,6 +498,92 @@ async function runWorker({ cases, seed, shard, shards, only, shared }) {
     () => [lenArg(), newPoint(), junk(), junk()],
   )
 
+  // ---- SM9 ----
+  const sm9 = getSM9()
+  const K9S = '1f2e3d4c5b6a79880102030405060708090a0b0c0d0e0f101112131415161718'
+  const K9E = '2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819'
+  const MPK9S = sm9.sm9SignMasterPublicKey(K9S)
+  const MPK9E = sm9.sm9EncMasterPublicKey(K9E)
+  const DS9 = sm9.sm9GenSignUserKey(K9S, 'id')
+  const DE9 = sm9.sm9GenEncUserKey(K9E, 'id')
+  const DX9A = sm9.sm9GenEncUserKey(K9E, 'a', 2)
+  const DX9B = sm9.sm9GenEncUserKey(K9E, 'b', 2)
+  const SIG9 = sm9.sm9Sign('message', DS9, MPK9S)
+  const CT9 = sm9.sm9Encrypt('plaintext', 'id', MPK9E)
+  const CT9_SM4 = sm9.sm9Encrypt('plaintext', 'id', MPK9E, 3, 'sm4')
+  const KEM9 = sm9.sm9Encapsulate('id', MPK9E, 16)
+  const XA9 = sm9.sm9ExchangeInit('b', MPK9E)
+  const XB9 = sm9.sm9ExchangeInit('a', MPK9E)
+  const XR9 = sm9.sm9ExchangeRespond(
+    16,
+    'a',
+    'b',
+    MPK9E,
+    DX9B,
+    XB9.r,
+    XB9.R,
+    XA9.R,
+  )
+  VALID_HEX.push(
+    K9S,
+    MPK9S,
+    MPK9E,
+    DS9,
+    DE9,
+    SIG9,
+    CT9,
+    KEM9.ciphertext,
+    XR9.sB,
+  )
+  const T9 = 'SM9.'
+  const pick9 = (valid) => () =>
+    chance(40) ? pick(valid) : chance(50) ? mutateHex(pick(valid)) : junk()
+  const mk9 = pick9([K9S, K9E])
+  const mpkS9 = pick9([MPK9S])
+  const mpkE9 = pick9([MPK9E])
+  const ds9 = pick9([DS9])
+  const de9 = pick9([DE9, DX9A, DX9B])
+  const sig9 = pick9([SIG9])
+  const ct9 = pick9([CT9, CT9_SM4])
+  const kem9 = pick9([KEM9.ciphertext])
+  const g1x9 = pick9([XA9.R, XB9.R, MPK9E])
+  const r9 = pick9([XA9.r, XB9.r, K9S])
+  const sb9 = pick9([XR9.sB, XR9.s2])
+  const hid9 = () => (chance(70) ? pick([1, 2, 3, 0, 255]) : junk())
+  const mode9 = () => (chance(70) ? pick(['stream', 'sm4']) : junk())
+  const len9 = () => (chance(60) ? pick([1, 16, 33]) : junk())
+  const id9 = () => (chance(50) ? pick(['id', 'a', 'b', '']) : idArg())
+  const sm9Method = (name, args, boolean = false) =>
+    method(T9 + name, () => sm9, name, args, boolean)
+  sm9Method('sm9GenSignMasterKey', () => [])
+  sm9Method('sm9GenEncMasterKey', () => [])
+  sm9Method('sm9SignMasterPublicKey', () => [mk9()])
+  sm9Method('sm9EncMasterPublicKey', () => [mk9()])
+  sm9Method('sm9GenSignUserKey', () => [mk9(), id9(), hid9()])
+  sm9Method('sm9GenEncUserKey', () => [mk9(), id9(), hid9()])
+  sm9Method('sm9Sign', () => [msgArg(), ds9(), mpkS9()])
+  sm9Method('sm9Verify', () => [msgArg(), sig9(), id9(), mpkS9(), hid9()], true)
+  sm9Method('sm9Encrypt', () => [msgArg(), id9(), mpkE9(), hid9(), mode9()])
+  sm9Method('sm9Decrypt', () => [ct9(), id9(), de9(), mode9()])
+  sm9Method('sm9DecryptString', () => [ct9(), id9(), de9(), mode9()])
+  sm9Method('sm9Encapsulate', () => [id9(), mpkE9(), len9(), hid9()])
+  sm9Method('sm9Decapsulate', () => [kem9(), id9(), de9(), len9()])
+  sm9Method('sm9ExchangeInit', () => [id9(), mpkE9(), hid9()])
+  // The exchange steps report failure in the result and must never throw.
+  fn(
+    T9 + 'sm9ExchangeRespond',
+    (...a) => sm9.sm9ExchangeRespond(...a).success,
+    () => [len9(), id9(), id9(), mpkE9(), de9(), r9(), g1x9(), g1x9()],
+    true,
+  )
+  fn(
+    T9 + 'sm9ExchangeConfirm',
+    (...a) => sm9.sm9ExchangeConfirm(...a).success,
+    () => [len9(), id9(), id9(), mpkE9(), de9(), r9(), g1x9(), g1x9(), sb9()],
+    true,
+  )
+  sm9Method('sm9ExchangeCheck', () => [sb9(), sb9()], true)
+
   // ---- sm2/utils ----
   fn('utils.getGlobalCurve', util.getGlobalCurve, () => [])
   fn('utils.generateEcparam', util.generateEcparam, () => [])
@@ -824,13 +911,17 @@ async function runWorker({ cases, seed, shard, shards, only, shared }) {
     if (!BigInteger.ZERO.equals(new BigInteger('0', 16))) return 'ZERO'
     if (!BigInteger.ONE.equals(new BigInteger('1', 16))) return 'ONE'
     if (w !== 127 || !n.isProbablePrime(4)) return 'params'
+    if (!sm9.sm9Verify('message', SIG9, 'id', MPK9S)) return 'sm9 verify'
+    if (sm9.sm9DecryptString(CT9, 'id', DE9) !== 'plaintext')
+      return 'sm9 decrypt'
+    if (sm9.sm9SignMasterPublicKey(K9S) !== MPK9S) return 'sm9 master key'
     return null
   }
 
   const ENGINE_ERROR =
     /Cannot read|is not a function|is not iterable|Cannot convert|Maximum call stack/
   const STRICT =
-    /^(SM2\.(sm2|get|check|userSM3Z)|utils\.|SM3\.(update|digest|hexDigest|finish|hash)|SM4\.(setKey|encrypt|decrypt|decryptBytes)|curve\.decodePointHex)/
+    /^(SM9\.|SM2\.(sm2|get|check|userSM3Z)|utils\.|SM3\.(update|digest|hexDigest|finish|hash)|SM4\.(setKey|encrypt|decrypt|decryptBytes)|curve\.decodePointHex)/
   const failures = []
   let calls = 0
   const onlyRe = only ? new RegExp(only) : null

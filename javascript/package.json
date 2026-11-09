@@ -1,11 +1,11 @@
 {
   "name": "gm-js",
   "version": "1.0.0",
-  "description": "Pure JavaScript implementation of SM2/SM3/SM4 (no external crypto deps)",
+  "description": "Pure JavaScript implementation of SM2/SM3/SM4/SM9 (no external crypto deps)",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node test/run-all.js && node test/kat.js && node test/diff-field.js && node test/security.js",
+    "test": "node test/run-all.js && node test/kat.js && node test/diff-field.js && node test/security.js && node test/sm9.js && node test/sm9-roundtrip.js && node test/sm9-diff.js",
     "fuzz": "node test/fuzz.js",
     "bench": "node bench/bench.js"
   },
@@ -13,6 +13,7 @@
     "sm2",
     "sm3",
     "sm4",
+    "sm9",
     "gm"
   ],
   "author": "",
