@@ -4,7 +4,7 @@
 
 [中文](README.md) | [English](README.en-US.md) | Español
 
-Basado completamente en los estándares de algoritmos criptográficos comerciales publicados por la Administración Estatal de Criptografía, esta implementación logra la aplicación integral de los algoritmos criptográficos nacionales SM2, SM3 y SM4 en ocho lenguajes de programación principales: **Java, JavaScript, Swift, Rust, Go, C, C# y Python**, con **cero dependencias de terceros**.
+Basado completamente en los estándares de algoritmos criptográficos comerciales publicados por la Administración Estatal de Criptografía, esta implementación logra la aplicación integral de los algoritmos criptográficos nacionales SM2, SM3, SM4 y SM9 en nueve lenguajes de programación principales: **Java, JavaScript, Swift, Rust, Go, C, C#, Python y Dart**, con **cero dependencias de terceros**.
 
 Todas las implementaciones siguen estrictamente las especificaciones algorítmicas y los casos de prueba publicados por la Administración Estatal de Criptografía. La salida de los algoritmos coincide completamente con los estándares de prueba oficiales, por lo que pueden aplicarse directamente al desarrollo y despliegue de productos de criptografía comercial.
 
@@ -13,8 +13,9 @@ Todas las implementaciones siguen estrictamente las especificaciones algorítmic
 Frente a OpenSSL y BouncyCastle:
 
 - **Más rápido:** en un Apple M2, una firma SM2 tarda 31,6 µs en Rust, 32,7 µs en Go y 39,2 µs en Swift, frente a 55,0 µs en OpenSSL 3.6.5 y 603 µs en BouncyCastle. El descifrado SM4 de 1 MiB alcanza 839 MB/s en Rust, frente a 141 MB/s en OpenSSL. La versión Java, comparada con BouncyCastle (también Java), firma 7,5 veces más rápido, completa un intercambio de claves 13 veces más rápido y cifra con SM4 1,6 veces y descifra 2 veces más rápido. Vea «Rendimiento» más abajo: todos los valores en verde y negrita superan a OpenSSL y a BouncyCastle.
-- **Intercambio de claves SM2 completo:** OpenSSL 3.x no ofrece una API para el intercambio de claves SM2 de GB/T 32918.3; esta biblioteca lo incluye en los ocho lenguajes, con los valores de confirmación.
-- **Ocho lenguajes, un mismo comportamiento:** la misma semántica de API y los mismos formatos de salida, con pruebas de interoperabilidad, de modo que los lenguajes se comunican directamente, por ejemplo un front end JavaScript y un back end Java que acuerdan una clave y luego cifran con SM4. Todas las implementaciones interoperan además en ambos sentidos con OpenSSL y BouncyCastle.
+- **Intercambio de claves SM2 completo:** OpenSSL 3.x no ofrece una API para el intercambio de claves SM2 de GB/T 32918.3; esta biblioteca lo incluye en los nueve lenguajes, con los valores de confirmación.
+- **Criptografía SM9 basada en identidad completa:** firmas, intercambio de claves, encapsulación de claves, cifrado de clave pública (cifrado de flujo con KDF y cifrado por bloques SM4) y generación de claves maestras y de usuario, en los nueve lenguajes, y cada uno reproduce byte a byte todos los ejemplos de los apéndices A a D de GB/T 38635.5. OpenSSL 3.x no incluye SM9.
+- **Nueve lenguajes, un mismo comportamiento:** la misma semántica de API y los mismos formatos de salida, con pruebas de interoperabilidad, de modo que los lenguajes se comunican directamente, por ejemplo un front end JavaScript y un back end Java que acuerdan una clave y luego cifran con SM4. Todas las implementaciones interoperan además en ambos sentidos con OpenSSL y BouncyCastle.
 - **Cero dependencias:** no hay que instalar la biblioteca nativa de OpenSSL ni añadir el jar de BouncyCastle. JavaScript y Python son código fuente puro y funcionan donde no se pueden cargar bibliotecas nativas, como los navegadores.
 - **Cumplimiento más estricto del estándar:** como exige GB/T 32918.4, se rechazan los textos cifrados SM2 cuya salida KDF es toda ceros; OpenSSL 3.0 y BouncyCastle 1.86 no lo comprueban.
 - **Versión opcional de alta seguridad:** la rama `security` ofrece SM4 de tiempo constante para entornos como los clientes, donde código no confiable puede compartir la CPU. En un Apple M2, OpenSSL 3.6.5 solo tiene un SM4 basado en tablas, y el SM4 de BouncyCastle también usa tablas.
@@ -46,13 +47,18 @@ git clone -b security https://github.com/aicccode/smx.git
 
 ## Matriz de funcionalidades
 
-| Funcionalidad | Java | JavaScript | Swift | Rust | Go | C | C# | Python |
-|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|:------:|
-| Hash SM3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cifrado/Descifrado Simétrico SM4 (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cifrado/Descifrado Asimétrico SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Firma Digital / Verificación SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Intercambio de Claves SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Funcionalidad | Java | JavaScript | Swift | Rust | Go | C | C# | Python | Dart |
+|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|:------:|:----:|
+| Hash SM3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cifrado/Descifrado Simétrico SM4 (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cifrado/Descifrado Asimétrico SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Firma Digital / Verificación SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Intercambio de Claves SM2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Generación de claves maestras y de usuario SM9 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Firma Digital / Verificación SM9 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Intercambio de Claves SM9 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Encapsulación de Claves SM9 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cifrado de Clave Pública SM9 (flujo / SM4) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Estructura del proyecto
 
@@ -66,6 +72,8 @@ smx/
 ├── c/               # Implementación C (Makefile, C99)
 ├── csharp/          # Implementación C# (.NET 8, SMX)
 ├── python/          # Implementación Python (pyproject, gm-python)
+├── dart/            # Implementación Dart (pub, smx)
+├── testvectors/     # Vectores de prueba compartidos, la referencia independiente de SM9 y su especificación
 ├── demo/            # Demo de intercambio de claves y comunicación cifrada entre lenguajes
 │   ├── server-java/     # Servidor HTTP Java (Lado B)
 │   ├── client-js/       # Cliente JavaScript (Lado A)
@@ -75,6 +83,7 @@ smx/
 │   ├── client-c/        # Cliente C (Lado A, libcurl)
 │   ├── client-csharp/   # Cliente C# (Lado A, .NET 8)
 │   ├── client-python/   # Cliente Python (Lado A)
+│   ├── client-dart/     # Cliente Dart (Lado A)
 │   └── run-tests.sh     # Script de prueba rápida
 └── doc/             # Documentos de especificación algorítmica (PDF)
 ```
@@ -182,6 +191,43 @@ SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # Incluye las prue
 - **Versión mínima:** Python 3.9+
 - **Dependencias:** Ninguna (pytest opcional, solo para pruebas)
 
+### Dart
+
+```bash
+cd dart
+dart pub get
+dart test                      # ejecutar las pruebas
+dart run benchmark/bench.dart  # pruebas de rendimiento
+```
+
+- **Herramienta de construcción:** pub (pubspec.yaml)
+- **Nombre del paquete:** `smx` (`import 'package:smx/smx.dart';`)
+- **Versión mínima:** Dart 3.0+, solo la VM de Dart (JIT, AOT y las plataformas nativas de Flutter); no admite la compilación a JavaScript
+- **Dependencias:** Ninguna (solo test para pruebas)
+
+## Uso de SM9
+
+La API de SM9 tiene la misma semántica en todos los lenguajes, con nombres según las convenciones de cada uno. En Python:
+
+```python
+from smx import (sm9_gen_sign_master_key, sm9_gen_sign_user_key, sm9_sign, sm9_verify,
+                 sm9_gen_enc_master_key, sm9_gen_enc_user_key, sm9_encrypt, sm9_decrypt)
+
+# Centro de generación de claves (KGC)
+ks, ppub_s = sm9_gen_sign_master_key()          # clave maestra de firma privada / pública (punto de G2)
+ds = sm9_gen_sign_user_key(ks, "Alice")         # clave privada de firma de Alice (punto de G1)
+
+signature = sm9_sign("mensaje", ds, ppub_s)     # h || S, hexadecimal en minúsculas
+assert sm9_verify("mensaje", signature, "Alice", ppub_s)   # el verificador solo necesita el ID y la clave maestra pública
+
+ke, ppub_e = sm9_gen_enc_master_key()           # clave maestra de cifrado privada / pública (punto de G1)
+de = sm9_gen_enc_user_key(ke, "Bob")            # clave privada de cifrado de Bob (punto de G2)
+c = sm9_encrypt("texto", "Bob", ppub_e)         # C1 || C3 || C2; mode="sm4" usa SM4
+assert sm9_decrypt(c, "Bob", de) == b"texto"
+```
+
+También se incluyen la encapsulación de claves (`sm9_encapsulate` / `sm9_decapsulate`) y el intercambio de claves con confirmación (`sm9_exchange_init`, `sm9_exchange_respond`, `sm9_exchange_confirm`, `sm9_exchange_check`). Las codificaciones, los valores hid por defecto (firma 0x01, intercambio de claves 0x02, cifrado 0x03) y las reglas de entrada están en [`testvectors/SM9-SPEC.md`](testvectors/SM9-SPEC.md).
+
 ## Notas de seguridad
 
 ### Requisitos de entrada
@@ -200,8 +246,16 @@ SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # Incluye las prue
 
 - En SM2, las operaciones con la clave privada (generación de claves, firma, descifrado, intercambio de claves) usan ventanas fijas y selección enmascarada en tablas, sin ramas ni direcciones de memoria que dependan de datos secretos. C, Rust y Swift incluyen herramientas que revisan el código compilado (`make check-ct` en C, `rust/tools/check_ct_asm.py`, `swift/Tools/check_constant_time.py`); vuelva a ejecutarlas al cambiar de compilador.
 - **En esta rama (`main`), SM4 usa tablas**: es rápido, pero no resiste ataques de temporización de caché; vea «Elegir versión» más arriba. En la rama `security`, SM4 no usa tablas indexadas por datos secretos: utiliza AES-NI, GFNI o las instrucciones AES de ARM cuando existen y, si no, una S-box implementada como circuito booleano.
-- Java, C#, JavaScript y Python se ejecutan en entornos gestionados que no garantizan tiempo constante; la biblioteca solo puede evitar en el código fuente las ramas y los accesos a tablas que dependen de secretos (en SM2; en la rama `security`, también en SM4).
+- Java, C#, JavaScript, Python y Dart se ejecutan en entornos gestionados que no garantizan tiempo constante; la biblioteca solo puede evitar en el código fuente las ramas y los accesos a tablas que dependen de secretos (en SM2; en la rama `security`, también en SM4).
 - La verificación de firmas solo maneja datos públicos y usa algoritmos de tiempo variable por velocidad.
+
+### SM9
+
+- Todos los puntos llevan el prefijo `04`: los puntos de G1 ocupan 65 bytes y los de G2 129 bytes (`04 || x1 || x0 || y1 || y0`, componente alta primero). C1 en el texto cifrado `C1 || C3 || C2` también lleva `04`, como en el SM2 de esta biblioteca; el ejemplo del estándar imprime C1 sin él, así que aquí los textos cifrados tienen 1 byte más que el ejemplo y por lo demás son idénticos.
+- El método SM4 usa ECB con relleno PKCS#7, como el ejemplo del estándar, con un K1 nuevo derivado por la KDF para cada mensaje. El descifrado comprueba C3 en tiempo constante antes de descifrar y quitar el relleno.
+- **El texto cifrado no registra el método**, así que al descifrar hay que indicar el mismo método usado al cifrar. Cuando C2 mide exactamente 16 bytes, los dos métodos derivan el mismo K2, y descifrar con el método equivocado supera la comprobación de C3 y devuelve 16 bytes sin sentido en lugar de un error. Nunca revela el texto en claro; es consecuencia del formato de texto cifrado del estándar.
+- La multiplicación de puntos y la exponenciación en GT con valores secretos (claves maestras privadas, el aleatorio r) usan ventanas fijas y accesos a tablas con máscara; las herramientas de comprobación de tiempo constante de C, Rust y Swift también cubren estas rutas de SM9. Todo punto de G2 decodificado (clave maestra pública, clave privada de cifrado de usuario) se comprueba que pertenezca al subgrupo de orden N.
+- El método SM4 de SM9 usa el SM4 de esta rama, que tampoco resiste ataques de temporización de caché; si la temporización importa, use el método de flujo por defecto o la rama `security`.
 
 ### Claves antiguas que deben sustituirse
 
@@ -289,7 +343,7 @@ El cifrado SM4 de la rama `security` es más lento que en OpenSSL porque no usa 
 
 ## Demo interlenguajes
 
-El demo verifica que las implementaciones SM2 en los ocho lenguajes pueden completar el **protocolo de intercambio de claves** y utilizar las claves negociadas para la **comunicación de cifrado/descifrado SM4**.
+El demo verifica que las implementaciones SM2 en los nueve lenguajes pueden completar el **protocolo de intercambio de claves** y utilizar las claves negociadas para la **comunicación de cifrado/descifrado SM4**.
 
 ### Arquitectura
 
@@ -308,6 +362,8 @@ El demo verifica que las implementaciones SM2 en los ocho lenguajes pueden compl
 │  C# Client  │─────────────>│             │
 ├─────────────┤              │             │
 │Python Client│─────────────>│             │
+├─────────────┤              │             │
+│ Dart Client │─────────────>│             │
 └─────────────┘              └─────────────┘
      (A侧)
 ```
@@ -365,6 +421,13 @@ Genera un valor hash de 256 bits, con un nivel de seguridad significativamente s
 ### SM4 Algoritmo de cifrado por bloques
 
 Tanto la longitud de la clave como la del bloque son de 128 bits, coincidiendo con los parámetros de AES, y constituye el algoritmo central de cifrado simétrico en el sistema criptográfico nacional. Esta implementación utiliza el modo CBC con relleno PKCS7.
+
+### SM9 Algoritmo criptográfico basado en identidad
+
+Se basa en el emparejamiento bilineal R-ate sobre una curva BN. La clave pública de un usuario es su identidad (por ejemplo, un correo electrónico o un número de teléfono), por lo que no se necesitan certificados; un centro de generación de claves (KGC) deriva la clave privada de cada usuario a partir de su clave maestra privada. Incluye:
+- **SM9-2** algoritmo de firma digital
+- **SM9-3** protocolo de intercambio de claves
+- **SM9-4** mecanismo de encapsulación de claves y algoritmo de cifrado de clave pública
 
 ## Documentación de referencia
 

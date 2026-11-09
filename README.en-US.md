@@ -2,7 +2,7 @@
 
 [中文](README.md) | English | [Español](README.es-ES.md)
 
-Built entirely on the commercial cryptographic algorithm standards published by the State Cryptography Administration (OSCCA), this project provides complete implementations of the core Chinese national algorithms SM2, SM3 and SM4 in eight mainstream programming languages — **Java, JavaScript, Swift, Rust, Go, C, C# and Python** — with **zero third-party dependencies**.
+Built entirely on the commercial cryptographic algorithm standards published by the State Cryptography Administration (OSCCA), this project provides complete implementations of the core Chinese national algorithms SM2, SM3, SM4 and SM9 in nine mainstream programming languages — **Java, JavaScript, Swift, Rust, Go, C, C#, Python and Dart** — with **zero third-party dependencies**.
 
 Every implementation strictly follows the algorithm specifications and test vectors published by the State Cryptography Administration, and its output matches the official test reference values exactly, so it can be used directly in the development and deployment of commercial cryptographic products.
 
@@ -11,8 +11,9 @@ Every implementation strictly follows the algorithm specifications and test vect
 Compared with OpenSSL and BouncyCastle:
 
 - **Faster:** on an Apple M2, SM2 signing takes 31.6 µs in Rust, 32.7 µs in Go and 39.2 µs in Swift, against 55.0 µs for OpenSSL 3.6.5 and 603 µs for BouncyCastle. SM4 decryption of 1 MiB runs at 839 MB/s in Rust against 141 MB/s for OpenSSL. The Java version, compared with BouncyCastle (also Java), signs 7.5 times faster, completes a key exchange 13 times faster, and runs SM4 encryption 1.6 times and decryption 2 times faster. See "Performance" below, where every value in green bold beats both OpenSSL and BouncyCastle.
-- **Complete SM2 key exchange:** OpenSSL 3.x offers no API for the GB/T 32918.3 SM2 key exchange; this library provides it in all eight languages, including the confirmation values.
-- **Eight languages, one behaviour:** the same API semantics and output formats, tested for interoperability, so languages can talk to each other directly, for example a JavaScript front end and a Java back end agreeing on a key and then encrypting with SM4. Every implementation also interoperates both ways with OpenSSL and BouncyCastle.
+- **Complete SM2 key exchange:** OpenSSL 3.x offers no API for the GB/T 32918.3 SM2 key exchange; this library provides it in all nine languages, including the confirmation values.
+- **Complete SM9 identity-based cryptography:** signatures, key exchange, key encapsulation, public key encryption (KDF stream cipher and SM4 block cipher) and master/user key generation, in all nine languages, each reproducing every worked example of GB/T 38635.5 appendices A to D byte for byte. OpenSSL 3.x has no SM9.
+- **Nine languages, one behaviour:** the same API semantics and output formats, tested for interoperability, so languages can talk to each other directly, for example a JavaScript front end and a Java back end agreeing on a key and then encrypting with SM4. Every implementation also interoperates both ways with OpenSSL and BouncyCastle.
 - **Zero dependencies:** no native OpenSSL library to install and no BouncyCastle jar to add. JavaScript and Python are pure source code and work where native libraries cannot be loaded, such as browsers.
 - **Stricter standard compliance:** as GB/T 32918.4 requires, SM2 ciphertexts whose KDF output is all zero are rejected; OpenSSL 3.0 and BouncyCastle 1.86 do not check this.
 - **Optional high-security version:** the `security` branch provides constant-time SM4 for environments such as clients, where untrusted code may share the CPU. On an Apple M2, OpenSSL 3.6.5 only has a table-based SM4, and BouncyCastle's SM4 is table-based as well.
@@ -44,13 +45,18 @@ git clone -b security https://github.com/aicccode/smx.git
 
 ## Feature matrix
 
-| Feature | Java | JavaScript | Swift | Rust | Go | C | C# | Python |
-|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|:------:|
-| SM3 hash | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SM4 symmetric encryption/decryption (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SM2 asymmetric encryption/decryption | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SM2 digital signature/verification | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| SM2 key exchange | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | Java | JavaScript | Swift | Rust | Go | C | C# | Python | Dart |
+|------|:----:|:----------:|:-----:|:----:|:--:|:-:|:--:|:------:|:----:|
+| SM3 hash | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM4 symmetric encryption/decryption (CBC/PKCS7) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 asymmetric encryption/decryption | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 digital signature/verification | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM2 key exchange | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM9 master/user key generation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM9 digital signature/verification | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM9 key exchange | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM9 key encapsulation | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SM9 public key encryption (stream / SM4) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Project structure
 
@@ -64,6 +70,8 @@ smx/
 ├── c/               # C implementation (Makefile, C99)
 ├── csharp/          # C# implementation (.NET 8, SMX)
 ├── python/          # Python implementation (pyproject, gm-python)
+├── dart/            # Dart implementation (pub, smx)
+├── testvectors/     # Shared test vectors, plus the independent SM9 reference and its spec
 ├── demo/            # Cross-language key exchange and encrypted communication demo
 │   ├── server-java/     # Java HTTP server (side B)
 │   ├── client-js/       # JavaScript client (side A)
@@ -73,6 +81,7 @@ smx/
 │   ├── client-c/        # C client (side A, libcurl)
 │   ├── client-csharp/   # C# client (side A, .NET 8)
 │   ├── client-python/   # Python client (side A)
+│   ├── client-dart/     # Dart client (side A)
 │   └── run-tests.sh     # One-command test script
 └── doc/             # Algorithm specification documents (PDF)
 ```
@@ -180,6 +189,43 @@ SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # include the slow
 - **Minimum version:** Python 3.9+
 - **Dependencies:** none (pytest optional, for tests only)
 
+### Dart
+
+```bash
+cd dart
+dart pub get
+dart test                      # run the tests
+dart run benchmark/bench.dart  # benchmarks
+```
+
+- **Build tool:** pub (pubspec.yaml)
+- **Package name:** `smx` (`import 'package:smx/smx.dart';`)
+- **Minimum version:** Dart 3.0+, Dart VM only (JIT, AOT and Flutter native platforms); compiling to JavaScript is not supported
+- **Dependencies:** none (test for tests only)
+
+## Using SM9
+
+The SM9 API has the same semantics in every language, with names following each language's conventions. In Python:
+
+```python
+from smx import (sm9_gen_sign_master_key, sm9_gen_sign_user_key, sm9_sign, sm9_verify,
+                 sm9_gen_enc_master_key, sm9_gen_enc_user_key, sm9_encrypt, sm9_decrypt)
+
+# Key generation centre (KGC)
+ks, ppub_s = sm9_gen_sign_master_key()          # signing master private key / public key (G2 point)
+ds = sm9_gen_sign_user_key(ks, "Alice")         # Alice's signing private key (G1 point)
+
+signature = sm9_sign("message", ds, ppub_s)     # h || S, lowercase hex
+assert sm9_verify("message", signature, "Alice", ppub_s)   # the verifier needs only the ID and master public key
+
+ke, ppub_e = sm9_gen_enc_master_key()           # encryption master private key / public key (G1 point)
+de = sm9_gen_enc_user_key(ke, "Bob")            # Bob's encryption private key (G2 point)
+c = sm9_encrypt("plaintext", "Bob", ppub_e)     # C1 || C3 || C2; mode="sm4" uses SM4
+assert sm9_decrypt(c, "Bob", de) == b"plaintext"
+```
+
+Key encapsulation (`sm9_encapsulate` / `sm9_decapsulate`) and key exchange with confirmation (`sm9_exchange_init`, `sm9_exchange_respond`, `sm9_exchange_confirm`, `sm9_exchange_check`) are also provided. Encodings, the default hid values (signing 0x01, key exchange 0x02, encryption 0x03) and the input rules are in [`testvectors/SM9-SPEC.md`](testvectors/SM9-SPEC.md).
+
 ## Security notes
 
 ### Input requirements
@@ -198,8 +244,16 @@ SMX_SLOW_TESTS=1 python3 -m unittest discover -s tests -t .   # include the slow
 
 - In SM2, operations involving the private key (key generation, signing, decryption, key exchange) use fixed windows and masked table lookups, with no branches or memory addresses that depend on secret data. C, Rust and Swift come with tools that check the compiled output, such as `make check-ct` for C, `rust/tools/check_ct_asm.py` and `swift/Tools/check_constant_time.py`; rerun them after changing compiler versions.
 - **SM4 on this branch (`main`) uses a table-based implementation**: it is fast, but it does not resist cache-timing attacks; see "Choosing a version" above for where it is appropriate. SM4 on the `security` branch uses no secret-dependent table lookups: it uses a hardware implementation when AES-NI, GFNI or ARM AES instructions are available, and otherwise an S-box implemented as a Boolean circuit.
-- Java, C#, JavaScript and Python run in managed environments whose runtimes give no constant-time guarantees of their own; this library can only ensure that the source code has no secret-dependent branches or table lookups (for SM2; on the `security` branch, for SM4 as well).
+- Java, C#, JavaScript, Python and Dart run in managed environments whose runtimes give no constant-time guarantees of their own; this library can only ensure that the source code has no secret-dependent branches or table lookups (for SM2; on the `security` branch, for SM4 as well).
 - Signature verification handles only public data, and uses variable-time algorithms for speed.
+
+### SM9
+
+- Every point carries the `04` prefix: G1 points are 65 bytes, G2 points 129 bytes (`04 || x1 || x0 || y1 || y0`, high component first). C1 in the `C1 || C3 || C2` ciphertext also carries `04`, as in this library's SM2; the standard's example prints C1 without it, so ciphertexts here are 1 byte longer than the example and otherwise identical.
+- The SM4 method uses ECB with PKCS#7 padding, as in the standard's example, with a fresh K1 derived by the KDF for every message. Decryption checks C3 in constant time before decrypting and removing the padding.
+- **The ciphertext does not record the method**, so decryption must be told the method used for encryption. When C2 is exactly 16 bytes both methods derive the same K2, so decrypting with the wrong method passes the C3 check and returns 16 meaningless bytes instead of an error. It never reveals the plaintext; this follows from the standard's ciphertext format.
+- Point multiplication and GT exponentiation with secret values (master private keys, the random r) use fixed windows and masked table lookups; the constant-time checking tools of C, Rust and Swift cover these SM9 paths too. Every decoded G2 point (master public key, user encryption private key) is checked to be in the order-N subgroup.
+- The SM4 method of SM9 uses this branch's SM4, which likewise does not resist cache-timing attacks; when timing matters, use the default stream method or the `security` branch.
 
 ### Old keys that should be replaced
 
@@ -287,7 +341,7 @@ SM4 encryption on the `security` branch is slower than OpenSSL because it does n
 
 ## Cross-language demo
 
-The demo verifies that the SM2 implementations in all eight languages can complete the **key exchange protocol** and use the agreed key for **SM4-encrypted communication**.
+The demo verifies that the SM2 implementations in all nine languages can complete the **key exchange protocol** and use the agreed key for **SM4-encrypted communication**.
 
 ### Architecture
 
@@ -306,6 +360,8 @@ The demo verifies that the SM2 implementations in all eight languages can comple
 │  C# Client  │─────────────>│             │
 ├─────────────┤              │             │
 │Python Client│─────────────>│             │
+├─────────────┤              │             │
+│ Dart Client │─────────────>│             │
 └─────────────┘              └─────────────┘
    (Side A)
 ```
@@ -363,6 +419,13 @@ Produces a 256-bit hash value, with security significantly higher than MD5 (128-
 ### SM4 block cipher algorithm
 
 Both the key length and the block length are 128 bits, the same parameters as AES. It is the core symmetric encryption algorithm in the Chinese national cryptography suite. This implementation uses CBC mode with PKCS7 padding.
+
+### SM9 identity-based cryptographic algorithm
+
+Built on the R-ate bilinear pairing over a BN curve. A user's public key is their identity (for example an email address or phone number), so no certificates are needed; a key generation centre (KGC) derives each user's private key from its master private key. It consists of:
+- **SM9-2** digital signature algorithm
+- **SM9-3** key exchange protocol
+- **SM9-4** key encapsulation mechanism and public key encryption algorithm
 
 ## Reference documents
 
