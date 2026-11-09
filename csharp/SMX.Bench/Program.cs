@@ -155,4 +155,39 @@ Run("SM2 key exchange", 0, () =>
 });
 Run("SM2 public key", 0, () => SM2.GetPublicKey(dA).Infinity ? 0 : 1);
 
+// SM9: the master public key caches its pairing value, so sign and encrypt pay for one GT exponentiation, not a pairing.
+var (sm9SignMsk, sm9SignMpk) = SM9.GenSignMasterKey();
+var (sm9EncMsk, sm9EncMpk) = SM9.GenEncMasterKey();
+var sm9Ds = SM9.GenSignUserKey(sm9SignMsk, IdA);
+var sm9De = SM9.GenEncUserKey(sm9EncMsk, IdB);
+var sm9Message = Encoding.UTF8.GetBytes(Message);
+var sm9Signature = SM9.Sign(sm9Message, sm9Ds, sm9SignMpk);
+var sm9Cipher = SM9.Encrypt(sm9Message, IdB, sm9EncMpk);
+var sm9CipherSm4 = SM9.Encrypt(sm9Message, IdB, sm9EncMpk, mode: SM9EncryptMode.SM4);
+var (_, sm9Kem) = SM9.Encapsulate(IdB, sm9EncMpk, 32);
+var sm9DeA = SM9.GenEncUserKey(sm9EncMsk, IdA, SM9.HidExchange);
+var sm9DeB = SM9.GenEncUserKey(sm9EncMsk, IdB, SM9.HidExchange);
+var (sm9Ra, sm9RA) = SM9.ExchangeInit(IdB, sm9EncMpk);
+var (sm9Rb, sm9RB) = SM9.ExchangeInit(IdA, sm9EncMpk);
+
+Run("SM9 sign master key", 0, () => SM9.GenSignMasterKey().masterPublicKey.Length);
+Run("SM9 sign user key", 0, () => SM9.GenSignUserKey(sm9SignMsk, IdA).Length);
+Run("SM9 enc user key", 0, () => SM9.GenEncUserKey(sm9EncMsk, IdB).Length);
+Run("SM9 sign", 0, () => SM9.Sign(sm9Message, sm9Ds, sm9SignMpk).Length);
+Run("SM9 verify", 0, () => SM9.Verify(sm9Message, sm9Signature, IdA, sm9SignMpk) ? 1 : throw new InvalidOperationException());
+Run("SM9 encrypt", 0, () => SM9.Encrypt(sm9Message, IdB, sm9EncMpk).Length);
+Run("SM9 decrypt", 0, () => SM9.DecryptToBytes(sm9Cipher, IdB, sm9De).Length);
+Run("SM9 encrypt SM4", 0, () => SM9.Encrypt(sm9Message, IdB, sm9EncMpk, mode: SM9EncryptMode.SM4).Length);
+Run("SM9 decrypt SM4", 0, () => SM9.DecryptToBytes(sm9CipherSm4, IdB, sm9De, SM9EncryptMode.SM4).Length);
+Run("SM9 encapsulate", 0, () => SM9.Encapsulate(IdB, sm9EncMpk, 32).key.Length);
+Run("SM9 decapsulate", 0, () => SM9.Decapsulate(sm9Kem, IdB, sm9De, 32).Length);
+Run("SM9 exchange init", 0, () => SM9.ExchangeInit(IdB, sm9EncMpk).R.Length);
+Run("SM9 key exchange", 0, () =>
+{
+    // B responds, A confirms, B checks: both sides' work after the two init steps.
+    var b = SM9.ExchangeRespond(16, IdA, IdB, sm9EncMpk, sm9DeB, sm9Rb, sm9RB, sm9RA);
+    var a = SM9.ExchangeConfirm(16, IdA, IdB, sm9EncMpk, sm9DeA, sm9Ra, sm9RA, sm9RB, b.Sb);
+    return a.Success && SM9.ExchangeCheck(b.S2, a.Sa) && a.SharedKey == b.SharedKey ? 1 : throw new InvalidOperationException();
+});
+
 GC.KeepAlive(sink);
