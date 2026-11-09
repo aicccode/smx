@@ -38,6 +38,17 @@ sm4.SetKey(new byte[16], new byte[16]);
 var validSm4 = sm4.Encrypt("some plaintext for the mutator");
 var exchangeB = SM2.GetSb(16, validPoint, validPoint, validPoint, validD, validPoint, validD, "a", "b");
 var validSb = HexUtils.HexToBytes(exchangeB.Sb);
+var (sm9SignMsk, sm9SignMpk) = SM9.GenSignMasterKey();
+var (sm9EncMsk, sm9EncMpk) = SM9.GenEncMasterKey();
+var sm9Ds = SM9.GenSignUserKey(sm9SignMsk, "id");
+var sm9De = SM9.GenEncUserKey(sm9EncMsk, "id");
+var sm9DeX = SM9.GenEncUserKey(sm9EncMsk, "b", SM9.HidExchange);
+var sm9Sig = SM9.Sign("message"u8.ToArray(), sm9Ds, sm9SignMpk);
+var sm9Cipher = SM9.Encrypt("plaintext"u8.ToArray(), "id", sm9EncMpk);
+var sm9CipherSm4 = SM9.Encrypt("plaintext"u8.ToArray(), "id", sm9EncMpk, mode: SM9EncryptMode.SM4);
+var (_, sm9Kem) = SM9.Encapsulate("id", sm9EncMpk, 32);
+var (sm9R, sm9RPoint) = SM9.ExchangeInit("a", sm9EncMpk);
+var sm9Respond = SM9.ExchangeRespond(16, "a", "b", sm9EncMpk, sm9DeX, sm9R, sm9RPoint, sm9RPoint);
 
 // --- generators ---
 
@@ -357,6 +368,54 @@ var table = new List<(string Name, Type[] Allowed, Action<Random> Run)>
         var a = SM2.GetSa(keyLength, pB, rB, pA, BigInt256.FromHex(da), rA, BigInt256.FromHex(ra), "a", "b", HexUtils.HexToBytes(b.Sb));
         Require(a.Success && a.Ka == b.Kb);
         Require(SM2.CheckSa(b.V, b.Za, b.Zb, rA, rB, HexUtils.HexToBytes(a.Sa)));
+    }),
+    ("SM9.GetSignMasterPublicKey", argumentOnly, r => SM9.GetSignMasterPublicKey(HexInput(r, sm9SignMsk)!)),
+    ("SM9.GetEncMasterPublicKey", argumentOnly, r => SM9.GetEncMasterPublicKey(HexInput(r, sm9EncMsk)!)),
+    ("SM9.GenSignUserKey", argumentOnly, r => SM9.GenSignUserKey(HexInput(r, sm9SignMsk)!, MaybeId(r)!, (byte)r.Next(256))),
+    ("SM9.GenEncUserKey", argumentOnly, r => SM9.GenEncUserKey(HexInput(r, sm9EncMsk)!, MaybeId(r)!, (byte)r.Next(256))),
+    ("SM9.Sign", argumentOnly, r => SM9.Sign(MaybeBytes(r, 100)!, r.Next(2) == 0 ? HexInput(r, sm9Ds)! : sm9Ds, r.Next(2) == 0 ? HexInput(r, sm9SignMpk)! : sm9SignMpk)),
+    ("SM9.Verify", nothing, r => SM9.Verify(r.Next(4) == 0 ? MaybeBytes(r, 20)! : "message"u8.ToArray(), HexInput(r, sm9Sig)!, r.Next(4) == 0 ? MaybeId(r)! : "id", r.Next(3) == 0 ? HexInput(r, sm9SignMpk)! : sm9SignMpk, (byte)(r.Next(4) == 0 ? r.Next(256) : 1))),
+    ("SM9.Encrypt", argumentOnly, r => SM9.Encrypt(MaybeBytes(r, 100)!, MaybeId(r)!, r.Next(2) == 0 ? HexInput(r, sm9EncMpk)! : sm9EncMpk, (byte)r.Next(256), (SM9EncryptMode)r.Next(-1, 3))),
+    ("SM9.Decrypt", argumentOrState, r => SM9.Decrypt(HexInput(r, r.Next(2) == 0 ? sm9Cipher : sm9CipherSm4)!, r.Next(4) == 0 ? MaybeId(r)! : "id", r.Next(3) == 0 ? HexInput(r, sm9De)! : sm9De, (SM9EncryptMode)r.Next(-1, 3))),
+    ("SM9.DecryptToBytes", argumentOrState, r => SM9.DecryptToBytes(HexInput(r, r.Next(2) == 0 ? sm9Cipher : sm9CipherSm4)!, "id", r.Next(3) == 0 ? HexInput(r, sm9De)! : sm9De, (SM9EncryptMode)r.Next(0, 2))),
+    ("SM9.Encapsulate", argumentOnly, r => SM9.Encapsulate(MaybeId(r)!, r.Next(2) == 0 ? HexInput(r, sm9EncMpk)! : sm9EncMpk, r.Next(3) == 0 ? KeyLength(r) : r.Next(1, 64), (byte)r.Next(256))),
+    ("SM9.Decapsulate", argumentOrState, r => SM9.Decapsulate(HexInput(r, sm9Kem)!, r.Next(4) == 0 ? MaybeId(r)! : "id", r.Next(3) == 0 ? HexInput(r, sm9De)! : sm9De, r.Next(3) == 0 ? KeyLength(r) : 32)),
+    ("SM9.ExchangeInit", argumentOnly, r => SM9.ExchangeInit(MaybeId(r)!, r.Next(2) == 0 ? HexInput(r, sm9EncMpk)! : sm9EncMpk, (byte)r.Next(256))),
+    ("SM9.ExchangeRespond", nothing, r => SM9.ExchangeRespond(r.Next(3) == 0 ? KeyLength(r) : 16, MaybeId(r)!, "b", r.Next(4) == 0 ? HexInput(r, sm9EncMpk)! : sm9EncMpk, r.Next(3) == 0 ? HexInput(r, sm9DeX)! : sm9DeX, HexInput(r, sm9R)!, HexInput(r, sm9RPoint)!, HexInput(r, sm9RPoint)!)),
+    ("SM9.ExchangeConfirm", nothing, r => SM9.ExchangeConfirm(r.Next(3) == 0 ? KeyLength(r) : 16, "a", MaybeId(r)!, r.Next(4) == 0 ? HexInput(r, sm9EncMpk)! : sm9EncMpk, r.Next(3) == 0 ? HexInput(r, sm9DeX)! : sm9DeX, HexInput(r, sm9R)!, HexInput(r, sm9RPoint)!, HexInput(r, sm9RPoint)!, HexInput(r, sm9Respond.Sb)!)),
+    ("SM9.ExchangeCheck", nothing, r => SM9.ExchangeCheck(HexInput(r, sm9Respond.S2)!, HexInput(r, sm9Respond.S2)!)),
+    ("RoundTrip.Sm9Sign", nothing, r =>
+    {
+        var message = Bytes(r, 200);
+        var id = new string((char)r.Next(0x21, 0x7E), r.Next(0, 20));
+        var ds = SM9.GenSignUserKey(sm9SignMsk, id);
+        var signature = SM9.Sign(message, ds, sm9SignMpk);
+        Require(SM9.Verify(message, signature, id, sm9SignMpk));
+        Require(!SM9.Verify([.. message, 1], signature, id, sm9SignMpk));
+    }),
+    ("RoundTrip.Sm9Encrypt", nothing, r =>
+    {
+        var message = Bytes(r, 200);
+        if (message.Length == 0)
+        {
+            message = [1];
+        }
+        var mode = (SM9EncryptMode)r.Next(2);
+        var cipher = SM9.Encrypt(message, "id", sm9EncMpk, mode: mode);
+        Require(SM9.DecryptToBytes(cipher, "id", sm9De, mode).AsSpan().SequenceEqual(message));
+        var (key, c) = SM9.Encapsulate("id", sm9EncMpk, r.Next(1, 100));
+        Require(SM9.Decapsulate(c, "id", sm9De, key.Length / 2) == key);
+    }),
+    ("RoundTrip.Sm9Exchange", nothing, r =>
+    {
+        int keyLength = r.Next(1, 100);
+        var (ra, pa) = SM9.ExchangeInit("b", sm9EncMpk);
+        var (rb, pb) = SM9.ExchangeInit("a", sm9EncMpk);
+        var deA = SM9.GenEncUserKey(sm9EncMsk, "a", SM9.HidExchange);
+        var b = SM9.ExchangeRespond(keyLength, "a", "b", sm9EncMpk, sm9DeX, rb, pb, pa);
+        Require(b.Success);
+        var a = SM9.ExchangeConfirm(keyLength, "a", "b", sm9EncMpk, deA, ra, pa, pb, b.Sb);
+        Require(a.Success && a.SharedKey == b.SharedKey && SM9.ExchangeCheck(b.S2, a.Sa));
     }),
 };
 

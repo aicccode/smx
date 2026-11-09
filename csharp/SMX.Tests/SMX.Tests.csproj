@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Vectors/baseline_kat.txt" />
+    <EmbeddedResource Include="../../testvectors/sm9-vectors.json" LogicalName="sm9-vectors.json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../SMX/SMX.csproj" />
