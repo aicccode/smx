@@ -322,6 +322,64 @@ public class SM4 {
     }
   }
 
+  /**
+   * SM4-ECB with PKCS#7 padding, the data encapsulation of the SM9 encryption scheme (GB/T 38635.4,
+   * block cipher mode). ECB leaks equal plaintext blocks; use it only inside such a scheme, where
+   * every key is fresh and a MAC covers the ciphertext.
+   *
+   * @throws IllegalArgumentException unless key is 16 bytes and plain is non-null
+   */
+  public static byte[] ecbEncrypt(byte[] key, byte[] plain) {
+    if (key == null || key.length != KEY_BYTES || plain == null) {
+      throw new IllegalArgumentException("SM4 key must be 16 bytes and data non-null");
+    }
+    int[] rk = expandKey(key, new byte[BLOCK_BYTES]).encryptKeys;
+    byte[] padded = applyPkcs7Padding(plain);
+    byte[] zero = new byte[BLOCK_BYTES];
+    for (int off = 0; off < padded.length; off += BLOCK_BYTES) {
+      byte[] block = Arrays.copyOfRange(padded, off, off + BLOCK_BYTES);
+      encryptCbc(block, zero, rk);
+      System.arraycopy(block, 0, padded, off, BLOCK_BYTES);
+      Arrays.fill(block, (byte) 0);
+    }
+    Arrays.fill(rk, 0);
+    return padded;
+  }
+
+  /**
+   * Inverse of {@link #ecbEncrypt}. The padding check has no early exit; every bad length or
+   * padding raises the same exception.
+   *
+   * @throws IllegalArgumentException for a bad key, length or padding
+   */
+  public static byte[] ecbDecrypt(byte[] key, byte[] cipher) {
+    if (key == null || key.length != KEY_BYTES || cipher == null) {
+      throw new IllegalArgumentException("SM4 key must be 16 bytes and data non-null");
+    }
+    if (cipher.length == 0 || cipher.length % BLOCK_BYTES != 0) {
+      throw decryptionFailure();
+    }
+    int[] rk = expandKey(key, new byte[BLOCK_BYTES]).decryptKeys;
+    byte[] data = cipher.clone();
+    byte[] zero = new byte[BLOCK_BYTES];
+    for (int off = 0; off < data.length; off += BLOCK_BYTES) {
+      byte[] block = Arrays.copyOfRange(data, off, off + BLOCK_BYTES);
+      decryptCbc(block, zero, rk);
+      System.arraycopy(block, 0, data, off, BLOCK_BYTES);
+      Arrays.fill(block, (byte) 0);
+    }
+    Arrays.fill(rk, 0);
+    int kept = validatedPlainLength(data);
+    try {
+      if (kept < 0) {
+        throw decryptionFailure();
+      }
+      return Arrays.copyOf(data, kept);
+    } finally {
+      Arrays.fill(data, (byte) 0);
+    }
+  }
+
   private static byte[] applyPkcs7Padding(byte[] input) {
     if (input.length > MAX_PLAINTEXT_BYTES) {
       throw new IllegalArgumentException("Input too long for SM4");

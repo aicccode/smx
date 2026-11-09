@@ -8,8 +8,8 @@
     <version>1.0.0</version>
     <packaging>jar</packaging>
 
-    <name>GM Java (SM2/SM3/SM4)</name>
-    <description>Pure Java implementation of SM2/SM3/SM4 without third‑party crypto libraries.</description>
+    <name>GM Java (SM2/SM3/SM4/SM9)</name>
+    <description>Pure Java implementation of SM2/SM3/SM4/SM9 without third‑party crypto libraries.</description>
 
     <properties>
         <maven.compiler.source>1.8</maven.compiler.source>

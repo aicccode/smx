@@ -10,6 +10,11 @@ import site.aicc.sm2.keygen.ECKeyPair;
 import site.aicc.sm2.util.ConvertUtil;
 import site.aicc.sm3.SM3;
 import site.aicc.sm4.SM4;
+import site.aicc.sm9.SM9;
+import site.aicc.sm9.SM9CipherMode;
+import site.aicc.sm9.SM9Encapsulation;
+import site.aicc.sm9.SM9ExchangeResult;
+import site.aicc.sm9.SM9KeyPair;
 
 /**
  * Throughput benchmark built on {@link System#nanoTime()}; it only uses API that exists in the
@@ -217,5 +222,159 @@ public final class SmxBench {
         });
     bench("sm2 G*k", 0, warmup, measure, rounds, () -> sink += SM2.getPublicKey(dA).hashCode());
     bench("sm2 P*k", 0, warmup, measure, rounds, () -> sink += pB.multiply(dA).hashCode());
+    benchSm9(warmup, measure, rounds);
+  }
+
+  private static void benchSm9(long warmup, long measure, int rounds) throws Exception {
+    SM9KeyPair signMaster = SM9.genSignMasterKey();
+    SM9KeyPair encMaster = SM9.genEncMasterKey();
+    String mpkS = signMaster.getPublicKey();
+    String mpkE = encMaster.getPublicKey();
+    String ds = SM9.genSignUserKey(signMaster.getPrivateKey(), "Alice");
+    String de = SM9.genEncUserKey(encMaster.getPrivateKey(), "Bob");
+    String message = "Chinese IBS standard";
+    String signature = SM9.sign(message, ds, mpkS);
+    String cipher = SM9.encrypt(message, "Bob", mpkE);
+    String cipherSm4 = SM9.encrypt(message, "Bob", mpkE, SM9CipherMode.SM4);
+    SM9Encapsulation kem = SM9.encapsulate("Bob", mpkE, 32);
+    byte[] idA = "Alice".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    byte[] idB = "Bob".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    String deA = SM9.genEncUserKey(encMaster.getPrivateKey(), idA, SM9.HID_EXCHANGE);
+    String deB = SM9.genEncUserKey(encMaster.getPrivateKey(), idB, SM9.HID_EXCHANGE);
+    SM9KeyPair ephA = SM9.exchangeInit(idB, mpkE, SM9.HID_EXCHANGE);
+    SM9KeyPair ephB = SM9.exchangeInit(idA, mpkE, SM9.HID_EXCHANGE);
+    SM9ExchangeResult b =
+        SM9.exchangeRespond(
+            16,
+            idA,
+            idB,
+            mpkE,
+            deB,
+            ephB.getPrivateKey(),
+            ephB.getPublicKey(),
+            ephA.getPublicKey());
+
+    bench(
+        "sm9 sign master keygen",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.genSignMasterKey().hashCode());
+    bench(
+        "sm9 sign user keygen",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.genSignUserKey(signMaster.getPrivateKey(), "Alice").length());
+    bench(
+        "sm9 enc user keygen",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.genEncUserKey(encMaster.getPrivateKey(), "Bob").length());
+    bench(
+        "sm9 sign", 0, warmup, measure, rounds, () -> sink += SM9.sign(message, ds, mpkS).length());
+    bench(
+        "sm9 verify",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> {
+          if (!SM9.verify(message, signature, "Alice", mpkS)) {
+            throw new IllegalStateException();
+          }
+        });
+    bench(
+        "sm9 encrypt 20B",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.encrypt(message, "Bob", mpkE).length());
+    bench(
+        "sm9 decrypt 20B",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.decrypt(cipher, "Bob", de).length());
+    bench(
+        "sm9 encrypt sm4 20B",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.encrypt(message, "Bob", mpkE, SM9CipherMode.SM4).length());
+    bench(
+        "sm9 decrypt sm4 20B",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.decrypt(cipherSm4, "Bob", de, SM9CipherMode.SM4).length());
+    bench(
+        "sm9 encapsulate",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.encapsulate("Bob", mpkE, 32).getKey().length());
+    bench(
+        "sm9 decapsulate",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.decapsulate(kem.getCiphertext(), "Bob", de, 32).length());
+    bench(
+        "sm9 exchange init",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () -> sink += SM9.exchangeInit(idB, mpkE, SM9.HID_EXCHANGE).hashCode());
+    bench(
+        "sm9 exchange B",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () ->
+            sink +=
+                SM9.exchangeRespond(
+                        16,
+                        idA,
+                        idB,
+                        mpkE,
+                        deB,
+                        ephB.getPrivateKey(),
+                        ephB.getPublicKey(),
+                        ephA.getPublicKey())
+                    .getSharedKey()
+                    .length());
+    bench(
+        "sm9 exchange A",
+        0,
+        warmup,
+        measure,
+        rounds,
+        () ->
+            sink +=
+                SM9.exchangeConfirm(
+                        16,
+                        idA,
+                        idB,
+                        mpkE,
+                        deA,
+                        ephA.getPrivateKey(),
+                        ephA.getPublicKey(),
+                        ephB.getPublicKey(),
+                        b.getSb())
+                    .getSharedKey()
+                    .length());
   }
 }
